@@ -1,0 +1,10 @@
+{
+  "name": "mesh-autonomy-local",
+  "interface": { "displayName": "MeshAutonomy Local" },
+  "plugins": [{
+    "name": "automesh-notifier",
+    "source": { "source": "local", "path": "./plugins/automesh-notifier" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Productivity"
+  }]
+}

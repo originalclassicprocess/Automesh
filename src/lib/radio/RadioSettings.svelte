@@ -1,0 +1,70 @@
+<script lang="ts">
+  import RadioBoardName from './RadioBoardName.svelte';
+  import QRCode from 'qrcode';
+  import { tr as i18n } from '$lib/i18n/language';
+  import { readQrImage } from '$lib/transport/qr-reader';
+  import type { RadioAccountState } from './account-state';
+  import type { RadioSnapshot, RadioDiagnostics } from './serial-radio';
+  import { networkInvite, encodeNetworkInvite, parseNetworkInvite, matchingChannel } from './network';
+  let { state: config, queue, snapshot, selected, contact, connection='offline', busy, error, diagnostics, supported, bluetoothSupported, available, onConnect, onBluetooth, onDisconnect, onChannel, onAutomatic, onImport, onRetry, onRelease, name, onChooseBoard,onCheckBoard,onDeleteBoard,onDefaultBoard,onNameBoard }:
+    { state: RadioAccountState; queue: {peer:string;id:string;timestamp:number}[]; snapshot: RadioSnapshot | null; selected: number; contact: string; busy: boolean; error: string; diagnostics: RadioDiagnostics | null;
+      connection?:'connected'|'connecting'|'offline'; supported: boolean; bluetoothSupported:boolean; available: boolean; onConnect(): void; onBluetooth():void; onDisconnect(): void; onChannel(index: number): void; onAutomatic(value: boolean): void;
+      onImport(text: string): Promise<void>; onRetry(peer: string,id: string): void; onRelease(peer: string,id: string): void; name(peer: string): string;
+      onChooseBoard(node:number):void;onCheckBoard(node:number):void;onDeleteBoard(node:number):void;onDefaultBoard(node:number):void;onNameBoard(node:number,name:string):void } = $props();
+  let input = $state(''), qr = $state(''), notice = $state(''), importBusy = $state(false), localError = $state('');
+  let networkText=$state(''),networkQr=$state(''),networkInput=$state('');
+  let editing=$state<number|null>(null),boardName=$state(''),deleting=$state<number|null>(null);
+  $effect(()=>{const scope=`${snapshot?.node}:${selected}:${contact}`;void scope;networkText='';networkQr='';});
+  $effect(() => { const value = contact; let live = true; qr = ''; if (value) void QRCode.toDataURL(value,{width:320,margin:2}).then(url => {if(live)qr=url;}).catch(()=>{if(live)localError='Не удалось создать QR.';}); return () => {live=false;}; });
+  async function add() { importBusy=true; localError=''; try {await onImport(input); input='';notice='Радиоконтакт сохранён.';} catch(e){localError=e instanceof Error?e.message:'Не удалось добавить радиоконтакт.';} finally {importBusy=false;} }
+  async function image(event: Event) { const element=event.currentTarget as HTMLInputElement; const file=element.files?.[0]; element.value=''; if(!file)return; try {input=await readQrImage(file);} catch {localError='Не удалось прочитать QR.';} }
+  async function revealNetwork(){const channel=snapshot?.channels.find(c=>c.index===selected);if(!snapshot||!channel)return;networkText=encodeNetworkInvite(networkInvite(snapshot.profile,channel));networkQr=await QRCode.toDataURL(networkText,{width:300,margin:2});}
+  async function selectNetwork(){try{if(!snapshot)return;const channel=await matchingChannel(parseNetworkInvite(networkInput.trim()),snapshot.profile,snapshot.channels);if(!channel)throw Error();onChannel(channel.index);notice='Совместимый канал выбран. Настройки платы не изменены.';}catch{localError='Не найден совместимый канал на плате. Сначала настройте Meshtastic по приглашению на обоих модулях.';}}
+</script>
+<section class="radio-settings">
+  <h3>LoRa · Meshtastic</h3>
+  <p>{$i18n.text('Короткие сообщения через радиомодуль, без интернета. Сид остаётся в приложении.')}</p>
+  <details><summary>{$i18n.text('Подключение и восстановление')}</summary><p>{$i18n.text('После разблокировки прежняя плата, канал и очередь восстанавливаются автоматически. Повтор и статусы доступны в верхней кнопке LoRa и меню сообщения.')}</p><p>{$i18n.text('Bluetooth: закройте другие приложения, подключённые к этой плате. При первом подключении подтвердите сопряжение и PIN с экрана платы. Если браузер не сохраняет разрешение после перезапуска, выберите плату повторно.')}</p><p>{$i18n.text('На iPhone нужен браузер с Web Bluetooth, например Bluefy. История хранится в выбранном браузере. Bluetooth в фоне и при блокировке телефона может приостанавливаться системой.')}</p></details>
+  {#if !available}<p>{$i18n.text('Для радио нужен открытый основной профиль и доверенный режим с сохранением истории.')}</p>{/if}
+  {#if !supported&&!bluetoothSupported}<p>{$i18n.text('Этот браузер не поддерживает подключение платы. На Android используйте Chrome, на iPhone — браузер с Web Bluetooth, например Bluefy. Нужен HTTPS; Safari на iPhone не подходит.')}</p>{/if}
+  {#if config.boards?.length}<section class="boards"><h4>{$i18n.text('Мои радиомодули')}</h4>{#each config.boards as board (board.node)}<article>
+    <strong><RadioBoardName name={board.name}/></strong><small>!{board.node.toString(16).padStart(8,'0')} · {board.firmware} · {board.transport==='bluetooth'?'Bluetooth':'USB'}</small>
+    <small>{config.defaultNode===board.node?$i18n.text('По умолчанию'):''}{snapshot?.node===board.node?' · '+$i18n.text(connection==='connected'?'Подключён':connection==='connecting'?'Подключаемся…':'Радиомодуль ещё не готов'):''}</small>
+    <small>{$i18n.text('Последняя проверка')}: {new Date(board.lastSeen).toLocaleString()}</small>
+    <div class="actions"><button disabled={busy||!available} onclick={()=>onChooseBoard(board.node)}>{$i18n.text('Подключить')}</button><button disabled={busy||!available} onclick={()=>onCheckBoard(board.node)}>{$i18n.text('Проверить подключение')}</button><button disabled={busy} onclick={()=>{editing=editing===board.node?null:board.node;boardName=board.name;}}>{$i18n.text('Настроить')}</button></div>
+    {#if editing===board.node}<label>{$i18n.text('Название радиомодуля')}<input bind:value={boardName} maxlength="32"/></label><div class="actions"><button disabled={!boardName.trim()||busy} onclick={()=>onNameBoard(board.node,boardName)}>{$i18n.text('Сохранить')}</button><button disabled={config.defaultNode===board.node||busy} onclick={()=>onDefaultBoard(board.node)}>{$i18n.text('Сделать по умолчанию')}</button><button disabled={busy} onclick={()=>deleting=board.node}>{$i18n.text('Удалить из списка')}</button></div><p>{$i18n.text('Для выбора канала подключите плату. Частоты и прошивка здесь не меняются.')}</p>{/if}
+    {#if deleting===board.node}<p>{$i18n.text('Удалить плату из списка? Прошивка, настройки и переписка сохранятся.')}</p><div class="actions"><button onclick={()=>{onDeleteBoard(board.node);deleting=null;editing=null;}}>{$i18n.text('Удалить из списка')}</button><button onclick={()=>deleting=null}>{$i18n.text('Отмена')}</button></div>{/if}
+  </article>{/each}</section>{/if}
+  <div class="actions"><button disabled={busy||!available||!bluetoothSupported} onclick={onBluetooth}>{$i18n.text('Подключить Bluetooth')}</button><button disabled={busy||!available||!supported} onclick={onConnect}>{$i18n.text(busy?'Подключаемся…':snapshot?'Добавить или сменить плату':'Подключить USB')}</button><button disabled={!snapshot&& !busy} onclick={onDisconnect}>{$i18n.text('Отключить')}</button></div>
+  {#if snapshot}
+    <p>!{snapshot.node.toString(16).padStart(8,'0')} · Meshtastic {snapshot.firmware} · {config.connection?.transport==='bluetooth'?'Bluetooth':'USB'}</p>
+    <label>{$i18n.text('Канал на этой плате')}<select value={selected} disabled={busy} onchange={e=>onChannel(Number(e.currentTarget.value))}>{#each snapshot.channels as channel}<option value={channel.index}>{channel.index} · {channel.name||$i18n.text('По умолчанию')}</option>{/each}</select></label>
+    <button disabled={busy} onclick={()=>onChannel(selected)}>{$i18n.text('Обновить радиоконтакт')}</button>
+    <details><summary>{$i18n.text('Приглашение в радиосеть')}</summary><p>{$i18n.text('Отдельное приглашение содержит общий ключ канала. Передавайте его только участникам этой радиосети.')}</p>
+      <button onclick={()=>void revealNetwork()} disabled={busy}>{$i18n.text('Показать приглашение с ключом канала')}</button>
+      {#if networkQr}<img src={networkQr} alt={$i18n.text('QR радиосети с ключом канала')} width="256" height="256"/><textarea readonly value={networkText} aria-label={$i18n.text('Приглашение в радиосеть')}></textarea><button onclick={()=>{networkQr='';networkText='';}}>{$i18n.text('Скрыть ключ канала')}</button>{/if}
+      <label>{$i18n.text('Приглашение другой платы')}<textarea bind:value={networkInput} maxlength="1600" placeholder="mesh-radio-network1:…"></textarea></label><button disabled={busy||!networkInput.trim()} onclick={()=>void selectNetwork()}>{$i18n.text('Найти совместимый канал')}</button>
+    </details>
+  {/if}
+  <label class="check"><input type="checkbox" checked={config.automatic} disabled={!available||busy} onchange={e=>onAutomatic(e.currentTarget.checked)}/>{$i18n.text('Автоматически пробовать LoRa, когда IP-доставка недоступна')}</label>
+  <details><summary>{$i18n.text('Ограничения и порядок доставки')}</summary><p>{$i18n.text('Сначала обычное соединение, включая LAN, затем настроенная нода. Радио пробуем после ожидания, если эти пути недоступны. Принятые нодой отправки не дублируются.')}</p><p>{$i18n.text('Без квитанции приложение делает до двух автоматических повторов с паузой, затем оставляет ручной повтор. Бесконечной отправки в эфир нет.')}</p><p>{$i18n.text('Только принятые личные контакты. До 320 байт вместе с оформлением сообщения. Файлы, звонки и исчезающие сообщения по радио не передаются. До ответа платы держите приложение открытым. Зелёный статус подтверждает приём платой; сохранение в Automesh подтверждается отдельно.')}</p><p>{$i18n.text('Радиоконтакт действует 24 часа. После смены платы, радиосети или истечения срока обменяйтесь свежими контактами. Переподключение той же платы в пределах срока сохраняет ключ.')}</p><p>{$i18n.text('Параметры платы здесь только читаются. Регион, preset, частота и канал должны быть совместимы. Meshtastic может использовать PKI для адресной передачи; это не подтверждение использования PSK выбранного канала.')}</p></details>
+  {#if contact}
+    <p>{$i18n.text('Для LoRa обменяйтесь карточками прямо в чате: «Прикрепить → Мой радиоконтакт». Получатель нажимает «Подключить и отправить свой», ответная карточка подключается у отправителя автоматически.')}</p>
+    <details open><summary>{$i18n.text('Мой радиоконтакт')}</summary><p>{$i18n.text('Покажите собеседнику и добавьте его радиоконтакт здесь. В QR есть публичный маршрут и ключ приёма, без сида и PSK канала.')}</p>
+      {#if qr}<img src={qr} alt={$i18n.text('QR радиоконтакта')} width="256" height="256"/>{/if}
+      <button onclick={async()=>{try{await navigator.clipboard.writeText(contact);notice='Скопировано.';}catch{localError='Не удалось скопировать. Выделите текст радиоконтакта.';}}}>{$i18n.text('Копировать радиоконтакт')}</button>
+      <details><summary>{$i18n.text('Текст радиоконтакта')}</summary><textarea readonly value={contact} aria-label={$i18n.text('Мой радиоконтакт')}></textarea></details>
+    </details>
+    <label>{$i18n.text('Радиоконтакт собеседника')}<textarea bind:value={input} maxlength="2400" placeholder="mesh-radio-contact1:…"></textarea></label>
+    <div class="actions"><label class="file-button">{$i18n.text('Из изображения')}<input type="file" accept="image/*" onchange={image}/></label><button disabled={importBusy||busy||!input.trim()} onclick={add}>{$i18n.text('Проверить и добавить')}</button></div>
+  {/if}
+  <details><summary>{$i18n.text('Сохранённые маршруты')} · {Object.keys(config.routes).length}</summary>{#each Object.keys(config.routes) as peer}<p>{name(peer)} <small>{peer}</small></p>{/each}</details>
+  <details open={queue.length>0}><summary>{$i18n.text('Очередь LoRa')} · {queue.length}</summary>
+    {#each queue as entry (`${entry.peer}:${entry.id}`)}<div class="pending"><strong>{name(entry.peer)}</strong><small>{new Date(entry.timestamp).toLocaleString()}</small><div class="actions"><button disabled={!contact||busy} onclick={()=>onRetry(entry.peer,entry.id)}>{$i18n.text('Повторить по LoRa')}</button><button disabled={busy} onclick={()=>onRelease(entry.peer,entry.id)}>{$i18n.text('Вернуть обычную доставку')}</button></div></div>{/each}
+  </details>
+  <details><summary>{$i18n.text('Диагностика подключения')}</summary>{#if diagnostics}<p>RX {diagnostics.incoming} · Automesh {diagnostics.application} · PKI {diagnostics.pki} · TX {diagnostics.queued}</p><p>{$i18n.text('Ошибки')}: {diagnostics.parseErrors+diagnostics.queueErrors+diagnostics.routeErrors}</p>{:else}<p>{$i18n.text('Модуль не подключён')}</p>{/if}</details>
+  {#if notice}<p role="status">{$i18n.system(notice)}</p>{/if}{#if error||localError}<p class="error" role="alert">{$i18n.system(error||localError)}</p>{/if}
+</section>
+<style>
+ .radio-settings{display:grid;gap:12px;max-width:850px;min-width:0}.radio-settings p{margin:0;overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:8px}label{display:grid;gap:8px}.check{display:flex;align-items:center;gap:10px}textarea,select{width:100%;box-sizing:border-box}textarea{min-height:80px;overflow-wrap:anywhere}img{display:block;max-width:100%;height:auto;margin:12px 0}details{border:1px solid var(--line);border-radius:12px;padding:12px}summary{cursor:pointer;list-style:none;font-weight:600}summary::before{content:'+';display:inline-grid;place-items:center;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;margin-right:8px;color:var(--accent)}details[open]>summary::before{content:'−'}details[open]>summary{margin-bottom:12px}summary::-webkit-details-marker{display:none}.file-button{display:inline-flex;border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer}.file-button input{display:none}small{display:block;overflow-wrap:anywhere}.pending{border-top:1px solid var(--line);padding:12px 0;display:grid;gap:8px}.error{color:var(--danger)}.boards{display:grid;gap:10px}.boards article{display:grid;gap:6px;border:1px solid var(--line);padding:12px;border-radius:12px;min-width:0}.boards input{width:100%;box-sizing:border-box}
+</style>

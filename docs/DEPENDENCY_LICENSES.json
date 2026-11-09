@@ -1,0 +1,1874 @@
+{
+  "lockfileVersion": 3,
+  "packages": [
+    {
+      "name": "@hpke/common",
+      "version": "1.10.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@hpke/core",
+      "version": "1.9.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@jridgewell/gen-mapping",
+      "version": "0.3.13",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@jridgewell/remapping",
+      "version": "2.3.5",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@jridgewell/resolve-uri",
+      "version": "3.1.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@jridgewell/sourcemap-codec",
+      "version": "1.6.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@jridgewell/trace-mapping",
+      "version": "0.3.31",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@napi-rs/lzma-linux-x64-gnu",
+      "version": "1.5.1",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@noble/curves",
+      "version": "2.4.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@noble/hashes",
+      "version": "2.4.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@noble/hashes",
+      "version": "2.2.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@oxc-project/types",
+      "version": "0.156.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@polka/url",
+      "version": "1.0.0-next.29",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:polka-url.txt"
+      ],
+      "noticeSource": "https://raw.githubusercontent.com/lukeed/polka/02cbdb529ddca0a9f3d225e2abb2931924219cc3/license"
+    },
+    {
+      "name": "@rolldown/binding-android-arm-eabi",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-android-arm64",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-darwin-arm64",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-darwin-x64",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-freebsd-x64",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-arm-gnueabihf",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-arm64-gnu",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-arm64-musl",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-ppc64-gnu",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-s390x-gnu",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-x64-gnu",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-linux-x64-musl",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-openharmony-arm64",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-win32-arm64-msvc",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rolldown/binding-win32-x64-msvc",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "rolldown/LICENSE",
+        "rolldown/THIRD-PARTY-LICENSE"
+      ]
+    },
+    {
+      "name": "@rolldown/pluginutils",
+      "version": "1.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@rollup/plugin-commonjs",
+      "version": "29.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "estree-walker",
+      "version": "2.0.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "is-reference",
+      "version": "1.2.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": []
+    },
+    {
+      "name": "@rollup/plugin-json",
+      "version": "6.1.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@rollup/plugin-node-resolve",
+      "version": "16.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@rollup/plugin-replace",
+      "version": "6.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@rollup/pluginutils",
+      "version": "5.4.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "estree-walker",
+      "version": "2.0.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@rollup/rollup-android-arm-eabi",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-android-arm64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-darwin-arm64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-darwin-x64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-freebsd-arm64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-freebsd-x64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-arm-gnueabihf",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-arm-musleabihf",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-arm64-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-arm64-musl",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-loong64-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-loong64-musl",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-ppc64-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-ppc64-musl",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-riscv64-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-riscv64-musl",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-s390x-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-x64-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-linux-x64-musl",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-openbsd-x64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-openharmony-arm64",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-win32-arm64-msvc",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-win32-ia32-msvc",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@rollup/rollup-win32-x64-gnu",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "rollup/LICENSE.md"
+      ]
+    },
+    {
+      "name": "@rollup/rollup-win32-x64-msvc",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "rollup/LICENSE.md"
+      ]
+    },
+    {
+      "name": "@scure/base",
+      "version": "2.2.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@scure/bip39",
+      "version": "2.2.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@standard-schema/spec",
+      "version": "1.1.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@sveltejs/acorn-typescript",
+      "version": "1.0.13",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "@sveltejs/adapter-node",
+      "version": "5.5.8",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@sveltejs/kit",
+      "version": "2.70.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@sveltejs/load-config",
+      "version": "0.2.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@sveltejs/vite-plugin-svelte",
+      "version": "7.3.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "magic-string",
+      "version": "1.4.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@types/chai",
+      "version": "5.2.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@types/cookie",
+      "version": "0.6.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@types/deep-eql",
+      "version": "4.0.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@types/estree",
+      "version": "1.0.9",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@types/resolve",
+      "version": "1.20.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/expect",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/mocker",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/pretty-format",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/runner",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/snapshot",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/spy",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@vitest/utils",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@zxcvbn-ts/core",
+      "version": "4.2.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "@zxcvbn-ts/dictionary-compression",
+      "version": "3.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@zxcvbn-ts/language-common",
+      "version": "4.1.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "@zxcvbn-ts/language-en",
+      "version": "4.1.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt",
+        "NOTICE.md"
+      ]
+    },
+    {
+      "name": "@zxcvbn-ts/language-ru",
+      "version": "4.1.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "acorn",
+      "version": "8.18.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "ansi-regex",
+      "version": "5.0.1",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "ansi-styles",
+      "version": "4.3.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "aria-query",
+      "version": "5.3.1",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "assertion-error",
+      "version": "2.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "axobject-query",
+      "version": "4.1.0",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "camelcase",
+      "version": "5.3.1",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "chai",
+      "version": "6.3.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "chokidar",
+      "version": "4.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "cliui",
+      "version": "6.0.0",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "clsx",
+      "version": "2.1.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "color-convert",
+      "version": "2.0.1",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "color-name",
+      "version": "1.1.4",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "commondir",
+      "version": "1.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "convert-source-map",
+      "version": "2.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "cookie",
+      "version": "0.7.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "decamelize",
+      "version": "1.2.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "deepmerge",
+      "version": "4.3.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license.txt"
+      ]
+    },
+    {
+      "name": "detect-libc",
+      "version": "2.1.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "devalue",
+      "version": "5.9.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "dijkstrajs",
+      "version": "1.0.3",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "emoji-regex",
+      "version": "8.0.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE-MIT.txt"
+      ]
+    },
+    {
+      "name": "es-errors",
+      "version": "1.3.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "es-module-lexer",
+      "version": "2.3.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "esm-env",
+      "version": "1.2.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "esrap",
+      "version": "2.3.8",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "estree-walker",
+      "version": "3.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "expect-type",
+      "version": "1.4.0",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "fake-indexeddb",
+      "version": "6.2.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "fastest-levenshtein",
+      "version": "1.0.16",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "fdir",
+      "version": "6.5.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "fflate",
+      "version": "0.8.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "find-up",
+      "version": "4.1.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "fsevents",
+      "version": "2.3.3",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "function-bind",
+      "version": "1.1.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "get-caller-file",
+      "version": "2.0.5",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "hasown",
+      "version": "2.0.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "is-core-module",
+      "version": "2.17.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "is-fullwidth-code-point",
+      "version": "3.0.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "is-module",
+      "version": "1.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "README.md#license"
+      ]
+    },
+    {
+      "name": "is-reference",
+      "version": "3.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": []
+    },
+    {
+      "name": "jsqr",
+      "version": "1.4.0",
+      "license": "Apache-2.0",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "kleur",
+      "version": "4.1.5",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "lightningcss",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "lightningcss-android-arm64",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-darwin-arm64",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-darwin-x64",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-freebsd-x64",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-linux-arm-gnueabihf",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-linux-arm64-gnu",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-linux-arm64-musl",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-linux-x64-gnu",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-linux-x64-musl",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-win32-arm64-msvc",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "lightningcss-win32-x64-msvc",
+      "version": "1.33.0",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "locate-character",
+      "version": "3.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": []
+    },
+    {
+      "name": "locate-path",
+      "version": "5.0.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "magic-string",
+      "version": "0.30.21",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "mri",
+      "version": "1.2.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license.md"
+      ]
+    },
+    {
+      "name": "mrmime",
+      "version": "2.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "nanoid",
+      "version": "3.3.20",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "obug",
+      "version": "2.1.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "p-limit",
+      "version": "2.3.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "p-locate",
+      "version": "4.1.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "p-try",
+      "version": "2.2.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "path-exists",
+      "version": "4.0.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "path-parse",
+      "version": "1.0.7",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "pathe",
+      "version": "2.0.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "picocolors",
+      "version": "1.1.1",
+      "license": "ISC",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "picomatch",
+      "version": "4.0.7",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "pngjs",
+      "version": "5.0.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "postcss",
+      "version": "8.5.32",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "qrcode",
+      "version": "1.5.4",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "readdirp",
+      "version": "4.1.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "require-directory",
+      "version": "2.1.1",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "require-main-filename",
+      "version": "2.0.0",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "resolve",
+      "version": "1.22.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "rolldown",
+      "version": "1.2.16",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE",
+        "THIRD-PARTY-LICENSE"
+      ]
+    },
+    {
+      "name": "rollup",
+      "version": "4.63.5",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "sade",
+      "version": "1.8.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "set-blocking",
+      "version": "2.0.0",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "set-cookie-parser",
+      "version": "3.1.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "siginfo",
+      "version": "2.0.0",
+      "license": "ISC",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "sirv",
+      "version": "3.0.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:sirv.txt"
+      ],
+      "noticeSource": "https://raw.githubusercontent.com/lukeed/sirv/1135207e92c40354543cbd15c763c7a61d79d432/license"
+    },
+    {
+      "name": "source-map-js",
+      "version": "1.2.2",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "stackback",
+      "version": "0.0.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": []
+    },
+    {
+      "name": "std-env",
+      "version": "4.2.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENCE"
+      ]
+    },
+    {
+      "name": "string-width",
+      "version": "4.2.3",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "strip-ansi",
+      "version": "6.0.1",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "supports-preserve-symlinks-flag",
+      "version": "1.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "svelte",
+      "version": "5.57.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "svelte-check",
+      "version": "4.7.6",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "tinybench",
+      "version": "2.9.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "tinyexec",
+      "version": "1.3.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "tinyglobby",
+      "version": "0.2.17",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "tinyrainbow",
+      "version": "3.2.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENCE"
+      ]
+    },
+    {
+      "name": "totalist",
+      "version": "3.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "typescript",
+      "version": "6.0.3",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "vite",
+      "version": "8.3.6",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "vitefu",
+      "version": "1.1.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "vitest",
+      "version": "4.1.12",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "which-module",
+      "version": "2.0.1",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "why-is-node-running",
+      "version": "2.3.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "wrap-ansi",
+      "version": "6.2.0",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
+      "name": "ws",
+      "version": "8.21.3",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "y18n",
+      "version": "4.0.3",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "yargs",
+      "version": "15.4.1",
+      "license": "MIT",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "yargs-parser",
+      "version": "18.1.3",
+      "license": "ISC",
+      "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "zimmerframe",
+      "version": "1.1.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    }
+  ]
+}

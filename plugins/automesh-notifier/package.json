@@ -1,0 +1,14 @@
+{
+  "name": "automesh-notifier",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/mcp.mjs",
+    "setup": "node server/setup.mjs",
+    "install:local": "node server/install.mjs",
+    "test": "node --test tests/outbox.test.mjs tests/mcp.test.mjs tests/config.test.mjs"
+  },
+  "dependencies": { "playwright": "1.62.1" }
+}

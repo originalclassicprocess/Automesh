@@ -1,0 +1,13 @@
+# Review-sensitive boundaries; branch rules must require review separately.
+/.github/ @originalclassicprocess
+/scripts/ @originalclassicprocess
+/server/ @originalclassicprocess
+/src/lib/identity/ @originalclassicprocess
+/src/lib/vault/ @originalclassicprocess
+/src/lib/core/ @originalclassicprocess
+/src/lib/node/ @originalclassicprocess
+/src/lib/radio/ @originalclassicprocess
+/nodes/ @originalclassicprocess
+/LICENSE @originalclassicprocess
+/SECURITY.md @originalclassicprocess
+/package*.json @originalclassicprocess

@@ -1,0 +1,31 @@
+// Read-only public checks. No registration, accounts, queue access or message data.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import WebSocket from 'ws';
+import { deploymentDefaults, httpsOrigin } from '../nodes/packages/deployment/src/defaults.js';
+const version = JSON.parse(readFileSync(new URL('../build/client/_app/version.json', import.meta.url),'utf8')).version;
+const origin=httpsOrigin(process.env.VERIFY_APP_ORIGIN || deploymentDefaults.appOrigin), nodeOrigin=httpsOrigin(process.env.VERIFY_NODE_ORIGIN || deploymentDefaults.nodeOrigin);
+const get = (url)=>fetch(url,{cache:'no-store',signal:AbortSignal.timeout(15000)});
+const nodeResponse=await get(nodeOrigin+'/node/info');
+assert.equal(nodeResponse.status,200);
+const node=await nodeResponse.json();
+console.log(JSON.stringify({check:'public node identity',info:node}));
+if(process.argv.includes('--before'))process.exit(0);
+const response=await get(origin+'/_app/version.json');assert.equal(response.status,200);
+assert.equal((await response.json()).version,version);
+const shell=await get(origin+'/');assert.equal(shell.status,200);assert.equal(shell.headers.get('x-automesh-version'),version);
+assert.ok(shell.headers.get('content-security-policy')?.includes("object-src 'none'"));
+await shell.body?.cancel();
+const worker=await get(origin+'/service-worker.js');assert.equal(worker.status,200);assert.ok((await worker.text()).includes(version));
+for(const r of [response,shell,worker])assert.equal(r.headers.get('cache-control'),'no-store');
+assert.equal((await get(origin+'/dev/settings')).status,404);
+const health=await get(origin+'/healthz');assert.equal(health.status,200);assert.equal((await health.json()).status,'ok');
+for(const endpoint of [origin,nodeOrigin])await new Promise((resolve,reject)=>{
+  const ws=new WebSocket(endpoint.replace('https:','wss:')+'/signal',{origin});let done=false;
+  const finish=error=>{if(done)return;done=true;clearTimeout(timer);ws.removeAllListeners();ws.on('error',()=>{});ws.terminate();error?reject(error):resolve();};
+  const timer=setTimeout(()=>finish(new Error('Public signaling probe timeout')),10000);
+  ws.on('error',()=>finish(new Error('Public signaling unavailable')));
+  ws.on('open',()=>ws.send(JSON.stringify({type:'probe'})));
+  ws.on('message',bytes=>{try{const msg=JSON.parse(bytes.toString());assert.equal(msg.type,'probe_result');assert.equal(msg.protocol,'mesh-signaling-v1');console.log(JSON.stringify({check:'signaling probe',endpoint,protocol:msg.protocol}));finish();}catch(error){finish(error);}});
+});
+console.log(JSON.stringify({check:'release verified',version,passed:['HTTPS','HTML/version/worker','CSP','cache headers','health','development fixture closed','application and node WSS']}));

@@ -1,0 +1,11 @@
+node_modules/
+.data/
+.test-data/
+# Defense in depth if somebody accidentally saves local state in this folder.
+config.json
+sender.dpapi
+outbox.dpapi
+outbox.lock
+outbox-*.tmp
+!dist/
+!dist/**

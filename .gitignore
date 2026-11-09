@@ -1,0 +1,51 @@
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+dist
+
+# Local LAN test CA and TLS private keys (never commit or share)
+.local-certs/
+
+# Local package downloads and deployment staging
+.npm-cache/
+.release/
+
+# Local user/test exports are not application source.
+/artifacts/
+
+# Dedicated deployment credentials and temporary SSH files
+.deploy-secrets/
+.deploy-incoming/
+.deploy-backups/
+.deploy-failed/
+.deploy-tools/
+.deploy-lock/
+.deploy-last.json
+
+# Generated Windows node installer; published as a separate build artifact.
+/static/downloads/Automesh-Node-Setup.exe
+/static/downloads/node-release.json
+/static/downloads/Automesh-Node-Linux-x64.tar.gz
+/static/downloads/node-linux-release.json
+/static/downloads/*.sigstore.json

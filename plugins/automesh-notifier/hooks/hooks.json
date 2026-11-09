@@ -1,0 +1,15 @@
+{
+  "description": "Copy final replies to the explicitly configured Automesh recipient. Review and trust this hook in Codex before use.",
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "node \"${PLUGIN_ROOT}/hooks/stop.mjs\"",
+        "commandWindows": "cmd /d /c node \"%PLUGIN_ROOT%/hooks/stop.mjs\"",
+        "async": true,
+        "timeout": 120,
+        "statusMessage": "Sending Automesh notification"
+      }]
+    }]
+  }
+}
