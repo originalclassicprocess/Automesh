@@ -26,6 +26,7 @@
   import CompactDialog from '../application/CompactDialog.svelte';
   import SettingsMenu from '../application/SettingsMenu.svelte';
   import ThemeSelector from '../application/ThemeSelector.svelte';
+  import AboutProject from '../application/AboutProject.svelte';
   import { settingsMenu, settingsDescriptions, type SettingsSection } from '../application/settings-structure';
   import { idleCourierStatus } from '../node/courier-controller';
   import { identiconFor } from '../addressing/identicon';
@@ -276,6 +277,7 @@
         <h4>{$i18n.text("Диагностика доставки")}</h4><p>{status === 'fresh' ? $i18n.text("Права устройства проверены") : $i18n.text("Ожидаем свежую проверку прав")}</p><p>{$i18n("m_43e005f5e6c8", {v0: (lastReceived ? new Date(lastReceived).toLocaleTimeString($uiLocale) : $i18n.text("пока нет"))})}</p>
         <button type="button" onclick={() => { if (runtimeMode === 'direct' && authority) void upgrade(); else void runtime?.wake().catch(() => error = 'Нужен доступный владелец или нода для свежей проверки прав.'); }}>{$i18n.text("Проверить подключение")}</button>
         {#if runtimeMode === 'node'}<details><summary>{$i18n.text("Дополнительный режим доступности")}</summary><label><input type="checkbox" checked={settings.allowCached} onchange={async e => { settings = { ...settings, allowCached: e.currentTarget.checked }; await save(); }} /> {$i18n.text("Использовать ранее проверенный список, если свежая проверка недоступна")}</label><p class="help-text">{$i18n.text("Менее безопасно: отзыв устройства может стать известен позже. В прямом режиме этот обход не используется.")}</p></details>{/if}</div>
+      {:else if section === 'about'}<AboutProject />
       {:else if section === 'application'}<section class="settings-section"><LanguageSettings /><h4>{$i18n.text("Внешний вид")}</h4><ThemeSelector /></section>
       {:else if section === 'overview'}<p class="help-text">{$i18n.text("Тот же профиль, отдельный ключ устройства. Доступны новые текстовые чаты и история с вложениями, переданная владельцем. Новые файлы и звонки пока доступны на основном устройстве.")}</p>
       {:else}<div class="settings-section"><p>{$i18n.system(rights)}</p><p class="help-text">{$i18n.text("Новые файлы, звонки и голосовые сообщения пока доступны на основном устройстве. Уже перенесённые вложения можно открыть и скачать здесь.")}</p></div>{/if}

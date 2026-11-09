@@ -9,6 +9,7 @@ import { version } from '$app/environment';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
 import AppUpdatePanel from '$lib/application/AppUpdatePanel.svelte';
+import AboutProject from '$lib/application/AboutProject.svelte';
 import HelpInfo from '$lib/application/HelpInfo.svelte';
 import { appHelp } from '$lib/application/app-help';
 import { navigationLevel } from '$lib/application/navigation-level';
@@ -5041,7 +5042,7 @@ async function changePassword(): Promise<void> {
   <SettingsMenu section={settingsSection} items={settingsMenu} descriptions={settingsDescriptions}
     backupWarning={!seedBackupVerified} onSelect={id => selectSettings(id as SettingsSection)} />
 
-  {#if settingsSection !== 'overview' && settingsSection !== 'application' && settingsSection !== 'security'}
+  {#if settingsSection !== 'overview' && settingsSection !== 'application' && settingsSection !== 'security' && settingsSection !== 'about'}
     <p class="help-text">{$i18n.text("Для этого профиля на этом устройстве")}</p>
   {/if}
   {#if settingsSection === 'files'}
@@ -5090,6 +5091,7 @@ async function changePassword(): Promise<void> {
       download={(peer, id) => void downloadFile(peer, id)} />
   {/if}
 
+  {#if settingsSection === 'about'}<AboutProject />{/if}
   {#if settingsSection === 'application'}
   <section class="settings-section"><LanguageSettings /></section>
   <section class="settings-section"><h4>{$i18n.text("Внешний вид")}</h4><ThemeSelector /></section>

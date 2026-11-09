@@ -1,13 +1,11 @@
 {
-  "version": "0.4.16",
+  "repository": "originalclassicprocess/automesh-nodes",
+  "commit": "d2bd69ec5541e9669d520f4fb4497b629b3c2a6f",
+  "version": "0.4.17",
   "files": [
     {
       "path": ".github/CODEOWNERS",
       "sha256": "1be62f2d0ed8e7d1602f873758aecb215e370904bf4dd547e291ddc0a9007c22"
-    },
-    {
-      "path": ".github/dependabot.yml",
-      "sha256": "650f0564bcb0fe07277fe91762bcbff97423f9523530d2dd4b276e99afb576b3"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
@@ -18,6 +16,10 @@
       "sha256": "02e25eecc56aca3a0f3dd2a3229065fd040d820e01b0585e650479228dc3f470"
     },
     {
+      "path": ".github/dependabot.yml",
+      "sha256": "650f0564bcb0fe07277fe91762bcbff97423f9523530d2dd4b276e99afb576b3"
+    },
+    {
       "path": ".github/workflows/ci.yml",
       "sha256": "67e37efbe4e4122d192000ad2dfc89e94696031bf38e03c9e49c70d3e6980317"
     },
@@ -26,8 +28,48 @@
       "sha256": "797d22c43a0e3c8028c6d9cbfd8edcb456811d7bd0b27a994b06cd7d285c8d05"
     },
     {
+      "path": ".github/workflows/release.yml",
+      "sha256": "a4b963cff325e0116c149e409cf737a1ffea5e64ce64e470d7a2436a2139c8a4"
+    },
+    {
       "path": ".gitignore",
       "sha256": "ddb16710d455da2e98c76a28c97eadcf76973a6c1ff5304adabfd24325df216c"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "afd55c45a43a14f6bd8706e9ba9bddce80c2b9ee6f36f2e1689efef32aaa33c4"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "sha256": "2dece98ea0e8fc516582239b016877ed62f9f2c29eb73e44d79d509ddd81821f"
+    },
+    {
+      "path": "HISTORY.md",
+      "sha256": "cf5a20613c45590870c6b8fdb83b51cd53d500265389283c1192bae00263d9c0"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "130de4c422e446c508f7daae0cbf86c9d0ab997dc074934cf1a313f28c559269"
+    },
+    {
+      "path": "README.md",
+      "sha256": "e5c9ae0a8c72c201c6d9375f5ee093b568e4cc45ec3848c86b6bcd155a11a32b"
+    },
+    {
+      "path": "README.ru.md",
+      "sha256": "482f245d47aeb8d0f64072d819587e3e759b4556d900dde3a1488d44bcc7bbf0"
+    },
+    {
+      "path": "SECURITY.md",
+      "sha256": "0b3082a940e74e104f3d4e4f2f20f6933defb3ee6ec44f91c75197cc7d724993"
+    },
+    {
+      "path": "SECURITY.ru.md",
+      "sha256": "52c6c8a724ddcfbe240f7b859b2f5753fc8b95b6f5cb5321e5ab5fe61bdd0404"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "1436f28814b08568c67629ffa28724057712527bf1def463e5df07085c67b7af"
     },
     {
       "path": "adapters/linux/automesh-node",
@@ -166,14 +208,6 @@
       "sha256": "e7941c3ec894aba9c1a84a8b4b279fbf4d00380324955c1761e80a0a0be5bac0"
     },
     {
-      "path": "CHANGELOG.md",
-      "sha256": "59e33142133ec46d6bc4ba205110652550f34230b4011ee2554eaa55b277956c"
-    },
-    {
-      "path": "CONTRIBUTING.md",
-      "sha256": "2dece98ea0e8fc516582239b016877ed62f9f2c29eb73e44d79d509ddd81821f"
-    },
-    {
       "path": "docs/CLEAN_START.md",
       "sha256": "5ad499ecaee3e41c61c15704dcd4ad2bc80286a45178a20fbc27e05839eedde3"
     },
@@ -226,6 +260,10 @@
       "sha256": "8298bd13074b88f52d2234040f011a15d45e528a55ccb7399f56c6f6e9e3a2ba"
     },
     {
+      "path": "docs/RELEASE_0_4_17.md",
+      "sha256": "c0a1271885b32e0209f3955b607a7f8cc4baf5881bd226f11dc8631037dd4af3"
+    },
+    {
       "path": "docs/SERVER_NODE.md",
       "sha256": "a674fabcb38051e240bd998b39efd65283a3a6fe1d9703fe2a903d67eeaeac85"
     },
@@ -242,20 +280,12 @@
       "sha256": "eb45c38a1bf4315cb1703431ba5fa0291c03f11106e85916a65bf6d5ee2b7f6c"
     },
     {
-      "path": "HISTORY.md",
-      "sha256": "cf5a20613c45590870c6b8fdb83b51cd53d500265389283c1192bae00263d9c0"
-    },
-    {
-      "path": "LICENSE",
-      "sha256": "130de4c422e446c508f7daae0cbf86c9d0ab997dc074934cf1a313f28c559269"
-    },
-    {
       "path": "package-lock.json",
-      "sha256": "b5a30bf8d0da9f97fd488db48b0d668d1b764f19f89e31a276ca003ad46d40e2"
+      "sha256": "0b6034034df67ef967a4bb48e752ad50567cd87723374330fe960e13f8fafeae"
     },
     {
       "path": "package.json",
-      "sha256": "7cfecd7d1ad23056e450b9e3c3432d16518eb4752d2159816ae4eab11cea6f6a"
+      "sha256": "cc423a432841270612ba724b086b46158132643e902f2b5850a85710e6ecc191"
     },
     {
       "path": "packages/deployment/src/defaults.js",
@@ -382,16 +412,12 @@
       "sha256": "7f090abc140bb28928c7e2f8882c18a083422466f11ca4110a9bfa674ec10484"
     },
     {
-      "path": "README.md",
-      "sha256": "e5c9ae0a8c72c201c6d9375f5ee093b568e4cc45ec3848c86b6bcd155a11a32b"
-    },
-    {
-      "path": "README.ru.md",
-      "sha256": "482f245d47aeb8d0f64072d819587e3e759b4556d900dde3a1488d44bcc7bbf0"
-    },
-    {
       "path": "scripts/build-linux.mjs",
       "sha256": "2deb79e8af42afe50078fd4ac9526083c0a2296e16b6980b2d8bc4a75837031f"
+    },
+    {
+      "path": "scripts/build-server-release.mjs",
+      "sha256": "f2e1d2806f8bd1368a02abe158f08f831fad30e792e5c42c56aa084a0b70600e"
     },
     {
       "path": "scripts/build-windows.mjs",
@@ -422,6 +448,10 @@
       "sha256": "4ad4230f25a9d28ed04ee404ca3722a3a11e9b45762a3a712c2de549560ae54a"
     },
     {
+      "path": "scripts/release-context.mjs",
+      "sha256": "286d348575404466470e0dfed9335ecb5e58ca5c0cc77a787bd0fdc001ddd837"
+    },
+    {
       "path": "scripts/setup-shared-host.mjs",
       "sha256": "593ec763c3d8af658581339ec4ece5794211980f3c95800cd8ab3db4b33533d0"
     },
@@ -436,18 +466,6 @@
     {
       "path": "scripts/windows-downloads-operator.mjs",
       "sha256": "f9db97e5f2cd33e164f6fcfcb2e1deb5733d978eba8b536b9663a14984017d0c"
-    },
-    {
-      "path": "SECURITY.md",
-      "sha256": "0b3082a940e74e104f3d4e4f2f20f6933defb3ee6ec44f91c75197cc7d724993"
-    },
-    {
-      "path": "SECURITY.ru.md",
-      "sha256": "52c6c8a724ddcfbe240f7b859b2f5753fc8b95b6f5cb5321e5ab5fe61bdd0404"
-    },
-    {
-      "path": "source-manifest.json",
-      "sha256": "76a2bbf9d81ea9d2770123dc63d1e95b71fb8748e268f90a9568b20945b7a0fa"
     },
     {
       "path": "test/atomic-rename.test.mjs",
@@ -499,7 +517,7 @@
     },
     {
       "path": "test/passenger.test.mjs",
-      "sha256": "c98f549573a6edb37ab082614bd9cbf1157dbbdf755ba255070ced83aedd10c9"
+      "sha256": "10158fe4b770d1180415b3b9714f3611ccd875d4ba144b47ee8586afe20227b6"
     },
     {
       "path": "test/prekeys.test.mjs",
@@ -522,6 +540,10 @@
       "sha256": "d62b5984b0b8f32e0dcf7c63ad5f6a70f028788deb98312f91aa167cbc117024"
     },
     {
+      "path": "test/release-source.test.mjs",
+      "sha256": "0e2273dcb748bc1a0027b788c373d8b2618b42d0a820ade1fad4b4ba1bce27e3"
+    },
+    {
       "path": "test/server.test.mjs",
       "sha256": "313ab5ff2c9e9a0a7d95111727c69cbe90faa692c94a6156b91934644fce1cfc"
     },
@@ -532,10 +554,6 @@
     {
       "path": "test/windows-network.test.mjs",
       "sha256": "455905208af50dfe6b3d07b63227aaf23a1e88306f9f4ecdc9876473417ad7ce"
-    },
-    {
-      "path": "THIRD_PARTY_NOTICES.md",
-      "sha256": "1436f28814b08568c67629ffa28724057712527bf1def463e5df07085c67b7af"
     },
     {
       "path": "ui/panel.css",

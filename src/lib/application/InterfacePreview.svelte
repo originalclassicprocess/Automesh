@@ -13,6 +13,7 @@
   import ConversationRow from '$lib/chat/ConversationRow.svelte';
   import ChatActivity from '$lib/chat/ChatActivity.svelte';
   import ThemeSelector from './ThemeSelector.svelte';
+  import AboutProject from './AboutProject.svelte';
   import type {ChatEntry,Conversation} from '$lib/chat/session-chats';
   import MessageDelivery from '$lib/chat/MessageDelivery.svelte';
   import {messageStatus} from '$lib/chat/message-presentation';
@@ -147,6 +148,7 @@
     {:else if settings}
       <div class="settings-title"><h3>{section==='overview' ? $i18n.text("Настройки") : items.find(item=>item.id===section)?.label}</h3><HelpInfo label={$i18n.text("Справка: пример")} text={$i18n.text("Это общий компонент подсказки. В настоящем приложении описана конкретная функция.")} /></div>
       <SettingsMenu {section} {items} {descriptions} onSelect={id=> { section=id; visit(); }} />
+      {#if section==='about'}<AboutProject />{/if}
       {#if section==='application'}<section class="settings-section"><h4>{$i18n.text("Внешний вид")}</h4><ThemeSelector /></section>{/if}
       {#if section!=='overview'}<div class="settings-section"><label>{$i18n.text("Пример поля")} <input placeholder={$i18n.text("Имя")} /></label><HelpInfo label={$i18n.text("Справка: поле")} text={$i18n.text("Ник виден вашим собеседникам, но не уникален.")} /></div>{/if}
     {:else}

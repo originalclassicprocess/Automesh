@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.3 — public release sources (2026-11-09)
+
+Public node downloads, About project, pinned source compatibility and verifiable release/deployment pipeline. See docs/RELEASE_0_5_3.md. No delivery protocol changes.
+
+
 ## Public source preview — November 2026
 
 Source baseline: app 0.5.2, with compatible dependency/security updates,

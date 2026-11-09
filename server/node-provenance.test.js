@@ -128,6 +128,6 @@ describe('pinned GitHub package provenance policy', () => {
     expect(release).toContain('downloads/*.tar.gz');
     expect(release).not.toMatch(/secrets\.|deploy-client|pull_request_target/);
     expect(packageRepository).toBe('originalclassicprocess/automesh-nodes');
-    expect(packageWorkflow).toBe(packageRepository + '/.github/workflows/preview-build.yml');
+    expect(packageWorkflow).toBe(packageRepository + '/.github/workflows/release.yml');
   });
 });

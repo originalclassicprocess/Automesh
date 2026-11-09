@@ -1,9 +1,10 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 import { createDevicePairingRelay } from './server/device-pairing.js';
+import { buildInformationPlugin } from './scripts/build-info.mjs';
 
 export default defineConfig({
-  plugins: [sveltekit(), { name: 'local-device-pairing', apply: 'serve', configureServer(server) {
+  plugins: [buildInformationPlugin(), sveltekit(), { name: 'local-device-pairing', apply: 'serve', configureServer(server) {
     const origin = `http://127.0.0.1:${server.config.server.port}`;
     const pairing = createDevicePairingRelay({ origin }); server.httpServer?.once('close', () => pairing.close());
     server.middlewares.use((request, response, next) => {

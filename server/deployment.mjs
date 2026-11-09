@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { gunzipSync, brotliDecompressSync } from 'node:zlib';
 
 const managed = ['build', 'server', 'src', 'nodes', 'docs', 'app.cjs', 'package.json', 'package-lock.json',
-  'release-manifest.json', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'README.ru.md', 'SECURITY.md', 'CONTRIBUTING.md', '.env.example'];
+  'release-manifest.json', 'HISTORY.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'README.ru.md', 'SECURITY.md', 'CONTRIBUTING.md', '.env.example'];
 const idPattern = /^(deploy|rollback)-[0-9]+-[a-f0-9-]{36}$/;
 const versionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const json = path => JSON.parse(readFileSync(path, 'utf8'));

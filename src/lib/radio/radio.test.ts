@@ -169,6 +169,8 @@ describe('application delivery over lossy radio', () => {
     b.onMessage = () => { throw Error('storage_failed'); }; b.onError = error => errors.push(error); a.onUpdate = message => updates.push(message);
     try {
       await a.send('do not ack'); await until(() => updates.some(message => message.status === 'retry'));
+      // Encryption/storage can finish after the short test-only receipt timeout under load.
+      await until(() => errors.includes('storage_failed'));
       expect(acknowledgments).toBe(0); expect(errors).toContain('storage_failed');
       b.onMessage = () => {}; a.retry(updates.at(-1)!.id); await until(() => acknowledgments === 1);
       expect(updates.at(-1)?.status).not.toBe('received'); // A radio write/queue event cannot promote delivery.

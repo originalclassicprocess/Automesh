@@ -7,10 +7,10 @@ import { navigationLevel } from './navigation-level';
 import pageSource from '../../routes/+page.svelte?raw';
 
 describe('organized settings',()=>{
-  it('has six clear main sections, not duplicate nodes/connect/storage sections',()=>{
-    expect(settingsMenu.map(item=>item.id)).toEqual(['account','privacy','security','connection','files','application']);
+  it('has clear task sections including project information, not duplicate nodes/connect/storage sections',()=>{
+    expect(settingsMenu.map(item=>item.id)).toEqual(['account','privacy','security','connection','files','application','about']);
     const html=render(SettingsMenu,{props:{section:'overview',items:settingsMenu,descriptions:settingsDescriptions,onSelect:()=>{}}}).body;
-    expect(html.match(/<button/g)).toHaveLength(6); expect(html).toContain('Конфиденциальность'); expect(html).not.toContain('Коннект');
+    expect(html.match(/<button/g)).toHaveLength(7); expect(html).toContain('Конфиденциальность'); expect(html).not.toContain('Коннект');
   });
   it('keeps old shortcuts pointed at their function without changing saved network data',()=>{
     expect(settingsLocation('nodes')).toMatchObject({section:'connection',connection:'nodes'});

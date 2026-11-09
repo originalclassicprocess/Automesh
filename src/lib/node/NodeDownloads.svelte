@@ -1,23 +1,23 @@
 <script lang="ts">
   import { tr as i18n } from '$lib/i18n/language';
   import { onDestroy } from 'svelte';
-  import { fetchNodeDownload, nodeDownloads, type NodeDownload, type NodePlatform } from './node-downloads';
-  import { packageVerificationCommand } from '../application/package-provenance.js';
+  import { fetchNodeDownloads, nodeDownloads, type NodeDownload, type NodePlatform } from './node-downloads';
+  import { packageVerificationArgs } from '../application/package-provenance.js';
   let values = $state<Partial<Record<NodePlatform, NodeDownload>>>({});
   let checked = $state(false); let busy = $state(false); let note = $state('');
   let alive = true; let controller: AbortController | null = null;
-  const platforms: NodePlatform[] = ['windows', 'linux'];
+  const platforms: NodePlatform[] = ['windows', 'linux', 'server'];
+  const verification=(build:NodeDownload)=>'gh '+packageVerificationArgs('./'+build.fileName,build.commit).join(' ');
   onDestroy(() => { alive = false; controller?.abort(); });
   async function refresh() {
     if (busy) return;
     busy = true; note = ''; controller = new AbortController();
     const current = controller; const timer = setTimeout(() => current.abort(), 8000);
     try {
-      const results = await Promise.all(platforms.map(async platform => {
-        try { return [platform, await fetchNodeDownload(platform, current.signal)] as const; }
-        catch { return [platform, undefined] as const; }
-      }));
-      if (alive) { values = Object.fromEntries(results); checked = true; }
+      const results = await fetchNodeDownloads(current.signal);
+      if (alive) { values = results; checked = true; }
+    } catch {
+      if(alive){checked=true;note='Не удалось получить список релизов GitHub. Попробуйте позже.';}
     } finally { clearTimeout(timer); if (alive) busy = false; }
   }
   async function copy(value: string, message = 'Контрольная сумма скопирована.') {
@@ -36,23 +36,18 @@
         <strong>{$i18n.text(nodeDownloads[platform].label)}</strong>
         {#if build}
           <small>{$i18n("m_8966a6a1eb77", {v0: (build.version), v1: (Math.ceil(build.bytes / 1024 / 1024))})}</small>
-          <a href={build.url} download>{$i18n("m_fc05f459f832", {v0: (platform === 'windows' ? 'Windows' : 'Linux')})}</a>
+          <a href={build.url} download>{$i18n("m_fc05f459f832", {v0: (platform === 'windows' ? 'Windows' : platform === 'linux' ? 'Linux' : 'Server')})}</a>
           {#if !build.signed}<small>{$i18n.text("Без цифровой подписи издателя. Не отключайте защиту системы.")}</small>{/if}
-          {#if build.provenance}
-            <small>{$i18n.text("Есть ссылка на сборку GitHub. Скачанный файл ещё нужно проверить.")}</small>
-          {:else}<small>{$i18n.text("Происхождение GitHub не подтверждено: локальная сборка.")}</small>{/if}
+          <small>{$i18n.text("Загрузка из публичного релиза GitHub. Файл можно проверить перед запуском.")}</small>
+          <a href={build.releaseUrl} target="_blank" rel="noopener noreferrer">{$i18n.text("Релиз и исходники")}</a>
           <details>
             <summary>{$i18n.text("Проверить происхождение файла")}</summary>
             <small>{$i18n.text("Проверка выполняется до запуска файла через официальный GitHub CLI. Она проверяет подпись, файл, репозиторий и процесс сборки, но не гарантирует отсутствие ошибок в программе.")}</small>
             <a href="https://cli.github.com/" target="_blank" rel="noopener noreferrer">{$i18n.text("Получить GitHub CLI")}</a>
-            {#if build.provenance}
-              <a href={`https://github.com/${build.provenance.repository}/actions/runs/${build.provenance.runId}`} target="_blank" rel="noopener noreferrer">{$i18n.text("Сборка на GitHub")}</a>
-              <small>{$i18n("m_d5cb7123852b", {v0: (build.provenance.commit)})}</small>
-              <a href={build.provenance.bundleUrl} download>{$i18n.text("Скачать подтверждение")}</a>
-            {/if}
+            <small>{$i18n("m_d5cb7123852b", {v0: (build.commit ?? '')})}</small>
             <small>{$i18n.text("В папке со скачанным файлом выполните команду. При ошибке проверки не устанавливайте пакет. У локальной сборки подтверждения может ещё не быть.")}</small>
-            <code>{packageVerificationCommand(platform, build.provenance?.commit)}</code>
-            <button onclick={() => copy(packageVerificationCommand(platform, build.provenance?.commit), 'Команда проверки скопирована.')}>{$i18n.text("Скопировать команду проверки")}</button>
+            <code>{verification(build)}</code>
+            <button onclick={() => copy(verification(build), 'Команда проверки скопирована.')}>{$i18n.text("Скопировать команду проверки")}</button>
             <small>{$i18n.text("SHA-256 подтверждает совпадение файла, но не защищает от взлома сайта загрузки.")}</small>
             <code>{build.sha256}</code><button onclick={() => copy(build.sha256)}>{$i18n.text("Скопировать SHA-256")}</button>
           </details>
