@@ -38,6 +38,8 @@ describe('verifiable public app release',()=>{
   expect(workflow).toContain('workflow_dispatch:');expect(workflow).not.toMatch(/pull_request|workflow_run|secrets\.|deploy-client/);
   expect(workflow.indexOf('gh attestation verify')).toBeLessThan(workflow.indexOf('gh release create'));
   expect(workflow).toContain('refusing overwrite');
+  expect(workflow).toContain('path: .release/publication');
+  expect(workflow).not.toMatch(/(?:path: |subject-path: |mkdir )downloads/);
   for(const action of workflow.matchAll(/uses: (actions\/[^\s@]+)@([^\s]+)/g))expect(action[2]).toMatch(/^[a-f0-9]{40}$/);
  });
 });

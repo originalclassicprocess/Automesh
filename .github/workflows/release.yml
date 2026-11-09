@@ -46,16 +46,17 @@ jobs:
         shell: bash
         run: |
           node --input-type=module -e "import {validateRelease} from './server/deployment.mjs'; validateRelease('.release/automesh-public-release');"
-          mkdir downloads
-          tar -czf "downloads/Automesh-App-$RELEASE_VERSION-update.tar.gz" -C .release/automesh-public-release .
-          cp .release/automesh-public-release/docs/build-info.json "downloads/Automesh-App-$RELEASE_VERSION-source.json"
+          mkdir -p .release/publication
+          tar -czf ".release/publication/Automesh-App-$RELEASE_VERSION-update.tar.gz" -C .release/automesh-public-release .
+          cp .release/automesh-public-release/docs/build-info.json ".release/publication/Automesh-App-$RELEASE_VERSION-source.json"
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: downloads/*.tar.gz
+          subject-path: .release/publication/*.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: public-app-release
-          path: downloads/
+          path: .release/publication/
+          include-hidden-files: true # Only the verified archive and public source metadata.
           if-no-files-found: error
           retention-days: 14
   publish:
@@ -79,15 +80,15 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: public-app-release
-          path: downloads
+          path: .release/publication
       - name: Verify source before publishing
         shell: bash
         run: |
           node scripts/release-context.mjs
-          gh attestation verify "downloads/Automesh-App-$RELEASE_VERSION-update.tar.gz" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --signer-digest "$GITHUB_SHA" --deny-self-hosted-runners --cert-oidc-issuer https://token.actions.githubusercontent.com --predicate-type https://slsa.dev/provenance/v1
+          gh attestation verify ".release/publication/Automesh-App-$RELEASE_VERSION-update.tar.gz" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --signer-digest "$GITHUB_SHA" --deny-self-hosted-runners --cert-oidc-issuer https://token.actions.githubusercontent.com --predicate-type https://slsa.dev/provenance/v1
       - name: Publish versioned assets
         shell: bash
         run: |
           tag="v$RELEASE_VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then echo 'Release already exists; refusing overwrite'; exit 1; fi
-          gh release create "$tag" downloads/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Automesh $RELEASE_VERSION" --notes-file docs/RELEASE_0_5_3.md --latest
+          gh release create "$tag" .release/publication/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Automesh $RELEASE_VERSION" --notes-file docs/RELEASE_0_5_3.md --latest
