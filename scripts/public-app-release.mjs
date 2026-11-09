@@ -39,9 +39,11 @@ export function checkArchiveListing(names, types) {
   if (lines.length !== paths.length || lines.some(line => !/^[-d]/.test(line))) throw Error('Archive links or special files forbidden');
   let total = 0;
   for (const line of lines) {
-    const size = line.trim().split(/\s+/)[2];
-    if (!/^\d+$/.test(size ?? '')) throw Error('Unrecognized tar listing');
-    total += Number(size);
+    // GNU tar lists owner/group in one column; bsdtar (Windows/macOS) also
+    // lists link count and separate owner/group columns. Never count an UID as bytes.
+    const match = /^\S+\s+\S+\/\S+\s+(\d+)\s/.exec(line) ?? /^\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s/.exec(line);
+    if (!match || !Number.isSafeInteger(Number(match[1]))) throw Error('Unrecognized tar listing');
+    total += Number(match[1]);
     if (total > 512 * 1024 * 1024) throw Error('Expanded archive size limit');
   }
 }

@@ -25,6 +25,8 @@ describe('verifiable public app release',()=>{
  it('rejects archive links, duplicates, traversal and expanded size bombs before extraction',()=>{
   const line='-rw-r--r-- runner/runner 12 2026-11-09 00:00 ./app.cjs';
   checkArchiveListing('./app.cjs',line);
+  checkArchiveListing('./app.cjs','-rw-r--r--  0 1001  1001  12 Nov 09 00:00 ./app.cjs');
+  expect(()=>checkArchiveListing('./app.cjs','-rw-r--r--  0 0  0  9999999999 Nov 09 00:00 ./app.cjs')).toThrow('Expanded archive');
   for(const [names,types] of [['../a',line],['./a\n./a',line+'\n'+line],['./a',line.replace(/^-/,'l')],['./a',line.replace(' 12 ',' 9999999999 ')]])
    expect(()=>checkArchiveListing(names,types)).toThrow();
   expect(()=>verificationOrigin('https://user:secret@example.test')).toThrow();
