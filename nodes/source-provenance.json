@@ -187,7 +187,7 @@
     },
     {
       "path": "docs/GITHUB_NEW_HOSTING.md",
-      "sha256": "2819bde33a6970eeaae9ec48239d902f121b8734dcdafff7fb40cc9d503d5576"
+      "sha256": "f2684fdc467b0c9322c3fceed864d10f4eaf967c657e6b9ac97e1efb9d94def2"
     },
     {
       "path": "docs/HOME_NODE_CONNECTION_DESIGN.md",
@@ -439,7 +439,7 @@
     },
     {
       "path": "SECURITY.md",
-      "sha256": "eaa97765553ccc597bdd484236acb98676e512df0ef72abd5f2098f6d604ca49"
+      "sha256": "0b3082a940e74e104f3d4e4f2f20f6933defb3ee6ec44f91c75197cc7d724993"
     },
     {
       "path": "SECURITY.ru.md",

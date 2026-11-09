@@ -4,7 +4,7 @@ Experimental preview software. Internal checks do not replace an independent
 security/cryptography audit. Do not rely on this preview for high-risk
 communication or irreplaceable data.
 
-Use **Security → Report a vulnerability** when private reporting is enabled.
+Use **Security → Report a vulnerability** for a private report.
 If unavailable, request a private channel in an issue without exploit details
 or secrets. No private contact address is invented here. Do not post seeds,
 passwords, node master keys, deployment tokens, private QR invitations or chats.
