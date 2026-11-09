@@ -2,10 +2,15 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, copyFile, writeFile } from 'n
 import { resolve, join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalSourceChecksum } from './source-checksum.mjs';
+import { execFileSync } from 'node:child_process';
 const root = fileURLToPath(new URL('../', import.meta.url)), target = join(root, 'nodes');
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== '--source') throw new Error('Usage: sync-node-source.mjs --source <canonical node repository>');
 const source = resolve(args[1]);
+const git = (...args) => execFileSync('git', args, { cwd: source, encoding: 'utf8', windowsHide: true }).trim();
+const repository = 'originalclassicprocess/automesh-nodes', commit = git('rev-parse', 'HEAD');
+if (!/^[a-f0-9]{40}$/.test(commit) || git('status', '--porcelain') ||
+    git('remote', 'get-url', 'origin') !== `https://github.com/${repository}.git`) throw new Error('Clean canonical public checkout required');
 const overlap = relative(target, source);
 if (!overlap || (!overlap.startsWith('..') && !isAbsolute(overlap))) throw new Error('Source must be an independent checkout');
 const allowed = ['package.json', 'package-lock.json', '.gitignore', 'LICENSE', 'README.md', 'README.ru.md', 'CHANGELOG.md', 'HISTORY.md', 'CONTRIBUTING.md', 'SECURITY.md', 'SECURITY.ru.md', 'THIRD_PARTY_NOTICES.md', 'app.cjs', 'packages', 'adapters', 'scripts', 'test', 'docs', '.github', 'ui'];
@@ -38,5 +43,5 @@ for (const path of paths.sort()) {
   files.push({ path, sha256: hash });
 }
 // Old extra files are preserved, not removed. Neither checkout's Git state is touched.
-await writeFile(join(target, 'source-provenance.json'), JSON.stringify({ version: JSON.parse(await readFile(join(source, 'package.json'), 'utf8')).version, files }, null, 2) + '\n');
+await writeFile(join(target, 'source-provenance.json'), JSON.stringify({ repository, commit, version: JSON.parse(await readFile(join(source, 'package.json'), 'utf8')).version, files }, null, 2) + '\n');
 process.stdout.write(`Node source synchronized: ${changed} files changed; ${files.length} public files verified.\nPrevious versions preserved in ${backup}\n`);

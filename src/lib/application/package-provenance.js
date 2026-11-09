@@ -1,7 +1,7 @@
 // Distribution/UI policy, not the portable node protocol. Trust is pinned in
 // application code, never supplied by a download site.
 export const packageRepository = 'originalclassicprocess/automesh-nodes';
-export const packageWorkflow = `${packageRepository}/.github/workflows/preview-build.yml`;
+export const packageWorkflow = `${packageRepository}/.github/workflows/release.yml`;
 export const packageRef = 'refs/heads/main';
 export const packageArtifacts = {
   windows: { file: 'Automesh-Node-Setup.exe', manifest: 'node-release.json' },

@@ -23,6 +23,7 @@ jobs:
       - run: npm --prefix nodes audit --audit-level=moderate
       - run: npm run check
       - run: npm run i18n:check
+      - run: node scripts/check-public-node-source.mjs
       - run: npm run check:core
       - run: npm test
       - run: npm run build

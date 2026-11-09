@@ -1,13 +1,17 @@
 import { parsePackageProvenance } from '../application/package-provenance.js';
+import { fetchPublicRelease, nodeRepository, type PublicRelease } from '../application/public-releases';
 
-export type NodePlatform = 'windows' | 'linux';
+export type NodePlatform = 'windows' | 'linux' | 'server';
 export const nodeDownloads = {
   windows: { manifest: '/downloads/node-release.json', url: '/downloads/Automesh-Node-Setup.exe', label: 'Windows · x64' },
-  linux: { manifest: '/downloads/node-linux-release.json', url: '/downloads/Automesh-Node-Linux-x64.tar.gz', label: 'Linux · x64' }
+  linux: { manifest: '/downloads/node-linux-release.json', url: '/downloads/Automesh-Node-Linux-x64.tar.gz', label: 'Linux · x64' },
+  server: { manifest: '', url: '', label: 'Server · cPanel' }
 } as const;
 export type NodeDownload = { version: string; url: string; bytes: number; sha256: string; signed: boolean;
+  fileName?:string; commit?:string; releaseUrl?:string;
   provenance?: NonNullable<ReturnType<typeof parsePackageProvenance>> };
 export function parseNodeDownload(platform: NodePlatform, raw: unknown): NodeDownload {
+  if(platform==='server')throw new Error('invalid_download');
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid_download');
   const value = raw as Record<string, unknown>;
   if (value.url !== nodeDownloads[platform].url || typeof value.version !== 'string' ||
@@ -20,21 +24,18 @@ export function parseNodeDownload(platform: NodePlatform, raw: unknown): NodeDow
     ...(provenance ? { provenance } : {}) };
 }
 export async function fetchNodeDownload(platform: NodePlatform, signal: AbortSignal, request = fetch): Promise<NodeDownload> {
-  signal.throwIfAborted();
-  const response = await request(nodeDownloads[platform].manifest, { signal, cache: 'no-store', redirect: 'error', credentials: 'omit' });
-  if (!response.ok || !response.body) throw new Error('download_unavailable');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = []; let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read(); if (done) break;
-      size += value.length; if (size > 8192) throw new Error('invalid_download'); chunks.push(value);
-    }
-    signal.throwIfAborted();
-    const bytes = new Uint8Array(size); let offset = 0;
-    for (const part of chunks) { bytes.set(part, offset); offset += part.length; }
-    let raw: unknown; try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
-    catch { throw new Error('invalid_download'); }
-    return parseNodeDownload(platform, raw);
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  const release=await fetchPublicRelease(nodeRepository,signal,request);
+  return nodeDownloadFromRelease(platform,release);
+}
+function nodeDownloadFromRelease(platform:NodePlatform,release:PublicRelease):NodeDownload {
+  const fileName=platform==='windows'?'Automesh-Node-Setup.exe':platform==='linux'?'Automesh-Node-Linux-x64.tar.gz':`Automesh-Server-Node-${release.version}-cPanel.tar.gz`;
+  const asset=release.assets.find(a=>a.name===fileName);
+  if(!asset || asset.bytes<(platform==='server'?1024:1024*1024))throw Error('download_unavailable');
+  return {version:release.version,url:asset.url,bytes:asset.bytes,sha256:asset.sha256,signed:false,
+    fileName,commit:release.commit,releaseUrl:release.url};
+}
+export async function fetchNodeDownloads(signal:AbortSignal,request=fetch):Promise<Partial<Record<NodePlatform,NodeDownload>>> {
+  const release=await fetchPublicRelease(nodeRepository,signal,request), result:Partial<Record<NodePlatform,NodeDownload>>={};
+  for(const platform of ['windows','linux','server'] as const){try{result[platform]=nodeDownloadFromRelease(platform,release);}catch{/* A missing edition is unavailable, not an invented build. */}}
+  return result;
 }

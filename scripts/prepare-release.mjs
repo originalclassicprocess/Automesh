@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve, join, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import { buildInformation } from './build-info.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const build = join(root, 'build');
@@ -84,7 +85,8 @@ copy('docs/CHAT_UX_AND_EPHEMERAL.md');
 copy('docs/DATA_BACKUP_V1.md');
 copy('docs/DEVICE_REPLICATION_STAGE.md');
 copy('docs/DEVICE_HISTORY_TRANSFER.md');
-copy('docs/CLEAN_START.md');
+copy('docs/CLEAN_START.md'); copy('docs/VERIFY_RELEASE.md');
+writeFileSync(join(destination, 'docs/build-info.json'), JSON.stringify(buildInformation(root), null, 2) + '\n');
 // Retain only immutable resources, never the old HTML/worker/server. Existing
 // current assets win; old tabs can still load their own hashed modules.
 for (const previousRelease of previousReleases) cpSync(join(previousRelease, 'build/client/_app/immutable'),

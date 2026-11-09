@@ -1,17 +1,17 @@
-export type SettingsSection = 'overview' | 'account' | 'privacy' | 'security' | 'connection' | 'files' | 'application';
+export type SettingsSection = 'overview' | 'account' | 'privacy' | 'security' | 'connection' | 'files' | 'application' | 'about';
 export type LegacySettingsSection = SettingsSection | 'nodes' | 'connect' | 'storage';
 export type ConnectionSection = 'overview' | 'nodes' | 'connect' | 'diagnostics' | 'direct' | 'servers' | 'outgoing' | 'incoming' | 'parameters' | 'recovery' | 'radio';
 export type MediaSettingsSection = 'overview' | 'files' | 'storage';
 export const settingsMenu: { id: SettingsSection; label: string }[] = [
   { id:'account',label:'Профиль' }, { id:'privacy',label:'Конфиденциальность' },
   { id:'security',label:'Безопасность' }, { id:'connection',label:'Связь и ноды' },
-  { id:'files',label:'Медиа и хранилище' }, { id:'application',label:'Приложение' },
+  { id:'files',label:'Медиа и хранилище' }, { id:'application',label:'Приложение' }, { id:'about',label:'О проекте' },
 ];
 export const settingsDescriptions: Record<SettingsSection,string> = {
   overview:'Выберите раздел. Настройки профиля действуют на этом устройстве.',
   account:'Фото, имя, Mesh ID и профили.', privacy:'Отметки о прочтении, пересылка и метаданные фото.',
   security:'Устройства, пароль и резервные копии.', connection:'Соединения и доставка сообщений.',
-  files:'GIF, стикеры, загрузки и очистка.', application:'Тема, обновления и запуск без сайта.',
+  files:'GIF, стикеры, загрузки и очистка.', application:'Тема, обновления и запуск без сайта.', about:'Версия, исходники и ссылки проекта.',
 };
 export const connectionMenu = [
   {id:'servers',label:'Сигналинг',detail:'Поиск собеседников и настройка соединений'},
