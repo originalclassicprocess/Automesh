@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanedHistory, formatBytes, managedFiles } from './storage-summary';
+import { cleanedHistory, formatBytes, managedFiles, filterStoredFiles, fileBytes, chatStorageUsage, type ManagedFile } from './storage-summary';
 import type { LocalChatData } from '$lib/chat/local-store';
 import { emptySessionChats, ensureConversation, updateConversation } from '$lib/chat/session-chats';
 describe('storage dashboard without secrets', () => {
@@ -27,6 +27,28 @@ describe('storage dashboard without secrets', () => {
     expect(files).toHaveLength(2); expect(files[0]).toMatchObject({ name: 'photo.png', category: 'image', bytes: 38, memoryBytes: 10 });
     expect(files[1]).toMatchObject({ name: 'Файл вне истории', category: 'other', peer: '' });
     expect(files).not.toContainEqual(expect.objectContaining({ bytes: 1000 }));
+  });
+  it('filters by inclusive local calendar dates, excludes unknown dates and never expands invalid ranges', () => {
+    const item=(id:string,timestamp?:number):ManagedFile=>({id,peer:'p',messageId:id,name:`${id}.jpg`,category:'image',bytes:100,memoryBytes:80,timestamp});
+    const rows=[item('early',new Date(2026,10,10,23,59).getTime()),item('start',new Date(2026,10,11).getTime()),
+      item('end',new Date(2026,10,11,23,59,59,999).getTime()),item('later',new Date(2026,10,12).getTime()),item('unknown')];
+    expect(filterStoredFiles(rows,{from:'2026-11-11',to:'2026-11-11'}).map(f=>f.id)).toEqual(['end','start']);
+    expect(filterStoredFiles(rows,{from:'2026-02-30'})).toEqual([]);
+    expect(filterStoredFiles(rows,{from:'2026-11-12',to:'2026-11-10'})).toEqual([]);
+    expect(filterStoredFiles(rows,{peer:'other'})).toEqual([]);
+    expect(filterStoredFiles(rows,{query:'start'}).map(f=>f.id)).toEqual(['start']);
+    const archive:LocalChatData={selfNickname:'',readReceiptsEnabled:true,autoLockMinutes:15,peerReadPreferences:{},aliases:{},declaredNames:{},peerPublicKeys:{},
+      chats:{order:['p'],byPeer:{p:{messages:rows.filter(f=>f.timestamp!==undefined).map(f=>({id:f.id,from:'p',timestamp:f.timestamp!,direction:'incoming',text:'',file:{id:f.id,name:f.name,mime:'image/jpeg',size:80,sha256:'a'.repeat(64)}}))}}}};
+    const cleaned=cleanedHistory(archive,filterStoredFiles(rows,{from:'2026-11-11',to:'2026-11-11'}).map(f=>`p:${f.id}`));
+    expect(cleaned.chats.byPeer.p.messages.filter(m=>m.fileDeleted).map(m=>m.id)).toEqual(['start','end']);
+    expect(archive.chats.byPeer.p.messages.some(m=>m.fileDeleted)).toBe(false);
+  });
+  it('counts a disk and resident copy once and groups unattached files separately', () => {
+    const rows:ManagedFile[]=[{id:'p:a',peer:'p',messageId:'a',name:'a',category:'other',bytes:100,memoryBytes:80},
+      {id:'p:b',peer:'p',messageId:'b',name:'b',category:'other',bytes:0,memoryBytes:40},
+      {id:'orphan',peer:'',messageId:'',name:'orphan',category:'other',bytes:20,memoryBytes:0}];
+    expect(rows.map(fileBytes)).toEqual([100,40,20]);
+    expect(chatStorageUsage(ensureConversation(emptySessionChats(),'p'),rows)).toMatchObject([{peer:'p',bytes:140,files:2},{peer:'',bytes:20,files:1}]);
   });
   it('formats payload size without claiming to measure physical RAM', () => {
     expect(formatBytes(0)).toBe('0 Б'); expect(formatBytes(1024)).toBe('1.0 КБ');

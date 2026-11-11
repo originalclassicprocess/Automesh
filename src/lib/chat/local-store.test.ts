@@ -17,8 +17,8 @@ describe('encrypted local chat data', () => {
   it('encrypts native channel history separately from account chats and retains it in portable data without radio secrets',async()=>{
     const key=await deriveChatStoreKey(new Uint8Array(32).fill(25),accountId);
     const data:LocalChatData={selfNickname:'',readReceiptsEnabled:true,autoLockMinutes:15,peerReadPreferences:{},aliases:{},declaredNames:{},peerPublicKeys:{},chats:{order:[],byPeer:{}},
-      meshtastic:{enabled:true,channels:[{key:'a'.repeat(64),node:100,index:1,name:'City',public:true,signature:false,unread:1,messages:[{id:7,from:200,name:'🌲',text:'native channel private local copy',timestamp:1000,outgoing:false,status:'accepted'}]}]}};
-    const sealed=await sealChatData(key,accountId,data);expect(new TextDecoder().decode(sealed.cipher)).not.toContain('native channel');
+      meshtastic:{enabled:true,configured:true,showAll:false,historyLimit:500,channels:[{key:'a'.repeat(64),node:100,index:1,name:'City',public:true,encryption:'default',boardName:'🌲',draft:'unfinished encrypted draft',replyId:7,deleted:['200:9'],signature:false,unread:1,messages:[{id:7,from:200,name:'🌲',text:'native channel private local copy',timestamp:1000,outgoing:false,status:'accepted',replyId:6}]}]}};
+    const sealed=await sealChatData(key,accountId,data);expect(new TextDecoder().decode(sealed.cipher)).not.toContain('native channel');expect(new TextDecoder().decode(sealed.cipher)).not.toContain('unfinished encrypted draft');
     const restored=await openSealedChatData(key,accountId,sealed);expect(restored.meshtastic).toEqual(data.meshtastic);expect(restored.chats.order).toEqual([]);
     const portable=portableChatData(restored);expect(portable.meshtastic).toEqual(data.meshtastic);expect(portable.radioState).toBeUndefined();
     expect(dataOnlyChatData(restored).meshtastic).toEqual(data.meshtastic);expect(dataDestinationEmpty(restored,accountId)).toBe(false);

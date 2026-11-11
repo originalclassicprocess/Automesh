@@ -107,13 +107,14 @@ export function toRadioPacket(to: number, channel: number, id: number, payload: 
   const packet = concat(fixed(2, to), uint(3, channel), binary(4, data), fixed(6, id), uint(9, wantAck ? 1 : 0), uint(10, wantAck ? 1 : 0));
   return binary(1, packet);
 }
-export function toChannelTextPacket(channel:number,id:number,text:string):Uint8Array {
+export function toChannelTextPacket(channel:number,id:number,text:string,replyId?:number):Uint8Array {
   const payload=new TextEncoder().encode(text);
   if(!Number.isInteger(channel)||channel<0||channel>7||!Number.isInteger(id)||id<=0||id>0xffffffff||!text.trim()||payload.length>200)throw Error('meshtastic_text_too_large');
   // Standard Meshtastic text from the board, broadcast to its configured channel.
   // Firmware reliability feedback uses an implicit ACK from a heard rebroadcast,
   // not individual ACKs from everyone. No application-level automatic retries.
   // MQTT upload is off; firmware retains its normal hop/airtime/retry policy.
-  const data=concat(uint(1,TEXT_MESSAGE_APP),binary(2,payload),uint(9,0));
+  if(replyId!==undefined&&(!Number.isInteger(replyId)||replyId<=0||replyId>0xffffffff))throw Error('radio_invalid_integer');
+  const data=concat(uint(1,TEXT_MESSAGE_APP),binary(2,payload),...(replyId?[fixed(7,replyId)]:[]),uint(9,0));
   return binary(1,concat(fixed(2,0xffffffff),uint(3,channel),binary(4,data),fixed(6,id),uint(10,1)));
 }

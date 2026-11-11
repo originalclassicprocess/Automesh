@@ -443,6 +443,22 @@ describe('identity and signed chat messages', () => {
     await sender.disconnect(); await receiver.disconnect();
   });
 
+  it('exchanges signed profile links privately, without chat messages, and rejects invalid controls', async () => {
+    const { senderIdentity, receiverIdentity, sender, receiver, senderTransport } = await connectedPair();
+    const links: unknown[] = [], messages: ChatMessage[] = [], receipts: string[] = [];
+    receiver.onProfileLinks((peer, value) => links.push({peer,value}));
+    receiver.onMessage(message => messages.push(message)); sender.onReceipt((peer,id) => receipts.push(`${peer}:${id}`));
+    const value=[{label:'Site',url:'https://example.com/'}];
+    await sender.sendProfileLinks(value,receiverIdentity.address);
+    await vi.waitFor(()=>expect(links).toEqual([{peer:senderIdentity.address,value}]));
+    expect(new TextDecoder().decode(senderTransport.sentMessage!.payload)).not.toContain('example.com');
+    await (sender as unknown as {sendPayload(value:string,peer:string):Promise<void>}).sendPayload('\u0000mesh-profile-links-v1:[{"label":"unsafe","url":"javascript:alert(1)"}]',receiverIdentity.address);
+    await sender.sendProfileLinks([],receiverIdentity.address);
+    await vi.waitFor(()=>expect(links).toHaveLength(2));expect(links[1]).toEqual({peer:senderIdentity.address,value:[]});
+    expect(messages).toHaveLength(0);expect(receipts).toHaveLength(0);
+    await sender.disconnect();await receiver.disconnect();
+  });
+
   it('exchanges encrypted avatars and explicit removal without messages or receipts', async () => {
     const { senderIdentity, receiverIdentity, sender, receiver, senderTransport } = await connectedPair();
     const photos: string[] = [], messages: ChatMessage[] = [], receipts: string[] = [];

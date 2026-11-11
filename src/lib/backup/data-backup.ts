@@ -13,7 +13,7 @@ const bytes = (value: Uint8Array) => new Uint8Array(value).buffer as ArrayBuffer
 const invalid = (): never => { throw new Error('backup_invalid'); };
 const exact = (value: unknown, names: string[]): value is Record<string, any> => !!value && typeof value === 'object' &&
   !Array.isArray(value) && Object.keys(value).sort().join(',') === [...names].sort().join(',');
-const DATA_FIELDS = ['selfNickname', 'selfAvatar', 'peerAvatars', 'mediaLibrary', 'readReceiptsEnabled',
+const DATA_FIELDS = ['selfNickname', 'selfAvatar', 'peerAvatars', 'selfLinks', 'peerLinks', 'mediaLibrary', 'readReceiptsEnabled',
   'autoLockMinutes', 'autoReceiveFilesEnabled', 'autoPlayVideoEnabled', 'cleanImageMetadataEnabled',
   'allowForwardAttribution', 'peerReadPreferences', 'aliases', 'declaredNames', 'peerPublicKeys', 'chats', 'meshtastic'] as const;
 export type DataBackupContents = FullBackupContents & { accountId: string };

@@ -371,3 +371,21 @@ describe('recipient board proof and queue lifecycle', () => {
     }finally{await radio.close();}
   });
 });
+
+
+describe('native reply Phone API interoperability',()=>{
+  it('reads and sends broadcast replies, keeping reactions out of the text history',async()=>{
+    const fixture=fakePort(),radio=new SerialRadio(),incoming:import('./native-channels').ChannelText[]=[];
+    radio.onChannelText=packet=>incoming.push(packet);
+    try{
+      await radio.open(fixture.port);
+      const text=(id:number,extra:Uint8Array)=>binary(2,concat(fixed(1,200),fixed(2,0xffffffff),uint(3,0),fixed(6,id),binary(4,concat(uint(1,1),binary(2,new TextEncoder().encode('reply')),extra))));
+      fixture.push(text(10,fixed(7,9)));fixture.push(text(11,concat(fixed(7,9),fixed(8,1))));
+      await until(()=>radio.diagnostics.incoming===2);
+      expect(incoming).toHaveLength(1);expect(incoming[0]).toMatchObject({id:10,replyId:9,from:200,channel:0,text:'reply'});
+      await radio.sendChannelText(0,12,'answer',10);
+      const packet=fields(bytesField(fields(fixture.writes.at(-1)!.slice(4)),1));
+      expect(numberField(fields(bytesField(packet,4)),7)).toBe(10);expect(numberField(packet,2)).toBe(0xffffffff);
+    }finally{await radio.close();}
+  });
+});
