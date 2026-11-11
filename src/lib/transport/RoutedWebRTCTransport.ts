@@ -226,12 +226,7 @@ export class RoutedWebRTCTransport implements Transport {
           }
           return this.running && this.nodes.includes(node) && node.transport.getStatus() === 'connected';
         };
-        if (!result.registryId) return await register();
-        const id = result.registryId, previous = this.registrations.get(id);
-        const attempt = (previous ?? Promise.resolve(false)).catch(() => false).then(register);
-        this.registrations.set(id, attempt);
-        try { return await attempt; }
-        finally { if (this.registrations.get(id) === attempt) this.registrations.delete(id); }
+        return await this.atRegistry(result.registryId, register);
       } catch (error) {
         node.status = 'offline';
         node.error = error instanceof Error ? error.message : 'node_unreachable';
@@ -242,6 +237,29 @@ export class RoutedWebRTCTransport implements Transport {
         return false;
       } finally { node.abort = undefined; this.refreshStatus(); }
     })().finally(() => { node.pending = undefined; });
+    return node.pending;
+  }
+
+  private atRegistry(id: string | undefined, work: () => Promise<boolean>): Promise<boolean> {
+    // Renewal and first registration share the gate. Otherwise a foreground
+    // renewal can temporarily look offline to configuration/maintenance and
+    // cause a second registration on this listener or one of its LAN aliases.
+    const previous = id ? this.registrations.get(id) : undefined;
+    const attempt = (previous ?? Promise.resolve(false)).catch(() => false).then(work);
+    if (id) this.registrations.set(id, attempt);
+    return attempt.finally(() => {
+      if (id && this.registrations.get(id) === attempt) this.registrations.delete(id);
+    });
+  }
+
+  private renewNode(node: Node): Promise<boolean> {
+    if (node.pending) return node.pending;
+    const pending = this.atRegistry(node.registryId, async () => {
+      if (!this.running || this.policyBlocked || !this.nodes.includes(node) || node.status !== 'connected') return false;
+      await node.transport.resume?.();
+      return this.running && this.nodes.includes(node) && node.transport.getStatus() === 'connected';
+    });
+    node.pending = pending.finally(() => { node.pending = undefined; this.refreshStatus(); });
     return node.pending;
   }
 
@@ -264,7 +282,7 @@ export class RoutedWebRTCTransport implements Transport {
     this.resuming = (async () => {
       // Offline listeners must go through ensureNode's alias/registration gate.
       // An already connected listener can renew its own socket in place.
-      await Promise.all(this.nodes.filter(n => n.status === 'connected' && !n.alias).map(n => n.transport.resume?.().catch(() => {})));
+      await Promise.all(this.nodes.filter(n => n.status === 'connected' && !n.alias).map(n => this.renewNode(n).catch(() => false)));
       if (this.running) await this.maintain();
     })().finally(() => { this.resuming = null; });
     return this.resuming;

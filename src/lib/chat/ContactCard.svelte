@@ -6,6 +6,8 @@
   import { formatBytes } from '$lib/application/storage-summary';
   import HelpInfo from '$lib/application/HelpInfo.svelte';
   import Avatar from './Avatar.svelte';
+  import ProfileLinks from './ProfileLinks.svelte';
+  import type { ProfileLink } from './profile-links';
   import ContactShare from './ContactShare.svelte';
   import type {Snippet} from 'svelte';
   import ChatIcon from './ChatIcon.svelte';
@@ -13,14 +15,14 @@
   import type { AvatarCrop } from './avatar-crop';
   let { accountId, nickname, alias, qr, copied, blocked, hasChat, messages, urls, errors,
     copy, rename, toggleBlock, openChat, openMessage, preview, canOpen, self = false, editOwn, share, sharing = false,
-    photo = '', photoBusy = false, photoError = '', changePhoto, contactUrl = '',openLibrary,accountActions,radioActions }:
+    links = [], saveLinks, photo = '', photoBusy = false, photoError = '', changePhoto, contactUrl = '',openLibrary,accountActions,radioActions }:
     { accountId: string; nickname: string; alias: string; qr: string; copied: boolean;
       blocked: boolean; hasChat: boolean; messages: ChatEntry[]; urls: Record<string, string>; errors: Record<string, boolean>;
       copy: () => void; rename: (name: string) => boolean; toggleBlock: () => void;
       openChat: () => void; openMessage: (id: string) => void;
       preview: (node: HTMLElement, details: { peer: string; id: string }) => { destroy(): void };
       canOpen: (message: ChatEntry) => boolean; self?: boolean; editOwn?: () => void;
-      share: () => void; sharing?: boolean; photo?: string; photoBusy?: boolean; photoError?: string; changePhoto?: (file: File | null, crop?: AvatarCrop) => void; contactUrl?: string;openLibrary?:()=>void;accountActions?:Snippet;radioActions?:Snippet } = $props();
+      share: () => void; sharing?: boolean; links?: ProfileLink[]; saveLinks?: (links: ProfileLink[]) => Promise<boolean>; photo?: string; photoBusy?: boolean; photoError?: string; changePhoto?: (file: File | null, crop?: AvatarCrop) => void; contactUrl?: string;openLibrary?:()=>void;accountActions?:Snippet;radioActions?:Snippet } = $props();
   let editing = $state(false); let draft = $state(''); let mediaOpen = $state(false);
   let category = $state<ContactMediaCategory>('all'); let limit = $state(24);
   const categories: { id: ContactMediaCategory; label: string }[] = [
@@ -63,6 +65,7 @@
       <ContactShare {accountId} {contactUrl} {qr} {copied} onCopy={copy} onShare={share} {sharing} showPattern={!!photo} />
     </section>
   </div>
+  <ProfileLinks {links} onSave={self ? saveLinks : undefined} />
   {#if self&&radioActions}{@render radioActions()}{/if}
   {#if mediaOpen}
     <section aria-label={$i18n.text("Вложения с собеседником")}>

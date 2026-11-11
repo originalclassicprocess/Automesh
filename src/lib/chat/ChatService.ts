@@ -14,6 +14,7 @@ import { SecureSessions } from './secure-session';
 import { decodeFileChunk, encodeFileChunk, normalizeFileOffer, type FileOffer } from './file-transfer';
 import { encodeChatContent, decodeChatContent, type MessageDetails } from './message-details';
 import { normalizeAvatar } from './avatar';
+import { normalizeProfileLinks, readProfileLinksPacket, type ProfileLink } from './profile-links';
 import { CALL_PREFIX, decodeCallSignal, encodeCallSignal, type CallSignal } from '$lib/calls/protocol';
 
 // ------------------------------------------------------------
@@ -75,6 +76,7 @@ export class ChatService {
   private fileControlHandlers: Array<(peer: string, id: string, action: 'accept' | 'reject' | 'received' | 'cancel') => unknown> = [];
   private fileChunkHandlers: Array<(peer: string, id: string, index: number, chunk: Uint8Array) => unknown> = [];
   private profileHandlers:      Array<(accountId: string, nickname: string) => void> = [];
+  private profileLinksHandlers: Array<(peer: string, links: ProfileLink[]) => void> = [];
   private avatarHandlers: Array<(accountId: string, avatar: string) => void> = [];
   private callHandlers: Array<(peer: string, signal: CallSignal) => unknown> = [];
   private disconnectHandlers: Array<() => void> = [];
@@ -240,6 +242,14 @@ export class ChatService {
     if (cleaned.length > 32 || /[\u0000-\u001f\u007f]/.test(cleaned)) throw new Error('invalid_nickname');
     await this.sendPayload(`\u0000mesh-profile-v1:${cleaned}`, toPeerAddress);
   }
+
+  async sendProfileLinks(links: ProfileLink[], peer: string): Promise<void> {
+    const cleaned = normalizeProfileLinks(links);
+    if (cleaned.length !== links.length) throw new Error('invalid_profile_links');
+    await this.sendPayload(`\u0000mesh-profile-links-v1:${JSON.stringify(cleaned)}`, peer);
+  }
+
+  onProfileLinks(cb: (peer: string, links: ProfileLink[]) => void): void { this.profileLinksHandlers.push(cb); }
 
   async sendAvatar(avatar: string, peer: string): Promise<void> {
     if (avatar !== '' && !normalizeAvatar(avatar)) throw new Error('invalid_avatar');
@@ -474,6 +484,11 @@ export class ChatService {
         if (nickname.length <= 32 && !/[\u0000-\u001f\u007f]/.test(nickname)) {
           for (const handler of this.profileHandlers) handler(from, nickname);
         }
+        return;
+      }
+      if (content.startsWith('\u0000mesh-profile-links-v1:')) {
+        const links = readProfileLinksPacket(content.slice('\u0000mesh-profile-links-v1:'.length));
+        if (links) for (const handler of this.profileLinksHandlers) handler(from, links);
         return;
       }
       if (content.startsWith('\u0000mesh-avatar-v1:')) {

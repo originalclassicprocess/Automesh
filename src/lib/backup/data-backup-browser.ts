@@ -9,7 +9,7 @@ export function dataDestinationEmpty(data: LocalChatData, accountId: string): bo
     const conversation = data.chats.byPeer[peer];
     return conversation.messages.length || conversation.deletedIds?.length ||
       peer !== accountId && conversation.contact !== 'new';
-  }) && !Object.keys(data.aliases).length && !Object.keys(data.peerPublicKeys).length &&
+  }) && !(data.selfLinks?.length) && !Object.values(data.peerLinks ?? {}).some(links=>links.length) && !Object.keys(data.aliases).length && !Object.keys(data.peerPublicKeys).length &&
     !(data.mediaLibrary?.assets.length) && !(data.mediaLibrary?.packs.length) &&
     !data.meshtastic?.channels.some(channel=>channel.messages.length);
 }
@@ -29,6 +29,8 @@ export async function restoreDataBackupToStore(full: DataBackupContents, key: Cr
   const baseline = observed ? await openSealedChatData(key, accountId, observed) : normalizeLocalChatData({}); guard();
   if (!dataDestinationEmpty(baseline, accountId)) throw new Error('backup_destination_not_empty');
   const data = { ...restoredChatData(profile),
+    ...(baseline.seedNoticeDismissed !== undefined ? {seedNoticeDismissed: baseline.seedNoticeDismissed} : {}),
+    ...(baseline.deviceOffer !== undefined ? {deviceOffer: baseline.deviceOffer} : {}),
     ...(baseline.seedBackupVerified !== undefined ? { seedBackupVerified: baseline.seedBackupVerified } : {}),
     ...(baseline.networkSettings ? { networkSettings: baseline.networkSettings } : {}),
     ...(baseline.deviceSettings ? { deviceSettings: baseline.deviceSettings } : {}),

@@ -27,7 +27,7 @@ These are project goals, not a completed autonomous global network.
 | Backups | Access-only, data-only or full encrypted backup; manual restoration |
 | Devices | Owner confirmation, separate device keys, new-text copies and manual selected history/attachment transfer; incomplete feature parity |
 | Personal LoRa | Short encrypted Automesh text via Meshtastic USB/Bluetooth and exchanged radio contacts; no radio files/calls/groups |
-| Meshtastic channels | Separate native channel view; sent as the board under the radio network's security rules |
+| Meshtastic channels | LoRa-labelled channels in the chat list; sent as the board under the radio network's security rules |
 | Interface | English/Russian, local translation import, themes, profiles, local GIF/stickers |
 | Calls | Experimental personal voice calls; browser-dependent audio outputs |
 

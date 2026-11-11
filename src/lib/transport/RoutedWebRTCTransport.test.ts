@@ -37,6 +37,7 @@ class FakeNode {
   getRegistryId() { return this.fabric.ids.get(this.endpoint.url); }
   async isAvailable() { return true; }
   async discover() { return []; }
+  async resume() {}
   async init(address: string) {
     this.initCount++;
     if (this.rejected) throw new Error('signaling_registration_rejected');
@@ -244,6 +245,23 @@ describe('per-peer network routes', () => {
       expect(router.getNodeStates()[1].alias).toBe(true);
       expect(init).toHaveBeenCalledTimes(1);
     } finally { finish(); init.mockRestore(); }
+  });
+  it('does not register again while a foreground renewal is in progress on the same registry', async () => {
+    const fabric = new Fabric(); fabric.ids.set(lan.url, fabric.ids.get(internet.url)!);
+    const router = fabric.router(undefined, true); await router.init('Alice');
+    await vi.waitFor(() => expect(router.getNodeStates()[1].alias).toBe(true));
+    const primary = fabric.created[0]; let finish!: () => void;
+    const gate = new Promise<void>(resolve => finish = resolve);
+    primary.resume = async () => { primary.setStatus('connecting'); await gate; primary.setStatus('connected'); };
+    const renewing = router.resume();
+    await vi.waitFor(() => expect(primary.status).toBe('connecting'));
+    const configuring = router.configure([internet, lan], true);
+    try {
+      for (let i=0;i<12;i++) await Promise.resolve();
+      expect(primary.initCount).toBe(1);
+      expect(fabric.created[1].initCount).toBe(0);
+    } finally { finish(); await Promise.all([renewing, configuring]); }
+    expect(router.getNodeStates().filter(n => n.status === 'connected')).toHaveLength(1);
   });
   it('keeps independent home and server listeners connected simultaneously without reserve mode', async () => {
     const fabric = new Fabric(), router = fabric.router(); await router.init('Alice');

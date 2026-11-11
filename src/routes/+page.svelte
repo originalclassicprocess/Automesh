@@ -128,6 +128,9 @@ import { SerializedWrites } from '$lib/application/serialized-writes';
 import { FileReceiver } from '$lib/application/file-receiver';
 import { AutoUnlock } from '$lib/application/auto-unlock';
 import StoragePanel from '$lib/application/StoragePanel.svelte';
+import { storageThumbnail } from '$lib/application/storage-thumbnail';
+import AccountNotices from '$lib/application/AccountNotices.svelte';
+import { normalizeProfileLinks, normalizePeerLinks, type ProfileLink } from '$lib/chat/profile-links';
 import EmergencyReset from '$lib/application/EmergencyReset.svelte';
 import { eraseApplicationData } from '$lib/application/emergency-storage';
 import { clearAllCoreStorage } from '$lib/core-storage/indexeddb';
@@ -142,7 +145,7 @@ import InboxSnapshot from '$lib/profiles/InboxSnapshot.svelte';
 import { prepareProfileChatContext, commitProfileChatContext, readProfileInbox, type ProfileChatContext, type ProfileInboxPage, type InboxFocus } from '$lib/profiles/chat-context';
 import { profileRegistrySnapshot, type ProfileRegistry } from '$lib/core/profiles';
 import type { OpenedBackup } from '$lib/vault/encrypted-backup';
-import { cleanedHistory, managedFiles, type ManagedFile } from '$lib/application/storage-summary';
+import { cleanedHistory, managedFiles, chatStorageUsage, type ManagedFile } from '$lib/application/storage-summary';
 import { RESET_KEY, beginStorageReset, requireStorageEpoch, storageEpoch } from '$lib/application/storage-reset';
 import { encodeChatContent, type MessageDetails, type ReplyReference } from '$lib/chat/message-details';
 import { displayedReply, savedConversation, replyReference, replyCount, messagePreview, forwardingDetails, removeMessages, transcript } from '$lib/chat/chat-actions';
@@ -259,7 +262,9 @@ import { SerialRadio, type RadioSnapshot, type RadioDiagnostics, type SerialPort
 import { networkId, networkInvite } from '$lib/radio/network';
 import { automaticBoardName } from '$lib/radio/board-name';
 import MeshtasticChannels from '$lib/radio/MeshtasticChannels.svelte';
-import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,channelMessageStatus,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
+import TextForwardDialog, {type ForwardText,type ForwardTarget} from '$lib/chat/TextForwardDialog.svelte';
+import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
+import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,channelMessageStatus,channelSignature,nativeHistoryLimit,nativeMessageKey,nativeMessageStatus,removeNativeMessages,mergeNativeHistory,visibleNativeChannels,type ChannelMessage,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
 import { radioError } from '$lib/radio/errors';
 import VoiceMessage from '$lib/chat/VoiceMessage.svelte';
 import InlineAudio from '$lib/chat/InlineAudio.svelte';
@@ -389,8 +394,6 @@ let oldPassword = $state('');
 let newPassword = $state('');
 let confirmPassword = $state('');
 let newAccountFlow = $state(false);
-let setupStep = $state<'backup' | null>(null);
-let onboardingSeed = $state.raw<Uint8Array | null>(null);
 let seedBackupVerified = $state(false);
 let backupOpen = $state(false);
 let chatSearch = $state('');
@@ -576,6 +579,7 @@ let directConnections = $derived(Object.fromEntries(sessionChats.order.filter(pe
 let chatOpenToken = $state(0);
 let signalingStatus = $state<TransportStatus>('idle');
 let activeConversation = $derived(sessionChats.byPeer[sessionChats.activePeer]);
+let ordinaryUnreadBoundary=$state('');
 let activeMessages = $derived(visibleChatMessages(activeConversation?.messages ?? []));
 let activeEphemeralStates = $derived(ephemeralStates(activeConversation?.messages ?? []));
 let activePins = $derived(messagePins(activeConversation?.messages ?? [], address, sessionChats.activePeer));
@@ -590,6 +594,8 @@ let courierWaiting = $derived(sessionChats.order.reduce((count, peer) => count +
   m.direction === 'outgoing' && (m.delivery === 'queued' || m.delivery === 'sent') && peer !== address).length, 0));
 let replyDrafts = $state<Record<string, ReplyReference>>({});
 let selecting = $state(false); let selectedMessages = $state<string[]>([]);
+let chatSearchPosition=0;
+function toggleChatSearch(){const node=document.querySelector<HTMLElement>('[data-chat-scroll]');if(!chatSearchOpen){chatSearchPosition=node?.scrollTop??0;chatSearchOpen=true;}else{chatSearchOpen=false;void tick().then(()=>node?.scrollTo({top:chatSearchPosition}));}}
 let chatSearchOpen = $state(false), emojiOpen = $state(false), showJumpDown = $state(false);
 let composerCaret = { peer: '', start: 0, end: 0 };
 let sendOptionsOpen = $state(false), sendRule = $state<MessageDetails['ephemeral']>(undefined);
@@ -640,6 +646,8 @@ let audioQueue: AudioQueueTrack[] = $derived((audioTrack ? sessionChats.byPeer[a
 let imageUrls = $state<Record<string, string>>({});
 let imageErrors = $state<Record<string, boolean>>({});
 let selfNickname = $state('');
+let selfLinks = $state<ProfileLink[]>([]), peerLinks = $state<Record<string, ProfileLink[]>>({});
+let seedNoticeDismissed = $state(false);
 let selfAvatar = $state('');
 let peerAvatars = $state<Record<string, string>>({});
 let avatarBusy = $state(false);
@@ -660,7 +668,7 @@ $effect(() => { if (pendingContactRoute && pendingContactRoute.owner !== address
 let sharingContact = $state(false);
 let shareFallbackLink = $state('');
 $effect(() => {
-  if (!routerReady || !pendingContactLink || screen !== 'account' || setupStep || authBusy || !chat) return;
+  if (!routerReady || !pendingContactLink || screen !== 'account' || authBusy || !chat) return;
   const id = pendingContactLink; pendingContactLink = '';
   replaceState(location.pathname + location.search, untrack(() => page.state));
   openDirectChat(id);
@@ -677,7 +685,7 @@ function rootRoute(screen: Screen): PageRoute {
 }
 $effect(() => {
   const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : mediaOpen || receivedPack ? 'media-library' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
-    setupStep ? 'onboarding' : backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
+    backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   const route: PageRoute = screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
     connection: accountView === 'profile' && settingsSection === 'connection' ? connectionSection : 'direct',
@@ -703,7 +711,47 @@ let radioBusy = $state(false), radioErrorText = $state(''), radioContact = $stat
 let radioChecking=$state(false);
 let meshtastic=$state(emptyNativeChannels()),nativeOpen=$state(false),nativeSelected=$state(''),nativeSending=$state(false);
 let nativeLive=$state<string[]>([]),nativeSaveTimer:ReturnType<typeof setTimeout>|null=null;
-const nativeUnread=$derived(meshtastic.channels.reduce((sum,c)=>sum+c.unread,0));
+let nativeInitialUnread=$state(0),nativeAtBottom=$state(true),nativeForwardDone=$state(0);
+let textForward=$state<{messages:ForwardText[];native?:string;peer?:string}|null>(null);
+function nativeListConversation(c:NativeChannel){return {peerAddress:nativeToken(c),messages:[],draft:c.draft??'',unread:c.unread,connection:'offline' as const,error:'',sending:false,contact:'accepted' as const};}
+function openNativeForward(c:NativeChannel,messages:ChannelMessage[]){if(!messages.length)return;textForward={native:nativeToken(c),messages:messages.map(m=>({key:nativeMessageKey(m),text:m.text,source:`Meshtastic · ${c.name||'LoRa'} · ${m.name||'!'+m.from.toString(16)}`}))};}
+async function sendForwardText(target:string,m:ForwardText){
+  const generation=authGeneration,source=textForward;
+  if(!source||endingSession||screen!=='account')throw Error('Сеанс завершён.');
+  if(target.startsWith('radio:')){
+    const c=meshtastic.channels.find(c=>nativeToken(c)===target.slice(6));if(!c)throw Error('Канал недоступен.');
+    await sendNativeText(c,m.text);
+  }else{
+    const peer=target.slice(5);
+    if(sessionChats.byPeer[peer]?.contact==='new'&&source.messages.length>1)throw Error('Новому контакту можно переслать одно текстовое сообщение.');
+    if(source.native)await queueRichMessage(peer,`${m.source}\n${m.text}`,{});
+    else {const original=source.peer&&sessionChats.byPeer[source.peer]?.messages.find(entry=>entry.id===m.key);if(!original||original.file||original.details?.ephemeral)throw Error('Исходное сообщение удалено или отсутствует на этом устройстве.');
+      const author={accountId:original.from,nickname:original.from===address?selfNickname:declaredNames[original.from]??''};
+      await queueRichMessage(peer,original.text,forwardingDetails(original,author,allowForwardAttribution,address));}
+  }
+  if(generation!==authGeneration)throw Error('Сеанс завершён.');
+}
+function finishTextForward(){if(textForward?.native)nativeForwardDone++;textForward=null;selecting=false;selectedMessages=[];status='Переслано или добавлено в очередь доставки.';}
+function setNativeDraft(c:NativeChannel,text:string,replyId?:number){meshtastic={...meshtastic,channels:meshtastic.channels.map(entry=>nativeToken(entry)===nativeToken(c)?{...entry,draft:text.slice(0,600),replyId}:entry)};saveNativeSoon();}
+function nativeBottom(value:boolean){nativeAtBottom=value;if(value&&nativeOpen&&accountView==='chats'&&(!narrowScreen||mobilePane==='chat')&&document.visibilityState==='visible'){const c=meshtastic.channels.find(c=>nativeToken(c)===nativeSelected);if(c?.unread){meshtastic={...meshtastic,channels:meshtastic.channels.map(entry=>nativeToken(entry)===nativeSelected?{...entry,unread:0}:entry)};saveNativeSoon();}}}
+async function setNativePreferences(patch:Partial<Pick<typeof meshtastic,'showAll'|'historyLimit'>>){
+  const before=meshtastic,generation=authGeneration;
+  const limit=nativeHistoryLimit(patch.historyLimit??meshtastic.historyLimit);
+  meshtastic={...meshtastic,...patch,historyLimit:limit,channels:meshtastic.channels.map(c=>({...c,messages:c.messages.slice(-limit),unread:Math.min(c.unread,limit)}))};
+  if(!await persistLocalChats()&&generation===authGeneration){
+    meshtastic={...meshtastic,showAll:before.showAll,historyLimit:before.historyLimit,channels:meshtastic.channels.map(c=>{const old=before.channels.find(x=>nativeToken(x)===nativeToken(c));return old?{...c,messages:mergeNativeHistory(old,c,nativeHistoryLimit(before.historyLimit))}:c;})};throw Error('Не удалось сохранить настройку.');
+  }
+}
+async function deleteNativeMessages(c:NativeChannel,ids:string[]){
+  const generation=authGeneration,before=meshtastic.channels.find(x=>nativeToken(x)===nativeToken(c));if(!before)return;
+  meshtastic=removeNativeMessages(meshtastic,c,ids);
+  if(!await persistLocalChats()&&generation===authGeneration){
+    const removed=new Set(ids.filter(id=>before.messages.some(m=>nativeMessageKey(m)===id)&&!before.deleted?.includes(id)));
+    meshtastic={...meshtastic,channels:meshtastic.channels.map(x=>{if(nativeToken(x)!==nativeToken(c))return x;const restored={...x,deleted:(x.deleted??[]).filter(id=>!removed.has(id)),unread:Math.max(x.unread,before.unread)};return {...restored,messages:mergeNativeHistory(before,restored,nativeHistoryLimit(meshtastic.historyLimit))};})};
+    throw Error('Не удалось сохранить историю.');
+  }
+}
+
 const nativeToken=(c:Pick<NativeChannel,'node'|'key'>)=>`${c.node}:${c.key}`;
 function saveNativeSoon(){
   if(nativeSaveTimer)return;const generation=authGeneration;
@@ -714,8 +762,8 @@ function receiveNativeText(node:number,packet:ChannelText){
   const c=meshtastic.channels.find(c=>c.node===node&&c.index===packet.channel&&nativeLive.includes(nativeToken(c)));
   if(!c)return;
   if(packet.from===node){meshtastic=channelMessageStatus(meshtastic,c.key,node,packet.id,'accepted');saveNativeSoon();return;}
-  const visible=nativeOpen&&accountView==='chats'&&document.visibilityState==='visible'&&nativeSelected===nativeToken(c);
-  meshtastic=appendChannelMessage(meshtastic,c.key,node,{id:packet.id,from:packet.from,name:packet.name,text:packet.text,timestamp:packet.receivedAt,outgoing:false,status:'accepted',...(packet.reception?{reception:packet.reception}:{})},visible);
+  const visible=nativeOpen&&nativeAtBottom&&accountView==='chats'&&(!narrowScreen||mobilePane==='chat')&&document.visibilityState==='visible'&&nativeSelected===nativeToken(c);
+  meshtastic=appendChannelMessage(meshtastic,c.key,node,{id:packet.id,from:packet.from,name:packet.name,text:packet.text,timestamp:packet.receivedAt,outgoing:false,status:'accepted',...(packet.reception?{reception:packet.reception}:{}),...(packet.replyId?{replyId:packet.replyId}:{})},visible);
   saveNativeSoon();
 }
 function receiveNativeStatus(node:number,update:ChannelStatus){
@@ -724,44 +772,37 @@ function receiveNativeStatus(node:number,update:ChannelStatus){
   if(!c||!c.messages.some(m=>m.outgoing&&m.from===node&&m.id===update.id))return;
   meshtastic=channelMessageStatus(meshtastic,c.key,node,update.id,update.status,update.failure);saveNativeSoon();
 }
-function openNativeChannels(){
-  if(navigationBusy()||voiceBusy)return;
+function openNativeChannels(value?:string){
+  if(navigationBusy()||voiceBusy||!meshtastic.enabled)return;
   clearMediaPreview();selecting=false;messageTools=null;attachmentMenu=false;emojiOpen=false;nativeOpen=true;mobilePane='chat';
-  const previous=meshtastic.channels.some(c=>nativeToken(c)===nativeSelected)?nativeSelected:'';
-  selectNativeChannel(previous||nativeLive[0]||(meshtastic.channels[0]?nativeToken(meshtastic.channels[0]):''));
+  selectNativeChannel(value||nativeLive[0]||(nativeListed[0]?nativeToken(nativeListed[0]):''));
 }
-function selectNativeChannel(value:string){nativeSelected=value;meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===value?{...c,unread:0}:c)};saveNativeSoon();}
+function selectNativeChannel(value:string){nativeInitialUnread=meshtastic.channels.find(c=>nativeToken(c)===value)?.unread??0;nativeAtBottom=true;nativeSelected=value;}
 async function setNativeEnabled(value:boolean){
-  const before=meshtastic.enabled,generation=authGeneration;meshtastic={...meshtastic,enabled:value};
-  if(!await persistLocalChats()&&generation===authGeneration){meshtastic={...meshtastic,enabled:before};throw Error(radioError('radio_history_not_saved'));}
+  const before=meshtastic,generation=authGeneration;meshtastic={...meshtastic,enabled:value,configured:true};
+  if(!await persistLocalChats()&&generation===authGeneration){meshtastic={...meshtastic,enabled:before.enabled,configured:before.configured};throw Error(radioError('radio_history_not_saved'));}
+  if(generation===authGeneration&&!value)nativeOpen=false;
 }
 async function setNativeSignature(channel:NativeChannel,value:boolean){
   const generation=authGeneration,before=channel.signature;meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===nativeToken(channel)?{...c,signature:value}:c)};
   if(!await persistLocalChats()&&generation===authGeneration){meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===nativeToken(channel)?{...c,signature:before}:c)};throw Error(radioError('radio_history_not_saved'));}
 }
-async function clearNativeChannel(channel:NativeChannel){
-  const generation=authGeneration,before=channel.messages,unread=channel.unread;
-  meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===nativeToken(channel)?{...c,messages:[],unread:0}:c)};
-  if(!await persistLocalChats()&&generation===authGeneration){
-    meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===nativeToken(channel)?{...c,messages:[...before,...c.messages].slice(-100),unread:Math.min(100,unread+c.unread)}:c)};
-    throw Error(radioError('radio_history_not_saved'));
-  }
-}
-async function sendNativeText(channel:NativeChannel,text:string){
+async function sendNativeText(channel:NativeChannel,text:string,options:{replyId?:number;retryOf?:number;literal?:boolean}={}){
   const runtime=radioRuntime,usb=radioUsb,generation=authGeneration,epoch=radioEpoch,node=radioSnapshot?.node;
   const current=()=>generation===authGeneration&&epoch===radioEpoch&&runtime===radioRuntime&&usb===radioUsb&&radioAvailable&&meshtastic.enabled&&nativeLive.includes(nativeToken(channel));
   if(!runtime||!usb||nativeSending||radioConnection!=='connected'||node!==channel.node||!current())throw Error(radioError('radio_not_ready'));
-  let full:string;try{full=channelText(text,channel.signature,contactLink(address));}catch{throw Error('Сообщение с подписью не должно превышать 200 байт.');}
+  let full:string;try{full=channelText(text,options.literal?false:channel.signature,contactLink(address));}catch{throw Error('Сообщение с подписью не должно превышать 200 байт.');}
   let id=crypto.getRandomValues(new Uint32Array(1))[0]||1;while(channel.messages.some(m=>m.from===node&&m.id===id))id=(id+1)>>>0||1;
-  nativeSending=true;
-  meshtastic=appendChannelMessage(meshtastic,channel.key,node,{id,from:node,name:radioBoardLabel,text:full,timestamp:Date.now(),outgoing:true,status:'queued'},true);
+  nativeSending=true;let recorded=false;
+  meshtastic=appendChannelMessage(meshtastic,channel.key,node,{id,from:node,name:radioBoardLabel,text:full,timestamp:Date.now(),outgoing:true,status:'queued',...(options.replyId?{replyId:options.replyId}:{}),...(options.retryOf?{retryOf:options.retryOf}:{})},nativeOpen&&nativeSelected===nativeToken(channel)&&nativeAtBottom);
   try{
     if(!await persistLocalChats())throw Error('radio_history_not_saved');
-    await runtime.scheduleChannelSend(()=>usb.sendChannelText(channel.index,id,full),current);
+    recorded=true;
+    await runtime.scheduleChannelSend(()=>usb.sendChannelText(channel.index,id,full,options.replyId),current);
     if(current()){meshtastic=channelMessageStatus(meshtastic,channel.key,node,id,'accepted');await persistLocalChats();}
   }catch(error){
     if(generation===authGeneration){const code=error instanceof Error?error.message:'';meshtastic=channelMessageStatus(meshtastic,channel.key,node,id,code==='radio_queue_confirmation_timeout'||!current()?'unknown':'failed');await persistLocalChats();}
-    throw Error(radioError(error));
+    throw recorded?Object.assign(Error(radioError(error)),{nativeAttemptRecorded:true}):Error(radioError(error));
   }finally{if(generation===authGeneration)nativeSending=false;}
 }
 let radioTransportReady=$state(false),radioRoutesRevision=$state(0);
@@ -780,6 +821,16 @@ let radioHealthCheck:Promise<void>|null=null,lastRadioWake=0;
 const rememberedRadioPorts = new Map<string,SerialPortLike>();
 let radioAvailable = $derived(screen === 'account' && !!identity && profileNetwork && trustedSession && !!chatStoreKey && !endingSession && !switchingTrust);
 let radioConnection = $derived(radioBusy || radioChecking ? 'connecting' as const : radioTransportReady && radioRuntime && radioSnapshot && radioContact ? 'connected' as const : 'offline' as const);
+const nativeListed=$derived(visibleNativeChannels(meshtastic,radioConnection==='connected'?radioSnapshot?.node:undefined,nativeLive,chatSearch));
+const conversationItems=$derived([
+  ...listedPeers.map(peer=>({kind:'chat' as const,id:peer,time:peer===address?Number.MAX_SAFE_INTEGER:sessionChats.byPeer[peer]?.messages.at(-1)?.timestamp??0})),
+  ...nativeListed.map(channel=>({kind:'radio' as const,id:nativeToken(channel),channel,time:channel.messages.at(-1)?.timestamp??0}))
+].sort((a,b)=>b.time-a.time));
+const textForwardTargets=$derived<ForwardTarget[]>([
+  ...sessionChats.order.filter(peer=>['new','accepted'].includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false})),
+  ...(meshtastic.enabled&&radioConnection==='connected'?meshtastic.channels.filter(c=>nativeLive.includes(nativeToken(c))).map(c=>({id:'radio:'+nativeToken(c),name:`${c.name||'Meshtastic'} · ${c.boardName||radioBoardLabel}`,radio:true,signatureBytes:c.signature?new TextEncoder().encode('\n'+channelSignature(contactLink(address))).length:0})):[])
+]);
+
 function disconnectRadio() {
   radioOverviewOpen=false;
   ++radioEpoch; radioRuntime?.close(); radioRuntime = null;
@@ -816,7 +867,7 @@ async function attachRadio(snapshot: RadioSnapshot, channel: number, epoch: numb
   const native=await syncNativeChannels(meshtastic,snapshot);if(!current()){runtime.close();return;}
   meshtastic=native;
   nativeLive=native.channels.filter(c=>c.node===snapshot.node&&snapshot.channels.some(s=>s.index===c.index)).filter(c=>native.channels.filter(x=>x.node===snapshot.node&&x.index===c.index).at(-1)===c).map(nativeToken);
-  if(nativeOpen&&!nativeLive.includes(nativeSelected)&&nativeLive.length)selectNativeChannel(nativeLive[0]);
+  if(nativeOpen&&!meshtastic.showAll&&!nativeLive.includes(nativeSelected)&&nativeLive.length)selectNativeChannel(nativeLive[0]);
   const connection={node:snapshot.node,network,channel,...(usb.selectedPort?.transport==='bluetooth'?{transport:'bluetooth' as const,deviceId:usb.selectedPort.deviceId}:{})};
   radioState=rememberBoard({...radioState,reconnect:true,connection},{...connection,name:automaticBoardName(snapshot.name,snapshot.shortName,usb.selectedPort?.deviceName,snapshot.node),customName:false,firmware:snapshot.firmware.slice(0,64),lastSeen:Date.now()});
   if (!await persistLocalChats()) { if(current())disconnectRadio(); return; }
@@ -1289,7 +1340,7 @@ async function prepareAppReload(): Promise<string | null> {
       sessionChats.byPeer[peer].messages.some(message => message.fileStatus === 'sending' || message.fileStatus === 'receiving' || message.delivery === 'sending')))
     return 'Дождитесь завершения передачи сообщений и файлов.';
   if (sessionChats.order.some(peer => sessionChats.byPeer[peer].draft.trim())) return 'Сначала отправьте или сохраните черновики сообщений.';
-  if (backupOpen || fullBackupOpen || setupStep || mnemonic || pin || importMnemonic || oldPassword || newPassword || confirmPassword)
+  if (backupOpen || fullBackupOpen || mnemonic || pin || importMnemonic || oldPassword || newPassword || confirmPassword)
     return 'Завершите работу с резервной копией или паролем перед обновлением.';
   if (screen === 'account') {
     await endSession('lock', false);
@@ -1304,7 +1355,7 @@ async function applyAppUpdate(): Promise<void> {
 }
 
 function clearSensitiveData() {
-  if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;
+  if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState(); radioDiagnostics = null; radioErrorText = '';
   historyTarget = null;
   deviceAttempt++; deviceInitialization = null; deviceBusy = false; deviceErrorCode = '';
@@ -1369,7 +1420,6 @@ function accountBusyError(error: unknown): boolean {
 
 function hideDisplayedSecrets(): void {
   closeEphemeral(); sendOptionsOpen = false; emojiOpen = false;
-  consumeOnboardingSeed();
   pin = '';
   unlockPin = '';
   oldPassword = '';
@@ -1416,6 +1466,8 @@ function applyChatData(saved: LocalChatData): void {
   mediaLibrary = normalizeMediaLibrary(saved.mediaLibrary); mediaOpen = false; receivedPack = null;
   sessionChats = restoreChats(saved.chats);
   selfNickname = saved.selfNickname;
+  selfLinks = normalizeProfileLinks(saved.selfLinks); peerLinks = normalizePeerLinks(saved.peerLinks);
+  seedNoticeDismissed = saved.seedNoticeDismissed === true; deviceOffer = saved.deviceOffer === true;
   selfAvatar = normalizeAvatar(saved.selfAvatar) ?? ''; peerAvatars = normalizePeerAvatars(saved.peerAvatars);
   avatarBusy = false; avatarError = '';
   seedBackupVerified = saved.seedBackupVerified === true;
@@ -1437,14 +1489,14 @@ function applyChatData(saved: LocalChatData): void {
 
 async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<void> {
   if(nativeSaveTimer){clearTimeout(nativeSaveTimer);nativeSaveTimer=null;}
-  meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;
+  meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState();
   const generation = authGeneration; const accountId = address;
   await historyWrites.settled();
   if (generation !== authGeneration || address !== accountId) return;
   sessionChats = emptySessionChats();
   mediaLibrary = emptyMediaLibrary(); mediaOpen = false; receivedPack = null;
-  selfNickname = '';
+  selfNickname = ''; selfLinks = []; peerLinks = {}; seedNoticeDismissed = false; deviceOffer = false;
   selfAvatar = ''; peerAvatars = {}; avatarBusy = false; avatarError = '';
   seedBackupVerified = false;
   readReceiptsEnabled = true;
@@ -1537,20 +1589,32 @@ function saveOwnNickname(): void {
   }
 }
 
-function consumeOnboardingSeed(): void {
-  onboardingSeed?.fill(0);
-  onboardingSeed = null;
+async function saveProfileLinks(links: ProfileLink[]): Promise<boolean> {
+  if (screen !== 'account' || endingSession || switchingTrust || memoryBusy || profileSwitchBusy || !profileNetwork) return false;
+  const owner = address, generation = authGeneration, previous = selfLinks;
+  selfLinks = normalizeProfileLinks(links);
+  if (!await persistLocalChats()) {
+    if (address === owner && authGeneration === generation) selfLinks = previous;
+    return false;
+  }
+  if (address !== owner || authGeneration !== generation || screen !== 'account') return false;
+  const active = chat;
+  if (active) for (const peer of sessionChats.order) if (peer !== address && sessionChats.byPeer[peer].contact === 'accepted' && sessionChats.byPeer[peer].connection === 'connected')
+    void active.sendProfileLinks(selfLinks, peer).catch(() => {});
+  return true;
 }
 
-function finishAccountSetup(): void {
-  if (setupStep === 'backup') deviceOffer = true;
-  consumeOnboardingSeed();
-  setupStep = null;
-  backupOpen = false;
+function dismissAccountNotice(kind: 'backup' | 'devices') {
+  if (kind === 'backup') seedNoticeDismissed = true; else deviceOffer = false;
+  void persistLocalChats();
+}
+function openAccountBackup() {
+  hideDisplayedSecrets(); status = ''; changeAccountView('profile'); selectSettings('security'); backupOpen = true;
+  void tick().then(() => document.getElementById('seed-backup-section')?.scrollIntoView({block:'start'}));
 }
 
 function showDevices(): void {
-  deviceOffer = false; changeAccountView('profile'); selectSettings('security'); devicesOpen = true;
+  deviceOffer = false; void persistLocalChats(); changeAccountView('profile'); selectSettings('security'); devicesOpen = true;
   if (!deviceStore && !deviceBusy) void retryDevices();
 }
 $effect(() => {
@@ -1696,7 +1760,6 @@ function restorePageRoute(route: PageRoute): void {
   panicOpen = false; memoryConfirmation = null; pendingExit = null; nodeScannerOpen = false;
   openHelp = null; backupOpen = false;
   networkSummaryOpen = false; nodeBudgetOpen = false; fileDragActive = false;
-  if (setupStep && route.layer !== 'onboarding') finishAccountSetup();
   if (screen !== 'account') {
     if (route.screen === 'account' || route.screen === 'unlock' && screen !== 'unlock') return;
     if (route.screen === 'setPin') {
@@ -1732,7 +1795,7 @@ function backWithinApp(): void {
   if (ephemeralView) { closeEphemeral(); return; }
   if (sendOptionsOpen) { sendOptionsOpen = false; return; }
   if (emojiOpen) { emojiOpen = false; return; }
-  if (chatSearchOpen) { chatSearchOpen = false; return; }
+  if (chatSearchOpen) { toggleChatSearch(); return; }
   if (audioControls?.dismissOverlay()) return;
   if (mediaOpen || receivedPack) { mediaOpen = false; receivedPack = null; return; }
   if (messageTools) { messageTools = null; return; }
@@ -2394,20 +2457,19 @@ async function saveWithPin() {
     if (generation !== authGeneration) return;
     if (nickname) { selfNickname = nickname; nicknameDraft = nickname; }
     if (!newAccountFlow) seedBackupVerified = true;
+    else { seedNoticeDismissed = false; deviceOffer = true; }
     trustedSession = trustedDeviceChoice;
     if (!await persistLocalChats()) throw new Error('onboarding_history_not_saved');
     if (generation !== authGeneration) return;
     if (pendingFullBackup?.language) setLanguage(pendingFullBackup.language, localStorage);
     disposeFullBackup(pendingFullBackup); pendingFullBackup = undefined; pendingFullRestored = false;
-    consumeOnboardingSeed();
-    if (newAccountFlow) onboardingSeed = seedBytes.slice();
+    // Seed is erased below; the backup action later unlocks the existing vault.
     mnemonic = '';
     pin = '';
     tempSeed?.fill(0);
     tempSeed = null;
     lastActivity = Date.now();
     screen = 'account';
-    setupStep = newAccountFlow ? 'backup' : null;
     newAccountFlow = false;
     await initializeChat();
   } catch (e) {
@@ -2687,6 +2749,23 @@ function observeImage(node: HTMLElement, details: { peer: string; id: string }) 
   });
   observer.observe(node);
   return { destroy() { observer.disconnect(); } };
+}
+
+// Serialize decoding and recheck the active account before and after every async stage.
+let storagePreviewQueue: Promise<unknown> = Promise.resolve();
+function loadStoragePreview(file: ManagedFile): Promise<Blob | null> {
+  const owner = address, generation = previewGeneration;
+  const current = () => address === owner && generation === previewGeneration && screen === 'account' &&
+    accountView === 'profile' && settingsSection === 'files' && mediaSettingsSection === 'storage';
+  const work = storagePreviewQueue.catch(() => {}).then(async () => {
+    if (!current() || file.category !== 'image') return null;
+    const media = await verifiedMedia(file.peer, file.messageId);
+    if (!current() || media.kind !== 'image') return null;
+    const blob = await storageThumbnail(media.bytes, media.mime);
+    return current() ? blob : null;
+  });
+  storagePreviewQueue = work.then(() => {}, () => {});
+  return work;
 }
 
 function observeContactPreview(node: HTMLElement, details: { peer: string; id: string }) {
@@ -3274,6 +3353,7 @@ async function openConversation(peer: string) {
   if (ephemeralOpening || actionBusy) return;
   // Keep an unconfirmed recording with its original chat.
   if (voiceBusy && sessionChats.activePeer !== peer) return;
+  ordinaryUnreadBoundary=sessionChats.byPeer[peer]?.unread?firstUnreadMessageId(sessionChats.byPeer[peer].messages)??'':'';
   nativeOpen=false;
   selecting = false; selectedMessages = []; attachmentMenu = false; chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; closeEphemeral();
   messageTools = null;
@@ -3378,6 +3458,12 @@ function toggleMessage(id: string): void {
 }
 function openChatAction(mode: 'forward' | 'contact' | 'delete'): void {
   if (actionBusy || memoryBusy || switchingTrust || endingSession || attachingFiles || voiceBusy) return;
+  if(mode==='forward'){
+    const messages=sessionChats.byPeer[sessionChats.activePeer]?.messages.filter(m=>selectedMessages.includes(m.id))??[];
+    if(messages.length&&messages.every(m=>!m.file&&!m.details?.ephemeral&&!m.details?.contactCard&&!m.details?.pin&&!m.localCall)){
+      textForward={peer:sessionChats.activePeer,messages:messages.map(m=>({key:m.id,text:m.text,source:m.from===address?selfNickname:contactName(m.from)}))};attachmentMenu=false;return;
+    }
+  }
   actionPeer = sessionChats.activePeer; actionError = ''; actionMode = mode; attachmentMenu = false;
   forwardCompleted.clear();
 }
@@ -3429,6 +3515,13 @@ function saveDownload(bytes: BlobPart, name: string): void {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+async function copySelection():Promise<void>{
+  const peer=sessionChats.activePeer,generation=authGeneration;
+  const messages=sessionChats.byPeer[peer]?.messages.filter(m=>selectedMessages.includes(m.id))??[];
+  if(!messages.length||actionBusy||messages.some(m=>m.details?.ephemeral))return;
+  actionBusy=true;try{await navigator.clipboard.writeText(messages.map(m=>m.file?.name||m.text).join('\n\n'));if(generation===authGeneration){selectedMessages=[];selecting=false;status='Текст скопирован.';}}
+  catch{if(generation===authGeneration)status='Не удалось скопировать текст.';}finally{if(generation===authGeneration)actionBusy=false;}
 }
 async function downloadSelection(): Promise<void> {
   const peer = sessionChats.activePeer; const generation = authGeneration;
@@ -3776,6 +3869,7 @@ async function acceptRequest(peer: string): Promise<void> {
       void activeChat.sendReadPreference(readReceiptsEnabled, peer).catch(() => {});
       void activeChat.sendProfile(selfNickname, peer).catch(() => {});
       publishAvatar(activeChat, peer);
+      void activeChat.sendProfileLinks(selfLinks, peer).catch(() => {});
     } else {
       void activeChat.connect(peer).catch(() => {});
     }
@@ -3989,7 +4083,12 @@ async function captureHistory(peers: string[], attachments: boolean, current: ()
   return captureDeviceHistory(owner, key, peers, attachments, guard);
 }
 
+let chatStartVersion = 0;
 async function initializeChat() {
+  // A network/settings restart can overlap an unlock while old queues settle.
+  // Only the newest start may publish a transport for this identity; otherwise
+  // the abandoned transport can retain a second signaling registration.
+  const startVersion = ++chatStartVersion;
   if (address && screen === 'account') sessionChats = savedConversation(sessionChats, address);
   if (memoryBusy || panicBusy || screen !== 'account') return;
   if (!identity || !address) {
@@ -4004,9 +4103,9 @@ async function initializeChat() {
   signalingStatus = 'connecting';
   if (previousChat) await previousChat.disconnect();
   await stoppingOffline;
-  if (generation !== authGeneration || !identity || screen !== 'account' || memoryBusy || panicBusy) return;
+  if (startVersion !== chatStartVersion || generation !== authGeneration || !identity || screen !== 'account' || memoryBusy || panicBusy || !profileNetwork) return;
   await preparePrimaryQueues(generation);
-  if (generation !== authGeneration || !identity || screen !== 'account' || memoryBusy || panicBusy) return;
+  if (startVersion !== chatStartVersion || generation !== authGeneration || !identity || screen !== 'account' || memoryBusy || panicBusy || !profileNetwork) return;
 
   const receiveConfig = receiveRouting(configuredNodes, networkSettings, location.href, trustedSession ? courierState : emptyCourierState());
   const transport = new RoutedWebRTCTransport(receiveConfig.endpoints, networkSettings.quickReserve, undefined, undefined, receiveConfig.required);
@@ -4205,6 +4304,7 @@ async function initializeChat() {
     void persistLocalChats();
     void nextChat.sendReadPreference(readReceiptsEnabled, peer).catch(() => {});
     publishAvatar(nextChat, peer);
+    void nextChat.sendProfileLinks(selfLinks, peer).catch(() => {});
     scanVisibleMessages();
   });
   nextChat.onReadPreference((peer, enabled) => {
@@ -4233,6 +4333,11 @@ async function initializeChat() {
     if (chat !== nextChat || sessionChats.byPeer[accountId]?.contact === 'blocked') return;
     declaredNames = { ...declaredNames, [accountId]: nickname };
     persistLocalChats();
+  });
+  nextChat.onProfileLinks((peer, links) => {
+    if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
+    if (!peerLinks[peer] && Object.keys(peerLinks).length >= 256) return;
+    peerLinks = { ...peerLinks, [peer]: links }; void persistLocalChats();
   });
   nextChat.onAvatar((accountId, avatar) => {
     if (chat !== nextChat || sessionChats.byPeer[accountId]?.contact !== 'accepted' || peerAvatars[accountId] === avatar) return;
@@ -4330,6 +4435,7 @@ async function initializeChat() {
       }
       if (sessionChats.byPeer[peer.address]?.contact === 'accepted') {
         publishAvatar(nextChat, peer.address);
+        void nextChat.sendProfileLinks(selfLinks, peer.address).catch(() => {});
         publishDeliveryKeys(peer.address);
         void nextChat.sendContactAccepted(peer.address).catch(() => {});
         void nextChat.sendReadPreference(readReceiptsEnabled, peer.address).catch(() => {});
@@ -4373,6 +4479,7 @@ function chatSnapshot(): LocalChatData {
     deviceSettings: normalizeDeviceSettings(deviceSettings),
     mediaLibrary,
     selfNickname,
+    selfLinks, peerLinks, seedNoticeDismissed, deviceOffer,
     selfAvatar,
     peerAvatars: { ...peerAvatars },
     seedBackupVerified,
@@ -4624,7 +4731,6 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
   storageRequest++; storageReading = false;
   storageFiles = []; storageError = ''; memoryConfirmation = null;
   authNickname = '';
-  setupStep = null;
   backupOpen = false;
   chatSearch = '';
   mobilePane = 'list';
@@ -4661,7 +4767,7 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
   chatStoreKey = null;
   sessionChats = emptySessionChats();
   signalingStatus = 'idle';
-  selfNickname = '';
+  selfNickname = ''; selfLinks = []; peerLinks = {}; seedNoticeDismissed = false; deviceOffer = false;
   selfAvatar = ''; peerAvatars = {}; avatarBusy = false; avatarError = '';
   seedBackupVerified = false;
   readReceiptsEnabled = false;
@@ -4861,9 +4967,6 @@ async function changePassword(): Promise<void> {
   <NodeAdminConsent request={pendingNodeAdmin} {address} signer={() => endingSession ? null : identity}
     internetEnabled={networkSettings.internetEnabled !== false} onApproved={rememberAdminNode} onClose={() => pendingNodeAdmin = null} />
 {/if}
-  {#if setupStep === 'backup'}
-    <SeedBackup initialSeed={onboardingSeed} accountId={rootAccountId || address} nickname={selfNickname} readProfiles={exportProfiles} onSeedConsumed={consumeOnboardingSeed} onVerified={confirmSeedBackup} onSkip={finishAccountSetup} />
-  {:else}
   <div class="account-shell" class:chats={accountView === 'chats'} inert={memoryBusy || panicBusy || profileSwitchBusy}>
   <AccountHeader contactUrl={profileNetwork?contactLink(address):''} contactEnabled={!!profileNetwork} accountId={address} avatar={selfAvatar || identiconFor(address)} photo={!!selfAvatar} nickname={selfNickname || 'Мой аккаунт'}
       queueState={queueIndicatorStates(headerQueue)[0]} networkAvailable={radioConnection==='connected'||courierStatus.connection==='connected'||connectedPeerCount>0||nodeStates.some(n=>n.status==='connected')}
@@ -4895,9 +4998,8 @@ async function changePassword(): Promise<void> {
       <NodeQueueOverview nodeUrl={courierState.node?.url} chats={queueChats} cleanup={courierStatus.cleanup} snapshot={courierStatus.queue} connected={courierStatus.connection==='connected'} onOpen={(peer,id)=>void openQueueMessage(peer,id)} onClear={peer=>void clearQueueCounters(peer)} />
     </CompactDialog>
   {/if}
-  {#if deviceOffer}<section class="settings-section" aria-label={$i18n.text("Другие устройства")}><h3>{$i18n.text("Общайтесь и с других устройств")}</h3>
-    <p>{$i18n.text("Подключите телефон или компьютер через QR. Сид и пароль аккаунта копировать не нужно.")}</p>
-    <button type="button" onclick={showDevices}>{$i18n.text("Подключить ещё устройство")}</button><button type="button" onclick={() => deviceOffer = false}>{$i18n.text("Позже")}</button></section>{/if}
+  {#if accountView === 'chats'}<AccountNotices backup={!seedBackupVerified && !seedNoticeDismissed} devices={deviceOffer}
+    openBackup={openAccountBackup} openDevices={showDevices} dismiss={dismissAccountNotice} />{/if}
 
   {#if callView.phase !== 'idle'}
     {#key callView.id}<CallPanel view={callView} name={contactName(callView.peer)} photo={contactPhoto(callView.peer)} stream={callStream}
@@ -5002,7 +5104,7 @@ async function changePassword(): Promise<void> {
   {#if accountView === 'own'}
     {#if !profileNetwork}<p>{$i18n.text("Выберите профиль выше. Технический адрес не публикуется.")}</p><button type="button" onclick={()=>requestExit('logout')} disabled={endingSession||switchingTrust}>{$i18n.text("Выйти из аккаунта")}</button>
     {:else}
-    <ContactCard self accountId={address} nickname={selfNickname} alias="" qr={qrPublic} contactUrl={contactLink(address)}
+    <ContactCard self links={selfLinks} saveLinks={saveProfileLinks} accountId={address} nickname={selfNickname} alias="" qr={qrPublic} contactUrl={contactLink(address)}
       photo={selfAvatar} photoBusy={avatarBusy} photoError={avatarError} changePhoto={(file,crop) => void changeOwnAvatar(file,crop)}
       copied={copiedContactId === address} blocked={false} hasChat={true} messages={sessionChats.byPeer[address]?.messages ?? []}
       urls={imageUrls} errors={imageErrors} copy={() => void copyContactAddress(address)} rename={() => false} toggleBlock={() => {}}
@@ -5021,7 +5123,7 @@ async function changePassword(): Promise<void> {
   {:else if accountView === 'peer'}
     <button onclick={backWithinApp}>{$i18n.text("← Назад")}</button>
     {#key peerCardAddress}
-      <ContactCard accountId={peerCardAddress} nickname={declaredNames[peerCardAddress] ?? ''} alias={aliases[peerCardAddress] ?? ''}
+      <ContactCard links={peerLinks[peerCardAddress] ?? []} accountId={peerCardAddress} nickname={declaredNames[peerCardAddress] ?? ''} alias={aliases[peerCardAddress] ?? ''}
         photo={contactPhoto(peerCardAddress)}
         qr={peerQr} copied={copiedContactId === peerCardAddress} blocked={sessionChats.byPeer[peerCardAddress]?.contact === 'blocked'}
         hasChat={!!sessionChats.byPeer[peerCardAddress]} messages={sessionChats.byPeer[peerCardAddress]?.messages ?? []}
@@ -5088,7 +5190,9 @@ async function changePassword(): Promise<void> {
       cacheBytes={storageCacheBytes} originUsage={storageOriginUsage} quota={storageQuota}
       volatile={!trustedSession} busy={memoryBusy || storageReading} error={storageError}
       refresh={() => void refreshStorage()} clean={(kind, ids) => memoryConfirmation = { kind, ids }}
-      download={(peer, id) => void downloadFile(peer, id)} />
+      download={(peer, id) => void downloadFile(peer, id)}
+      chats={chatStorageUsage(sessionChats,storageFiles)} name={contactName} openChat={peer=>void openDirectChat(peer)}
+      loadPreview={loadStoragePreview} />
   {/if}
 
   {#if settingsSection === 'about'}<AboutProject />{/if}
@@ -5133,6 +5237,8 @@ async function changePassword(): Promise<void> {
       onDisconnect={()=>void stopRadio()} onChannel={index=>void changeRadioChannel(index)} onAutomatic={value=>void setRadioAutomatic(value)}
       onImport={importRadioRoute} onRetry={(peer,id)=>void retryRadio(peer,id)} onRelease={(peer,id)=>void releaseRadio(peer,id)} name={contactName}
       onChooseBoard={node=>void chooseRadioBoard(node)} onCheckBoard={node=>void checkRadioBoard(node)} onDeleteBoard={node=>void deleteRadioBoard(node)}
+      channelsEnabled={meshtastic.enabled} showAllChannels={meshtastic.showAll??false} historyLimit={nativeHistoryLimit(meshtastic.historyLimit)}
+      onChannelsEnabled={setNativeEnabled} onShowAllChannels={value=>setNativePreferences({showAll:value})} onHistoryLimit={value=>setNativePreferences({historyLimit:value})}
       onDefaultBoard={node=>void defaultRadioBoard(node)} onNameBoard={(node,name)=>void saveRadioBoard(node,name)}/>
   {/if}
   {#if settingsSection === 'connection' && connectionSection === 'connect' && profileNetwork}
@@ -5381,7 +5487,7 @@ async function changePassword(): Promise<void> {
     <button class="primary" onclick={changePassword} disabled={authBusy || switchingTrust || endingSession}>{$i18n.text("Сменить пароль")}</button>
   </div>
 
-  <div class="settings-section">
+  <div class="settings-section" id="seed-backup-section">
     <h4>{$i18n.text("Бумажная копия сида")}</h4>
 
     <div class="setting-label">
@@ -5396,7 +5502,7 @@ async function changePassword(): Promise<void> {
     {/if}
     {#if backupOpen}
       {#if !trustedSession}<p class="help-text">{$i18n.text("В недоверенном режиме файл содержит только seed и ник. Чтобы сохранить ранее созданную связку профилей, включите доверенный режим и создайте файл заново.")}</p>{/if}
-      <SeedBackup accountId={rootAccountId || address} nickname={selfNickname} readProfiles={exportProfiles} onSeedConsumed={consumeOnboardingSeed} onVerified={confirmSeedBackup} onSkip={() => backupOpen = false} />
+      <SeedBackup accountId={rootAccountId || address} nickname={selfNickname} readProfiles={exportProfiles} onSeedConsumed={() => {}} onVerified={confirmSeedBackup} onSkip={() => backupOpen = false} />
     {:else}
       <button type="button" onclick={() => { hideDisplayedSecrets(); status = ''; backupOpen = true; }}>{$i18n.text("Показать seed и проверить запись")}</button>
     {/if}
@@ -5455,25 +5561,26 @@ async function changePassword(): Promise<void> {
     <nav class="conversation-list" aria-label={$i18n.text("Личные чаты")}>
       <ContactSearch bind:query={chatSearch} ownId={address} onOpen={(peer, route) => void addConversation(peer, route)} />
       <div class="conversation-items">
-      {#if radioState.connection||meshtastic.channels.length}<button class="native-channel-entry" class:active={nativeOpen} onclick={openNativeChannels}><ChatIcon name="radio"/><span>{$i18n.text('Каналы Meshtastic')}{#if nativeUnread}<strong class="unread-badge">{nativeUnread}</strong>{/if}</span></button>{/if}
-      {#each listedPeers as peer (peer)}
-        <ConversationRow accountId={peer} name={contactName(peer)} photo={contactPhoto(peer)} conversation={sessionChats.byPeer[peer]}
-          self={peer===address} active={!nativeOpen&&sessionChats.activePeer===peer} onOpen={()=>openConversation(peer)} />
+      {#each conversationItems as item (`${item.kind}:${item.id}`)}
+        {#if item.kind==='radio'}{@const c=item.channel}{@const last=c.messages.at(-1)}
+          <ConversationRow accountId={item.id} name={c.name||$i18n.text('По умолчанию')} conversation={nativeListConversation(c)} active={nativeOpen&&nativeSelected===item.id} onOpen={()=>openNativeChannels(item.id)}
+            radio={{encryption:c.encryption,preview:last?.text||$i18n.text('Пока нет сообщений.'),status:last?.outgoing&&['queued','failed','unknown'].includes(last.status)?nativeMessageStatus(last).label:undefined}}/>
+        {:else}
+          <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]}
+            self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)} />
+        {/if}
       {/each}
-      {#if sessionChats.order.length === 0}
-        <p>{$i18n.text("Пока нет собеседников.")}</p>
-      {:else if listedPeers.length === 0}
-        <p>{$i18n.text("Ничего не найдено.")}</p>
-      {/if}
+      {#if meshtastic.enabled&&meshtastic.channels.some(c=>!nativeLive.includes(nativeToken(c))&&c.messages.length)}<label class="native-saved-toggle"><input type="checkbox" checked={meshtastic.showAll} onchange={e=>void setNativePreferences({showAll:e.currentTarget.checked}).catch(error=>status=error.message)}/>{$i18n.text('Все сохранённые радиоканалы')}</label>{/if}
+      {#if !conversationItems.length}<p>{$i18n.text(chatSearch?'Ничего не найдено.':'Пока нет собеседников.')}</p>{/if}
       </div>
     </nav>
 
     <section class="conversation-pane" class:drop-active={fileDragActive} use:fileDrop aria-label={$i18n.text("Выбранный чат")}>
       {#if fileDragActive}<div class="file-drop-hint" role="status">{$i18n.text("Отпустите файлы — они отправятся в этот чат")}</div>{/if}
       {#if nativeOpen}
-        <MeshtasticChannels data={meshtastic} selected={nativeSelected} live={nativeLive} connected={radioConnection==='connected'} busy={nativeSending||radioBusy} board={radioBoardLabel} link={contactLink(address)}
-          onSelect={selectNativeChannel} onEnabled={setNativeEnabled} onSignature={setNativeSignature} onSend={sendNativeText} onClear={clearNativeChannel}
-          onSettings={()=>openConnectionSection('radio')} onBack={()=>{nativeOpen=false;showChatList();}}/>
+        {#key nativeSelected}<MeshtasticChannels data={meshtastic} selected={nativeSelected} live={nativeLive} connected={radioConnection==='connected'} busy={nativeSending||radioBusy} board={radioBoardLabel} link={contactLink(address)} initialUnread={nativeInitialUnread} forwardDone={nativeForwardDone}
+          onSignature={setNativeSignature} onSend={sendNativeText} onDelete={deleteNativeMessages} onDraft={setNativeDraft} onForward={openNativeForward} onBottom={nativeBottom}
+          onSettings={()=>openConnectionSection('radio')} onBack={()=>{nativeOpen=false;showChatList();}}/>{/key}
       {:else if activeConversation}
         {#key activeConversation.peerAddress}
         <div class="chat-heading">
@@ -5483,7 +5590,7 @@ async function changePassword(): Promise<void> {
           {#if otherUnread}<span class="unread-badge" aria-hidden="true">{otherUnread > 99 ? '99+' : otherUnread}</span>{/if}
         </button>
         {#if selecting}
-          <MessageSelectionBar messages={activeMessages} selected={selectedMessages} busy={actionBusy}
+          <MessageSelectionBar messages={activeMessages} selected={selectedMessages} busy={actionBusy} onCopy={()=>void copySelection()}
             onToggleAll={toggleAllMessages} onForward={() => openChatAction('forward')}
             onDownload={() => void downloadSelection()} onDelete={() => openChatAction('delete')} />
         {:else}
@@ -5499,12 +5606,12 @@ async function changePassword(): Promise<void> {
             disabled={callBusy || voiceBusy || navigationBusy() || activeConversation.connection !== 'connected'}
             aria-label={$i18n.text("Позвонить")} title={activeConversation.connection === 'connected' ? $i18n.text("Голосовой звонок") : $i18n.text("Для звонка собеседник должен быть на связи")}><ChatIcon name="phone" /></button>
         {/if}
-        <button class="select-messages-button" type="button" onclick={() => chatSearchOpen = !chatSearchOpen} aria-label={$i18n.text("Поиск в чате")} title={$i18n.text("Поиск по тексту или дате")}><ChatIcon name="search" /></button>
+        <button class="select-messages-button" type="button" onclick={toggleChatSearch} aria-label={$i18n.text("Поиск в чате")} title={$i18n.text("Поиск по тексту или дате")}><ChatIcon name="search" /></button>
         <button class="select-messages-button" type="button" onclick={() => { selecting = true; selectedMessages = []; }} disabled={actionBusy}
           aria-label={$i18n.text("Выбрать сообщения")} title={$i18n.text("Выбрать сообщения")}><ChatIcon name="select" /></button>
         {/if}
         </div>
-        {#if chatSearchOpen}<ChatSearch messages={activeMessages} onJump={jumpToMessage} onClose={() => chatSearchOpen = false} />{/if}
+        {#if chatSearchOpen}<ChatSearch messages={activeMessages} onJump={jumpToMessage} onClose={toggleChatSearch} />{/if}
         {#key activeConversation.peerAddress}<ChatActivity messages={activeConversation.messages} onJump={jumpToMessage} onClear={()=>void clearQueueCounters(activeConversation.peerAddress)} />{/key}
         {#if activeConversation.error && !isRoutineConnectionNotice(activeConversation.error)}
           <p role="alert">{$i18n.text(activeConversation.error)}</p>
@@ -5543,7 +5650,9 @@ async function changePassword(): Promise<void> {
         {/if}
         <div class="message-history">
         <div class="message-scroll" data-chat-scroll use:manageChatScroll={{ peer: activeConversation.peerAddress, lastId: activeMessages.at(-1)?.id ?? '', openToken: chatOpenToken }}>
-          {#each activeMessages as message (message.id)}
+          {#each activeMessages as message,i (message.id)}
+            {#if i===0||new Date(message.timestamp).toDateString()!==new Date(activeMessages[i-1].timestamp).toDateString()}<HistoryDivider timestamp={message.timestamp}/>{/if}
+            {#if ordinaryUnreadBoundary===message.id}<HistoryDivider unread/>{/if}
             <div data-chat-message-id={message.id} use:observeIncoming={{ peer: activeConversation.peerAddress, messageId: message.id }}>
               {#if message.localCall}
                 <CallHistoryCard record={message.localCall} disabled={callBusy || voiceBusy || navigationBusy() || activeConversation.connection !== 'connected' || activeConversation.contact !== 'accepted'}
@@ -5577,7 +5686,7 @@ async function changePassword(): Promise<void> {
                   shareText={message.details?.contactCard ? contactLink(message.details.contactCard.accountId) : message.text}
                   openView={messageTools?.id === message.id ? messageTools.view : null} disabled={actionBusy || memoryBusy || endingSession || switchingTrust || pinBusy}
                   canReply={activeConversation.contact === 'accepted'}
-                  onOpen={(view) => messageTools = { id: message.id, view }} onClose={() => messageTools = null}
+                  onCopy={()=>void copyMessage(message)} onOpen={(view) => messageTools = { id: message.id, view }} onClose={() => messageTools = null}
                   onReply={() => startReply(message)} onForward={() => messageAction(message, 'forward')} onSelect={() => messageAction(message, 'select')}
                   onCancelNode={!message.nodeQueue && courierState.pending.some(j=>j.body.id===message.id) ? ()=>void cancelNodeMessage(activeConversation.peerAddress,message.id) : undefined}
                   onRetryNode={message.nodeQueue && message.nodeQueue!=='canceling' ? ()=>void retryNodeMessage(activeConversation.peerAddress,message.id) : undefined}
@@ -5778,10 +5887,10 @@ async function changePassword(): Promise<void> {
   {/if}
   {/if}
   </div>
+  {#if textForward}<TextForwardDialog messages={textForward.messages} targets={textForwardTargets} onSend={sendForwardText} onClose={()=>textForward=null} onComplete={finishTextForward}/>{/if}
   {#if actionMode}
     <ChatActionDialog mode={actionMode} rows={actionRows} busy={actionBusy} error={actionError}
       onConfirm={(ids) => void confirmChatAction(ids)} onClose={() => { if (!actionBusy) actionMode = null; }} />
-  {/if}
   {/if}
 {/if}
 </div>

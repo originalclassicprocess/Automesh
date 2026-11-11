@@ -10,6 +10,7 @@ import { restoreOfflineState, type OfflineState } from '$lib/node/offline-state'
 import { restoreCourierState, type CourierState } from '$lib/node/courier-state';
 import { normalizeMediaLibrary, type MediaLibrary } from './media-library';
 import { normalizeAvatar, normalizePeerAvatars } from './avatar';
+import { normalizeProfileLinks, normalizePeerLinks, type ProfileLink } from './profile-links';
 import { normalizeCallRecord, recoverCallRecord, callRecordLabel } from '$lib/calls/history';
 import { normalizeDeviceSettings, type DeviceSettings } from '$lib/devices/settings';
 import { isDeliveryIssue, isDeliveryErrorCode } from '$lib/application/delivery-issues';
@@ -26,6 +27,10 @@ export type LocalChatData = {
   selfAvatar?: string;
   peerAvatars?: Record<string, string>;
   seedBackupVerified?: boolean;
+  seedNoticeDismissed?: boolean;
+  deviceOffer?: boolean;
+  selfLinks?: ProfileLink[];
+  peerLinks?: Record<string, ProfileLink[]>;
   readReceiptsEnabled: boolean;
   autoLockMinutes: number;
   autoReceiveFilesEnabled?: boolean;
@@ -269,6 +274,10 @@ function cleanData(value: unknown): LocalChatData {
     ...(raw.radioState !== undefined ? { radioState: normalizeRadioState(raw.radioState) } : {}),
     ...(raw.meshtastic !== undefined ? {meshtastic:normalizeNativeChannels(raw.meshtastic)}:{}),
     selfNickname: cleanName(raw.selfNickname),
+    ...(raw.selfLinks !== undefined ? {selfLinks: normalizeProfileLinks(raw.selfLinks)} : {}),
+    ...(raw.peerLinks !== undefined ? {peerLinks: normalizePeerLinks(raw.peerLinks)} : {}),
+    ...(typeof raw.seedNoticeDismissed === 'boolean' ? {seedNoticeDismissed: raw.seedNoticeDismissed} : {}),
+    ...(typeof raw.deviceOffer === 'boolean' ? {deviceOffer: raw.deviceOffer} : {}),
     ...(raw.selfAvatar !== undefined ? { selfAvatar: normalizeAvatar(raw.selfAvatar) ?? '' } : {}),
     ...(raw.peerAvatars !== undefined ? { peerAvatars: normalizePeerAvatars(raw.peerAvatars) } : {}),
     ...(raw.mediaLibrary !== undefined ? { mediaLibrary: normalizeMediaLibrary(raw.mediaLibrary) } : {}),
