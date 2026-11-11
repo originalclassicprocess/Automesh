@@ -47,6 +47,10 @@ try {
   const shell = await fetch(url + '/'); const html = await shell.text();
   assert.equal(shell.status, 200); assert.equal(shell.headers.get('x-automesh-version'), version);
   assert.equal(shell.headers.get('strict-transport-security'), 'max-age=31536000');
+  assert.ok(Buffer.byteLength(shell.headers.get('link') || '') <= 4096,
+    'optional preload header must leave room below shared-hosting response header limits');
+  assert.ok(/<link\b[^>]+rel="stylesheet"/.test(html), 'HTML must retain its stylesheets when the optional header is omitted');
+  assert.ok(/import\(["']\.\/_app\/immutable\//.test(html), 'HTML must retain its application bootstrap');
   const policy = shell.headers.get('content-security-policy');
   assert.ok(policy, 'SvelteKit must emit a CSP header, not just nonce attributes');
   const directives = new Map(policy.split(';').map(part => {
