@@ -17,6 +17,11 @@ export const handle: Handle = async ({ event, resolve }) => {
     } : {}),
   }).replaceAll('<', '\\u003c');
   const response = await resolve(event, { transformPageChunk: ({ html }) => html.replace('__MESH_RUNTIME_CONFIG__', config) });
+  // HTML retains its stylesheet links and application bootstrap. A large Link
+  // header can exceed a shared host's total response-header limit, causing a
+  // proxy 500 even when SSR succeeded. Keep the HTML and security headers.
+  const preload = response.headers.get('link');
+  if (preload && new TextEncoder().encode(preload).byteLength > 4096) response.headers.delete('link');
   response.headers.set('X-Automesh-Version', version);
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('Referrer-Policy', 'no-referrer');
