@@ -60,6 +60,16 @@ export class ChatService {
   private receiveQueues = new Map<string, Promise<void>>();
   private incomingCount = 0;
   private incomingBytes = 0;
+  private introduction?: {
+    start(peer: string): void;
+    isReady(peer: string): boolean;
+    accept(peer: string): Promise<void>;
+    sendKeys(peer: string, kind: 'courier' | 'offline', bundle: unknown): Promise<void>;
+    close(): void;
+  };
+  setIntroduction(value: NonNullable<ChatService['introduction']>) { this.introduction = value; }
+  isIntroductionReady(peer: string) { return this.introduction?.isReady(peer) ?? false; }
+  isDirectReady(peer: string) { return this.securePeers.has(peer); }
   private securePeers = new Set<string>();
   private peerEpochs = new Map<string, number>();
   private connectionWaiters = new Set<() => void>();
@@ -181,6 +191,7 @@ export class ChatService {
   async connect(peerAddress: string): Promise<void> {
 
     if (!this.identity) throw new Error('not_initialized');
+    this.introduction?.start(peerAddress);
     await this.transport.connect({
       address:   peerAddress,
       transport: this.transport.capabilities.type,
@@ -189,6 +200,7 @@ export class ChatService {
   }
 
   async disconnect(): Promise<void> {
+    this.introduction?.close(); this.introduction = undefined;
     for (const cancel of this.connectionWaiters) cancel();
     for (const handler of this.disconnectHandlers) { try { handler(); } catch { /* Optional UI teardown must not retain a secure chat session. */ } }
     this.generation++;
@@ -268,6 +280,7 @@ export class ChatService {
   async sendOfflineBundle(value: unknown, peer: string): Promise<void> {
     const json = JSON.stringify(value);
     if (json.length > 12000) throw new Error('offline_bundle_limit');
+    if (!this.isDirectReady(peer) && this.isIntroductionReady(peer)) return this.introduction!.sendKeys(peer, 'offline', value);
     await this.sendPayload(`\u0000automesh-prekeys-v1:${json}`, peer);
   }
 
@@ -276,6 +289,7 @@ export class ChatService {
   async sendCourierBundle(value: unknown, peer: string): Promise<void> {
     const json = JSON.stringify(value);
     if (json.length > 12000) throw new Error('courier_bundle_limit');
+    if (!this.isDirectReady(peer) && this.isIntroductionReady(peer)) return this.introduction!.sendKeys(peer, 'courier', value);
     await this.sendPayload(`\u0000automesh-courier-keys-v1:${json}`, peer);
   }
   onCourierBundle(handler: (peer: string, value: unknown) => unknown): void { this.courierBundleHandlers.push(handler); }
@@ -289,6 +303,7 @@ export class ChatService {
   }
 
   async sendContactAccepted(toPeerAddress: string): Promise<void> {
+    if (!this.isDirectReady(toPeerAddress) && this.isIntroductionReady(toPeerAddress)) return this.introduction!.accept(toPeerAddress);
     await this.sendPayload('\u0000mesh-contact-accepted-v1', toPeerAddress);
   }
 

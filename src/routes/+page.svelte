@@ -154,6 +154,7 @@ import ContactCard from '$lib/chat/ContactCard.svelte';
 import { contactLink, contactFromHash } from '$lib/chat/contact-link';
 import { PageNavigation, historyPageState } from '$lib/application/page-navigation';
 import { settingsParent, sameSettingsLocation } from '$lib/application/settings-parent';
+import { OnlineIntroduction, type IntroductionStatus } from '$lib/chat/online-introduction';
 import ConversationRow from '$lib/chat/ConversationRow.svelte';
 import ChatActivity from '$lib/chat/ChatActivity.svelte';
 import QueueIndicator from '$lib/chat/QueueIndicator.svelte';
@@ -518,10 +519,12 @@ async function useDeliveryNode(node: {url:string;nodeId:string}): Promise<void> 
   finally { if (generation === authGeneration) networkBusy = false; }
 }
 
+let introductionStates = $state<Record<string, IntroductionStatus>>({});
+const introductionLabels: Record<IntroductionStatus,string> = {connecting:'Устанавливаем защищённую связь',exchanging:'Резервное знакомство',request_sent:'Отправляем запрос',waiting_acceptance:'Ждём принятия',accepted:'Контакт принят',unsupported:'Сервер не поддерживает резервное знакомство',unavailable:'Резервный обмен пока недоступен',failed:'Не удалось завершить защищённый обмен'};
 const keyExchange = new Map<string,{chat:ChatService;at:number;busy:boolean}>();
 function publishDeliveryKeys(peer: string, force = false): void {
   const active = chat, generation = authGeneration;
-  if (peer === address || !active || !trustedSession || screen !== 'account' || endingSession || sessionChats.byPeer[peer]?.contact !== 'accepted' || sessionChats.byPeer[peer]?.connection !== 'connected') return;
+  if (peer === address || !active || !trustedSession || screen !== 'account' || endingSession || sessionChats.byPeer[peer]?.contact !== 'accepted' || sessionChats.byPeer[peer]?.connection !== 'connected' && !active.isIntroductionReady(peer)) return;
   const previous = keyExchange.get(peer);
   if (previous?.chat === active && (previous.busy || !force && Date.now()-previous.at < 30000)) return;
   const entry = {chat:active,at:Date.now(),busy:true}; keyExchange.set(peer,entry);
@@ -2655,7 +2658,7 @@ async function sendTextOnly() {
     // Primary-to-primary delivery never enters the delegated-device protocol.
     // Existing device journals remain separate; synchronization is not a gate.
     if (sessionChats.byPeer[peer]?.connection !== 'connected') outgoingIssue(peer,messageId,
-      originalContact === 'new' ? 'contact_pending' : !courierState.node && !offlineDeliveryState.node ? 'node_not_configured' : !courierState.enabled && !offlineDeliveryState.enabled ? 'node_sending_disabled' : undefined);
+      originalContact === 'new' ? 'contact_connecting' : !courierState.node && !offlineDeliveryState.node ? 'node_not_configured' : !courierState.enabled && !offlineDeliveryState.enabled ? 'node_sending_disabled' : undefined);
     courierDelivery?.wake();
     void deviceRuntime?.wake().catch(() => {});
     if (sendingChat && chat === sendingChat) {
@@ -3863,7 +3866,7 @@ async function acceptRequest(peer: string): Promise<void> {
     return;
   }
   if (chat === activeChat && address === accountId && activeChat) {
-    if (sessionChats.byPeer[peer].connection === 'connected') {
+    if (sessionChats.byPeer[peer].connection === 'connected' || activeChat.isIntroductionReady(peer)) {
       publishDeliveryKeys(peer);
       void activeChat.sendContactAccepted(peer).catch(() => {});
       void activeChat.sendReadPreference(readReceiptsEnabled, peer).catch(() => {});
@@ -4241,7 +4244,7 @@ async function initializeChat() {
         : 'Конверт не принят: не прошёл проверку либо нет сохранённого одноразового ключа.';
     }); });
   }
-  nextChat.onMessage(async (msg) => {
+  const receiveChatMessage = async (msg: import('$lib/chat/ChatService').ChatMessage) => {
     if (chat !== nextChat) return;
     const current = sessionChats.byPeer[msg.from];
     if (current?.contact === 'blocked') throw new Error('blocked_contact');
@@ -4271,7 +4274,7 @@ async function initializeChat() {
       ...(msg.details ? { details: msg.details } : {}),
     });
     sessionChats = updateConversation(sessionChats, msg.from, (conversation) => ({
-      ...conversation, connection: 'connected',
+      ...conversation, connection: msg.via === 'introduction' ? conversation.connection : 'connected',
     }));
     if (!await persistLocalChats()) {
       if (reciprocalRequest && chat === nextChat) sessionChats = setContactState(sessionChats, msg.from, 'outgoing');
@@ -4281,7 +4284,8 @@ async function initializeChat() {
     void deviceRuntime?.wake().catch(() => {});
     if (handshake.keys) publishDeliveryKeys(msg.from,true);
     if (reciprocalRequest) void nextChat.sendReadPreference(readReceiptsEnabled, msg.from).catch(() => {});
-  });
+  };
+  nextChat.onMessage(receiveChatMessage);
   nextChat.onReceipt((peer, messageId) => {
     if (chat !== nextChat) return;
     const message = sessionChats.byPeer[peer]?.messages.find((entry) => entry.id === messageId && entry.direction === 'outgoing');
@@ -4291,22 +4295,25 @@ async function initializeChat() {
     radioRuntime?.acknowledge(peer, messageId);
     void persistLocalChats();
   });
-  nextChat.onContactAccepted((peer) => {
+  const acceptAuthenticatedContact = async (peer: string) => {
     if (chat !== nextChat) return;
     const handshake = contactHandshake(sessionChats.byPeer[peer]?.contact,'accepted');
     if (handshake.keys && !handshake.accept) { publishDeliveryKeys(peer,true); return; }
     if (!handshake.accept) return;
     sessionChats = setContactState(sessionChats, peer, 'accepted');
+    if (!await persistLocalChats()) {
+      if (chat === nextChat && sessionChats.byPeer[peer]?.contact === 'accepted') sessionChats = setContactState(sessionChats, peer, 'outgoing');
+      throw Error('incoming_message_not_saved');
+    }
+    if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
     publishDeliveryKeys(peer,true);
-    // One echo after a state transition. An already accepted side only resends
-    // keys, never another echo, so confirmations cannot loop indefinitely.
     void nextChat.sendContactAccepted(peer).catch(() => {});
-    void persistLocalChats();
     void nextChat.sendReadPreference(readReceiptsEnabled, peer).catch(() => {});
     publishAvatar(nextChat, peer);
     void nextChat.sendProfileLinks(selfLinks, peer).catch(() => {});
     scanVisibleMessages();
-  });
+  };
+  nextChat.onContactAccepted(peer => { void acceptAuthenticatedContact(peer).catch(() => {}); });
   nextChat.onReadPreference((peer, enabled) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
     peerReadConfirmed.add(peer);
@@ -4458,7 +4465,39 @@ async function initializeChat() {
     }
   });
 
+  introductionStates = {};
   const chatIdentity = { provider: identity, address };
+  if (trustedSession) {
+    const introduction = new OnlineIntroduction({
+      identity: chatIdentity, port: transport.introductionPort(),
+      current: () => chat === nextChat && generation === authGeneration && screen === 'account' && !endingSession && !memoryBusy,
+      contact: peer => sessionChats.byPeer[peer]?.contact,
+      request: peer => {
+        const m = sessionChats.byPeer[peer]?.messages.find(m => m.direction === 'outgoing' && m.from === address && !m.restoredFromBackup && !m.importedFromDevice && !m.file && !m.localCall && !m.deviceMessage && !m.details?.pin && !m.details?.ephemeral && !m.details?.ephemeralOpened);
+        return m ? {id:m.id,content:encodeChatContent(m.text,m.details),timestamp:m.timestamp} : undefined;
+      },
+      incomingRequest: peer => sessionChats.byPeer[peer]?.messages.find(m => m.direction === 'incoming' && !m.restoredFromBackup && !m.importedFromDevice && !m.file && !m.localCall)?.id,
+      directReady: peer => nextChat.isDirectReady(peer), authorize: authorizePrimary,
+      receive: receiveChatMessage,
+      accept: acceptAuthenticatedContact,
+      received: async (peer,id) => {
+        if (chat !== nextChat) throw Error('account_locked');
+        const previous = sessionChats;
+        sessionChats = setDeliveryStatus(sessionChats,peer,id,'delivered');
+        if (!await persistLocalChats()) { if (chat === nextChat) sessionChats = previous; throw Error('incoming_message_not_saved'); }
+        outbox.acknowledge(peer,id);
+      },
+      keys: async (peer,kind,bundle) => {
+        if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') throw Error('blocked_contact');
+        if (kind === 'courier') await courierDelivery?.accept(peer,bundle);
+        else await offlineDelivery?.accept(peer,bundle);
+        courierDelivery?.wake();
+      },
+      ready: peer => { if (chat === nextChat) {publishDeliveryKeys(peer,true);courierDelivery?.wake();} },
+      status: (peer,value) => { if (chat === nextChat) introductionStates = {...introductionStates,[peer]:value}; },
+    });
+    nextChat.setIntroduction(introduction);
+  }
   chat = nextChat;
   offlineDelivery?.start();
   courierDelivery?.start();
@@ -5566,7 +5605,7 @@ async function changePassword(): Promise<void> {
           <ConversationRow accountId={item.id} name={c.name||$i18n.text('По умолчанию')} conversation={nativeListConversation(c)} active={nativeOpen&&nativeSelected===item.id} onOpen={()=>openNativeChannels(item.id)}
             radio={{encryption:c.encryption,preview:last?.text||$i18n.text('Пока нет сообщений.'),status:last?.outgoing&&['queued','failed','unknown'].includes(last.status)?nativeMessageStatus(last).label:undefined}}/>
         {:else}
-          <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]}
+          <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]} introduction={introductionStates[item.id] ? introductionLabels[introductionStates[item.id]] : undefined}
             self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)} />
         {/if}
       {/each}
@@ -5633,7 +5672,7 @@ async function changePassword(): Promise<void> {
           <button onclick={() => unblockContact(activeConversation.peerAddress)}>{$i18n.text("Разблокировать")}</button>
         {:else}
         {#if activeConversation.contact === 'new'}<p><small>{$i18n.text("Первое сообщение отправит запрос на переписку.")}</small></p>{/if}
-        {#if activeConversation.contact === 'outgoing'}<p><small>{$i18n.text("Ждём, пока собеседник примет запрос.")}</small></p>{/if}
+        {#if activeConversation.contact === 'outgoing'}<p><small>{$i18n.text(introductionStates[activeConversation.peerAddress] ? introductionLabels[introductionStates[activeConversation.peerAddress]] : activeConversation.messages.some(m=>m.direction==='outgoing'&&['delivered','read'].includes(m.delivery??'')) ? 'Ждём, пока собеседник примет запрос.' : 'Устанавливаем защищённую связь')}</small></p>{/if}
         {#if activePins.some(pin => pin.targetId)}
           <div class="pinned-messages" aria-label={$i18n.text("Закреплённые сообщения")}>
             {#each activePins.filter(pin => pin.targetId) as pin (pin.actor)}

@@ -2962,5 +2962,13 @@
   "m_c56e6b600710": "No confirmation received. The message may have arrived; a manual retry may create a duplicate.",
   "m_74d4ea2784b7": "The attempt is saved in channel history. Check its status; retry is available in the message menu.",
   "m_5c07c2d39e1a": "Channel unavailable.",
-  "m_165f8aabdcbe": "You can forward one text message to a new contact."
+  "m_165f8aabdcbe": "You can forward one text message to a new contact.",
+  "m_1e4c393c88f6": "Establishing a secure connection",
+  "m_3a86c9291278": "Secure introduction via signaling",
+  "m_1cb31b5cca93": "Sending request",
+  "m_d06f918bb9ef": "This server does not support secure introductions",
+  "m_145ec61d2264": "No shared route available",
+  "m_debcfa38e98a": "Secure exchange could not be completed",
+  "m_e996bb3314c8": "The request is saved in this app. Delivery to your contact has not been confirmed yet.",
+  "m_79522dcd3694": "Secure introduction is currently unavailable"
 }

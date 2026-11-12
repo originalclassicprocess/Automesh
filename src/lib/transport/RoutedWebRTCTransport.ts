@@ -1,3 +1,4 @@
+import type { IntroductionPort, IntroductionWire } from './introduction-relay';
 import { WebRTCTransport } from './WebRTCTransport';
 import { DirectWebRTCTransport } from './DirectWebRTCTransport';
 import type { CourierDelivery, CourierReply } from '$lib/node/courier-controller';
@@ -14,6 +15,9 @@ type Managed = Transport & {
   onPeerFailure(cb: (peer: string) => void): void;
   onCourier?(cb: (data: CourierDelivery, reply: CourierReply) => void): void;
   resume?(): Promise<void>;
+  supportsIntroduction?(): boolean;
+  sendIntroduction?(peer: string, frame?: string): void;
+  onIntroduction?(cb: (event: IntroductionWire) => void): () => void;
 };
 type Node = { endpoint: SignalingEndpoint; transport: Managed; status: TransportStatus;
   registryId?: string; alias: boolean; error: string; pending?: Promise<boolean>; abort?: AbortController };
@@ -45,6 +49,32 @@ export class RoutedWebRTCTransport implements Transport {
   private statuses: Array<(status: TransportStatus) => void> = [];
   private peers: Array<(peer: Peer, event: 'joined' | 'left') => void> = [];
   private changes: Array<() => void> = [];
+  private introductionMessages = new Set<(event: IntroductionWire) => void>();
+  private introductionClosed = new Set<(route: string) => void>();
+  private introductionAttempts = new Map<string, number>();
+  introductionPort(): IntroductionPort {
+    return {
+      route: async peer => {
+        if (!this.running || this.policyBlocked) throw Error('introduction_unavailable');
+        const available = this.nodes.filter(n => n.status === 'connected' && n.transport.supportsIntroduction?.());
+        const preferred = this.routes.get(peer);
+        available.sort((a,b) => Number(b === preferred) - Number(a === preferred));
+        if (!available.length) throw Error(this.nodes.some(n => n.status === 'connected') ? 'introduction_unsupported' : 'introduction_unavailable');
+        const attempt = this.introductionAttempts.get(peer) ?? 0;
+        // Bound bookkeeping independently of an untrusted peer list.
+        if (!this.introductionAttempts.has(peer) && this.introductionAttempts.size >= 256) this.introductionAttempts.delete(this.introductionAttempts.keys().next().value!);
+        this.introductionAttempts.set(peer, attempt + 1);
+        return available[attempt % available.length].endpoint.url;
+      },
+      send: (peer, route, frame) => {
+        const node = this.nodes.find(n => n.endpoint.url === route);
+        if (!this.running || this.policyBlocked || node?.status !== 'connected' || !node.transport.supportsIntroduction?.()) throw Error('introduction_unavailable');
+        node.transport.sendIntroduction!(peer, frame);
+      },
+      listen: cb => { this.introductionMessages.add(cb); return () => { this.introductionMessages.delete(cb); }; },
+      closed: cb => { this.introductionClosed.add(cb); return () => { this.introductionClosed.delete(cb); }; },
+    };
+  }
   private direct = new DirectWebRTCTransport();
   private directPeers = new Set<string>();
   private couriers: Array<(data: CourierDelivery, reply: CourierReply) => void> = [];
@@ -138,6 +168,7 @@ export class RoutedWebRTCTransport implements Transport {
     this.nodes = unique.map((endpoint) => previous.find((node) => node.endpoint.url === endpoint.url) ?? this.makeNode(endpoint));
     for (const node of previous) if (!this.nodes.includes(node)) {
       node.abort?.abort();
+      for (const cb of this.introductionClosed) cb(node.endpoint.url);
       for (const [peer, route] of this.routes) if (route === node) this.dropRoute(peer, node);
       void node.transport.disconnect();
     }
@@ -149,6 +180,7 @@ export class RoutedWebRTCTransport implements Transport {
     node.transport.onStatusChange((status) => {
       if (!this.running || !this.nodes.includes(node)) return;
       node.status = status;
+      if (status !== 'connected') for (const cb of this.introductionClosed) cb(node.endpoint.url);
       if (status === 'connected') {
         node.registryId = node.transport.getRegistryId();
         node.error = '';
@@ -158,6 +190,9 @@ export class RoutedWebRTCTransport implements Transport {
         if (!this.nodes.some((item) => item.status === 'connected')) void this.warmNodes(true);
       }
       this.refreshStatus();
+    });
+    node.transport.onIntroduction?.(event => {
+      if (this.running && this.nodes.includes(node)) for (const cb of this.introductionMessages) cb({...event, route: node.endpoint.url});
     });
     node.transport.onPeerFailure((peer) => this.routeFailed(peer, node));
     node.transport.onCourier?.((data, reply) => {
@@ -395,6 +430,8 @@ export class RoutedWebRTCTransport implements Transport {
 
   async disconnect(): Promise<void> {
     this.running = false;
+    for (const node of this.nodes) for (const cb of this.introductionClosed) cb(node.endpoint.url);
+    this.introductionAttempts.clear();
     if (this.maintenance) clearInterval(this.maintenance);
     this.maintenance = null;
     for (const peer of this.retry.keys()) this.cancelRetry(peer);

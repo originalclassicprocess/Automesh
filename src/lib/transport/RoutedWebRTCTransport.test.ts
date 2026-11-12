@@ -10,6 +10,7 @@ import { emptySessionChats, receiveMessage } from '$lib/chat/session-chats';
 import type { CourierDelivery, CourierReply } from '$lib/node/courier-controller';
 import { receiveRouting } from '$lib/node/receive-routing';
 import { emptyCourierState } from '$lib/node/courier-state';
+import type { IntroductionWire } from './introduction-relay';
 
 const internet: SignalingEndpoint = { kind: 'internet', url: 'wss://chat.example/signal' };
 const lan: SignalingEndpoint = { kind: 'lan', url: 'wss://192.168.0.10:3002/signal' };
@@ -24,6 +25,14 @@ class FakeNode {
   sent: TransportMessage[] = [];
   connections = new Set<string>();
   rejected = false;
+  intro = false;
+  private introductions = new Set<(event:IntroductionWire)=>void>();
+  supportsIntroduction(){return this.intro && this.status==='connected';}
+  onIntroduction(cb:(event:IntroductionWire)=>void){this.introductions.add(cb);return()=>{this.introductions.delete(cb);};}
+  sendIntroduction(peer:string, frame?:string){
+    const target=this.fabric.accounts.get(`${this.endpoint.url}|${peer}`);
+    queueMicrotask(()=>{if(target)for(const cb of target.introductions)cb({peer:this.address,route:this.endpoint.url,kind:frame?'frame':'open',frame});});
+  }
   private statuses: Array<(status: TransportStatus) => void> = [];
   private messages: Array<(message: TransportMessage) => void> = [];
   private peers: Array<(peer: Peer, event: 'joined' | 'left') => void> = [];
@@ -103,6 +112,17 @@ const message = (from: string, to: string): TransportMessage => ({ from, to, pay
   signature: new Uint8Array(), timestamp: 1, messageId: 'sample', ttl: 1 });
 
 describe('per-peer network routes', () => {
+  it('isolates service introductions from direct peer presence and releases them when a listener closes',async()=>{
+    const fabric=new Fabric(),a=fabric.router([internet]),b=fabric.router([internet]);
+    await a.init('alice');await b.init('bob');fabric.created.forEach(n=>{n.intro=true;});
+    const joined=vi.fn(),received=vi.fn(),closed=vi.fn();b.onPeerChange(joined);
+    const pa=a.introductionPort(),pb=b.introductionPort();pb.listen(received);pa.closed(closed);
+    const route=await pa.route('bob');pa.send('bob',route,'AAAA');
+    await vi.waitFor(()=>expect(received).toHaveBeenCalledWith({peer:'alice',route:internet.url,kind:'frame',frame:'AAAA'}));
+    expect(joined).not.toHaveBeenCalled();expect(a.getPeerRoutes()).toEqual({});expect(await b.discover()).toEqual([]);
+    fabric.created.find(n=>n.address==='alice')!.setStatus('offline');
+    expect(closed).toHaveBeenCalledWith(internet.url);expect(()=>pa.send('bob',route)).toThrow('introduction_unavailable');
+  });
   it('prefers the server node for new routes without moving a live direct conversation',async()=>{
     const fabric=new Fabric(), server={url:'wss://node.example/signal',kind:'internet' as const};
     fabric.ids.set(server.url,'c'.repeat(32));

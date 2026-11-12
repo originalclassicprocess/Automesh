@@ -7,10 +7,10 @@
   import type {ChannelEncryption} from '$lib/radio/native-channels';
   import { conversationPreview } from './conversation-list';
   import type { Conversation } from './session-chats';
-  let { accountId, name, photo = '', conversation, self = false, active = false, onOpen, radio }: {
-    accountId: string; name: string; photo?: string; conversation: Conversation; self?: boolean; active?: boolean; onOpen(): void;radio?:{encryption?:ChannelEncryption;preview:string;status?:string};
+  let { accountId, name, photo = '', conversation, self = false, active = false, onOpen, radio, introduction }: {
+    accountId: string; name: string; photo?: string; conversation: Conversation; self?: boolean; active?: boolean; onOpen(): void;introduction?:string;radio?:{encryption?:ChannelEncryption;preview:string;status?:string};
   } = $props();
-  const contactLabel = $derived(conversation.contact === 'pending' ? 'Запрос' : conversation.contact === 'outgoing' ? 'Ждём принятия' : conversation.contact === 'blocked' ? 'Заблокирован' : '');
+  const contactLabel = $derived(conversation.contact === 'pending' ? 'Запрос' : conversation.contact === 'outgoing' ? introduction || (conversation.messages.some(m=>m.direction==='outgoing'&&['delivered','read'].includes(m.delivery??'')) ? 'Ждём принятия' : 'Устанавливаем защищённую связь') : conversation.contact === 'blocked' ? 'Заблокирован' : '');
 </script>
 <button type="button" class="conversation-row" aria-current={active ? 'true' : undefined} title={accountId} onclick={onOpen}>
   <span class="row-avatar">{#if radio}<span class="radio-avatar"><ChatIcon name="radio"/></span>{:else}<Avatar {accountId} {photo} size={32} />{/if}

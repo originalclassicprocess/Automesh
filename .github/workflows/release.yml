@@ -5,7 +5,7 @@ on:
       version:
         description: Exact package version (published releases are never overwritten)
         required: true
-        default: '0.5.5'
+        default: '0.5.6'
 permissions:
   contents: read
 concurrency:
@@ -91,4 +91,4 @@ jobs:
         run: |
           tag="v$RELEASE_VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then echo 'Release already exists; refusing overwrite'; exit 1; fi
-          gh release create "$tag" .release/publication/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Automesh $RELEASE_VERSION" --notes-file docs/RELEASE_0_5_5.md --latest
+          gh release create "$tag" .release/publication/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Automesh $RELEASE_VERSION" --notes-file docs/RELEASE_0_5_6.md --latest

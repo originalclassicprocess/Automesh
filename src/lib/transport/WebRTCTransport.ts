@@ -1,3 +1,5 @@
+import { INTRODUCTION_PROTOCOL, validIntroductionFrame } from '../../../nodes/packages/protocol/src/introduction.js';
+import type { IntroductionWire } from './introduction-relay';
 import { encodeMessage, decodeMessage } from '$lib/message/transport-codec';
 import { defaultStunServers } from './client-config';
 // ============================================================
@@ -32,12 +34,14 @@ type SignalingMessage =
   | { type: 'candidate';    to: string; from: string; attemptId: string; candidate: RTCIceCandidateInit }
   | { type: 'peer_online';  address: string }
   | { type: 'peer_offline'; address: string }
-  | { type: 'registered'; address: string; iceMode?: 'lan'; registryId?: string; attachmentProtocol?: string }
+  | { type: 'registered'; address: string; iceMode?: 'lan'; registryId?: string; attachmentProtocol?: string; introductionProtocol?: string }
   | { type: 'peer_unavailable'; address: string; attemptId: string }
   | ({ type: 'courier_delivery'; to: string } & CourierDelivery)
   | { type: 'courier_receipt'; to: string; id: string; receipt: string }
   | { type: 'courier_file_request'; to: string; request: Parameters<NonNullable<CourierReply['chunk']>>[0] }
   | { type: 'courier_file_chunk'; from: string; to: string; id: string; index: number; requestId: string; cipher: string }
+  | { type: 'introduction'; protocol: string; from?: string; to: string; kind: 'open' | 'frame'; frame?: string }
+  | { type: 'introduction_unavailable'; address: string; reason: string }
   | { type: 'error'; reason: string };
 
 type QueuedSend = {
@@ -100,6 +104,14 @@ export class WebRTCTransport implements Transport {
   private failureHandlers: Array<(peer: string) => void> = [];
   private registryId: string | undefined;
   private courierHandlers: Array<(data: CourierDelivery, reply: CourierReply) => void> = [];
+  private introductionRelay = false;
+  private introductionHandlers = new Set<(event: IntroductionWire) => void>();
+  supportsIntroduction() { return this.signalingReady && this.introductionRelay; }
+  onIntroduction(cb: (event: IntroductionWire) => void) { this.introductionHandlers.add(cb); return () => { this.introductionHandlers.delete(cb); }; }
+  sendIntroduction(peer: string, frame?: string) {
+    if (!this.supportsIntroduction() || this.ws?.readyState !== WebSocket.OPEN || this.ws.bufferedAmount > 256 * 1024) throw Error('introduction_unavailable');
+    this.wsSend({ type: 'introduction', protocol: INTRODUCTION_PROTOCOL, to: peer, kind: frame === undefined ? 'open' : 'frame', ...(frame === undefined ? {} : {frame}) });
+  }
   private attachmentRelay = false;
   private attachmentRequests = new Map<string, { socket: WebSocket | null; from: string; id: string; index: number; resolve(bytes?: Uint8Array): void }>();
   private clearAttachmentRequests(socket?: WebSocket | null) {
@@ -301,7 +313,7 @@ export class WebRTCTransport implements Transport {
     return new Promise((resolve, reject) => {
       this.setStatus('connecting');
       this.signalingReady = false;
-      this.attachmentRelay = false;
+      this.attachmentRelay = false; this.introductionRelay = false;
       let ws: WebSocket;
       try { ws = new WebSocket(this.signalingUrl); } catch (error) { reject(error); return; }
       this.ws = ws;
@@ -365,6 +377,7 @@ export class WebRTCTransport implements Transport {
               registered = true;
               this.signalingReady = true;
               this.attachmentRelay = msg.attachmentProtocol === ATTACHMENT_PROTOCOL;
+              this.introductionRelay = msg.introductionProtocol === INTRODUCTION_PROTOCOL;
               this.registryId = typeof msg.registryId === 'string' && /^[a-f0-9]{32}$/.test(msg.registryId) ? msg.registryId : undefined;
               this.lanIceMode = this.endpoints[this.endpointIndex].kind === 'lan' ||
                 msg.iceMode === 'lan' || import.meta.env.VITE_MESH_ICE_MODE === 'lan';
@@ -522,6 +535,15 @@ export class WebRTCTransport implements Transport {
   private async handleSignaling(msg: SignalingMessage): Promise<void> {
     if (msg.type === 'registered') this.attachmentRelay = msg.attachmentProtocol === ATTACHMENT_PROTOCOL;
     switch (msg.type) {
+      case 'introduction':
+        if (this.supportsIntroduction() && msg.to === this.myAddress && isValidAccountId(msg.from) && validIntroductionFrame(msg))
+          for (const cb of this.introductionHandlers) cb({ peer: msg.from!, route: this.signalingUrl, kind: msg.kind, frame: msg.frame });
+        break;
+      case 'introduction_unavailable':
+        if (this.supportsIntroduction() && isValidAccountId(msg.address))
+          for (const cb of this.introductionHandlers) cb({ peer: msg.address, route: this.signalingUrl, kind: 'unavailable' });
+        break;
+
       case 'courier_file_chunk': {
         const pending = this.attachmentRequests.get(msg.requestId);
         if (this.signalingReady && pending && pending.socket === this.ws && msg.to === this.myAddress && msg.from === pending.from && msg.id === pending.id && msg.index === pending.index && validAttachmentChunk(msg)) pending.resolve(unbase64(msg.cipher));
