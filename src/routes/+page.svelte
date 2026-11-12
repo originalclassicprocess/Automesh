@@ -520,7 +520,7 @@ async function useDeliveryNode(node: {url:string;nodeId:string}): Promise<void> 
 }
 
 let introductionStates = $state<Record<string, IntroductionStatus>>({});
-const introductionLabels: Record<IntroductionStatus,string> = {connecting:'Устанавливаем защищённую связь',exchanging:'Резервное знакомство',request_sent:'Отправляем запрос',waiting_acceptance:'Ждём принятия',accepted:'Контакт принят',unsupported:'Сервер не поддерживает резервное знакомство',unavailable:'Нет общего доступного маршрута',failed:'Не удалось завершить защищённый обмен'};
+const introductionLabels: Record<IntroductionStatus,string> = {connecting:'Устанавливаем защищённую связь',exchanging:'Резервное знакомство',request_sent:'Отправляем запрос',waiting_acceptance:'Ждём принятия',accepted:'Контакт принят',unsupported:'Сервер не поддерживает резервное знакомство',unavailable:'Резервный обмен пока недоступен',failed:'Не удалось завершить защищённый обмен'};
 const keyExchange = new Map<string,{chat:ChatService;at:number;busy:boolean}>();
 function publishDeliveryKeys(peer: string, force = false): void {
   const active = chat, generation = authGeneration;

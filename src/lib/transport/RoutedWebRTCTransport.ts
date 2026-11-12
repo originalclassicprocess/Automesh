@@ -59,7 +59,7 @@ export class RoutedWebRTCTransport implements Transport {
         const available = this.nodes.filter(n => n.status === 'connected' && n.transport.supportsIntroduction?.());
         const preferred = this.routes.get(peer);
         available.sort((a,b) => Number(b === preferred) - Number(a === preferred));
-        if (!available.length) throw Error('introduction_unsupported');
+        if (!available.length) throw Error(this.nodes.some(n => n.status === 'connected') ? 'introduction_unsupported' : 'introduction_unavailable');
         const attempt = this.introductionAttempts.get(peer) ?? 0;
         // Bound bookkeeping independently of an untrusted peer list.
         if (!this.introductionAttempts.has(peer) && this.introductionAttempts.size >= 256) this.introductionAttempts.delete(this.introductionAttempts.keys().next().value!);
