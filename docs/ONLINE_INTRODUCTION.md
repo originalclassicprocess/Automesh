@@ -12,6 +12,8 @@ Consent uses the existing contact state machine. Only an explicit outgoing reque
 
 The server advertises support after signed registration and supplies `from` from the authenticated socket. Frames are limited to 24 KiB, 4/s per sender (burst 32), and 8/s per recipient (burst 64), in addition to existing byte and connection limits. Offline recipients get an explicit unavailability response; no queue is created.
 
+The signaling `frame` field uses canonical, padded RFC 4648 Base64 (`+`, `/`, `=`). It does not use the unpadded Base64URL encoding of offline mailbox objects. Client relay tests apply the shared server frame validator before dispatching any handshake or encrypted data frame.
+
 Clients use a separate existing MAE v1 ephemeral P-256 ECDH/AES-GCM instance. Each signed envelope includes the `automesh-introduction-v1` domain prefix and sender/recipient identity. Normal DataChannel frames cannot be substituted into this instance. Envelopes must be recent; encrypted counters reject replays. Incoming work is serialized per peer and bounded globally. Consent and receipts follow successful local persistence. Existing bundle validation and primary-account authorization still apply.
 
 Up to 32 active introductions, a 64-packet work limit, handshake timeout, idle expiry and session-generation guards bound client resources. An authenticated open can restart crypto after a peer reconnects; it cannot bypass the signed handshake. As with existing signaling, a hostile signaling server can disrupt availability and observe traffic metadata; it cannot decrypt the exchange or create consent. This prototype is not an independently audited cryptographic protocol.

@@ -9,7 +9,7 @@ import { contactHandshake } from '../application/contact-handshake';
 import type { ContactState } from './session-chats';
 import type { ChatIdentity, ChatMessage } from './ChatService';
 import { encodeMessage, decodeMessage } from '../message/transport-codec';
-import { base64, unbase64 } from '../node/offline-crypto';
+import { INTRODUCTION_PROTOCOL, validIntroductionFrame } from '../../../nodes/packages/protocol/src/introduction.js';
 import { encodeChatContent } from './message-details';
 
 class Bus {
@@ -22,6 +22,9 @@ class Bus {
     const port: IntroductionPort & { emit(e:IntroductionWire):void; disconnect():void } = {
       route: async () => route,
       send: (peer, channel, frame) => {
+        // Apply the actual server contract: an in-memory bus must not silently
+        // accept a client encoding that production signaling will reject.
+        if (!validIntroductionFrame({protocol:INTRODUCTION_PROTOCOL,kind:frame===undefined?'open':'frame',frame})) throw Error('invalid_introduction');
         const wire:IntroductionWire = {peer:self,route:channel,kind:frame?'frame':'open',...(frame?{frame}:{})};
         this.frames.push(wire);
         if (this.drop) return;
@@ -76,6 +79,23 @@ async function client(bus:Bus,n:number,state:ContactState='outgoing',overrides:P
 }
 const wait=async(assertion:()=>void)=>vi.waitFor(assertion,{timeout:2500,interval:10});
 
+it('uses the signaling Base64 alphabet and padding for opaque binary frames',async()=>{
+  const bus=new Bus(),a=bus.port('a'),b=bus.port('b');
+  const ra=new IntroductionRelay(a,'a',()=>true),rb=new IntroductionRelay(b,'b',()=>true);
+  cleanup.push(()=>ra.close(),()=>rb.close());
+  const received:unknown[]=[];rb.onMessage(m=>received.push(m));
+  await ra.connect('b');
+  const message={from:'a',to:'b',timestamp:1,messageId:'encoding-test',ttl:1,signature:new Uint8Array([1]),payload:new Uint8Array([251,255,255,254,255])};
+  await ra.send(message);
+  await wait(()=>expect(received).toEqual([message]));
+  const wire=bus.frames.find(e=>e.kind==='frame')!;
+  expect(wire.frame).toMatch(/[+/]/);
+  const count=received.length;
+  // Mailbox-style URL encoding must not accidentally enter this protocol.
+  b.emit({...wire,frame:wire.frame!.replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'')});
+  expect(received).toHaveLength(count);
+});
+
 it('mutual signed requests accept once and exchange keys without any direct peer becoming connected',async()=>{
   const bus=new Bus(),a=await client(bus,1),b=await client(bus,2);
   await Promise.all([a.connect(b.id.address),b.connect(a.id.address)]);
@@ -124,8 +144,8 @@ it('rejects a forged envelope and a replay without granting consent or duplicati
   const bus=new Bus(),a=await client(bus,7),b=await client(bus,8,'new');
   await a.connect(b.id.address);await wait(()=>expect(b.saved).toHaveLength(1));
   const wire=bus.frames.filter(e=>e.peer===a.id.address&&e.kind==='frame').at(-1)!;
-  const forged=decodeMessage(unbase64(wire.frame!));forged.signature[0]^=1;
-  b.port.emit({...wire,frame:base64(new Uint8Array(encodeMessage(forged)))});
+  const forged=decodeMessage(Uint8Array.from(atob(wire.frame!),c=>c.charCodeAt(0)));forged.signature[0]^=1;
+  b.port.emit({...wire,frame:btoa(String.fromCharCode(...new Uint8Array(encodeMessage(forged))))});
   b.port.emit(wire);
   await new Promise(r=>setTimeout(r,30));
   expect(b.saved).toHaveLength(1);expect(b.state()).toBe('pending');expect(b.accepted()).toBe(0);
