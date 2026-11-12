@@ -7,6 +7,7 @@ import { accountIdFromPublicKey } from '../src/lib/addressing/account-id.js';
 import { registrationProofBytes } from '../src/lib/transport/registration-proof.js';
 import { COURIER_PROTOCOL, courierBytes } from '../src/lib/node/courier-protocol.js';
 import { ATTACHMENT_PROTOCOL } from '../src/lib/node/attachment-protocol.js';
+import { INTRODUCTION_PROTOCOL, INTRODUCTION_MAX_BYTES } from '../nodes/packages/protocol/src/introduction.js';
 
 import { createSignalingRegistry, createSignalingServer } from './signaling.js';
 
@@ -71,6 +72,35 @@ afterEach(async () => {
 });
 
 describe('signaling server', () => {
+  it('advertises online introductions only after proof, fixes the sender and does not queue offline requests', async () => {
+    server = createSignalingServer({ port: 0 }); await once(server, 'listening');
+    const alice = await connect(aliceId), bob = await connect(bobId);
+    const delivery = once(bob, 'message');
+    alice.send(JSON.stringify({type:'introduction',protocol:INTRODUCTION_PROTOCOL,kind:'open',from:fourthId,to:bobId}));
+    expect(JSON.parse((await delivery)[0].toString())).toEqual({type:'introduction',protocol:INTRODUCTION_PROTOCOL,kind:'open',from:aliceId,to:bobId});
+    const missing = once(alice,'message');
+    alice.send(JSON.stringify({type:'introduction',protocol:INTRODUCTION_PROTOCOL,kind:'open',to:missingId}));
+    expect(JSON.parse((await missing)[0].toString())).toMatchObject({type:'introduction_unavailable',reason:'peer_offline',address:missingId});
+    const late = await connect(missingId), seen=[]; late.on('message',raw=>seen.push(JSON.parse(raw.toString())));
+    const barrier=once(alice,'message');alice.send(JSON.stringify({type:'connect_request',to:fourthId}));await barrier;
+    expect(seen).toEqual([]);
+    const socket=new WebSocket(`ws://127.0.0.1:${server.address().port}`);clients.push(socket);await once(socket,'open');
+    expect(await register(socket,fourthId)).toMatchObject({introductionProtocol:INTRODUCTION_PROTOCOL});
+  });
+  it('bounds introduction frames and refuses unregistered and diagnostic senders', async () => {
+    server=createSignalingServer({port:0,allowDiagnosticPeers:true});await once(server,'listening');
+    const bob=await connect(bobId), alice=await connect(aliceId), seen=[];bob.on('message',raw=>seen.push(JSON.parse(raw.toString())));
+    for(const malformed of [{kind:'file'}, {kind:'frame',frame:'?'}, {kind:'frame',frame:Buffer.alloc(INTRODUCTION_MAX_BYTES+1).toString('base64')}, {kind:'open',frame:'AAAA'}]){
+      const result=once(alice,'message');alice.send(JSON.stringify({type:'introduction',protocol:INTRODUCTION_PROTOCOL,to:bobId,...malformed}));
+      expect(JSON.parse((await result)[0].toString())).toMatchObject({type:'error',reason:'invalid_introduction'});
+    }
+    const diagnostic=await connect('peer-12345678');
+    const invalid=once(diagnostic,'message');diagnostic.send(JSON.stringify({type:'introduction',protocol:INTRODUCTION_PROTOCOL,kind:'open',to:bobId}));
+    expect(JSON.parse((await invalid)[0].toString())).toMatchObject({type:'error',reason:'invalid_introduction'});
+    const anonymous=new WebSocket(`ws://127.0.0.1:${server.address().port}`);clients.push(anonymous);await once(anonymous,'open');
+    const refused=once(anonymous,'message');anonymous.send(JSON.stringify({type:'introduction',protocol:INTRODUCTION_PROTOCOL,kind:'open',to:bobId}));
+    expect(JSON.parse((await refused)[0].toString())).toMatchObject({type:'error',reason:'not_registered'});expect(seen).toEqual([]);
+  });
   it('rejects hostile JSON field types without stopping signaling or forwarding them', async () => {
     server = createSignalingServer({ port: 0 }); await once(server, 'listening');
     const sender = await connect(aliceId); const receiver = await connect(bobId);

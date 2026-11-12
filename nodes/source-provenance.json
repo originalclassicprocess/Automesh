@@ -1,7 +1,7 @@
 {
   "repository": "originalclassicprocess/automesh-nodes",
-  "commit": "d2bd69ec5541e9669d520f4fb4497b629b3c2a6f",
-  "version": "0.4.17",
+  "commit": "43c2299e60153e102a3b9cc9aba9dbe0af763d6a",
+  "version": "0.4.18",
   "files": [
     {
       "path": ".github/CODEOWNERS",
@@ -29,7 +29,7 @@
     },
     {
       "path": ".github/workflows/release.yml",
-      "sha256": "a4b963cff325e0116c149e409cf737a1ffea5e64ce64e470d7a2436a2139c8a4"
+      "sha256": "deac2ca2d2f360057d2dcba0f80fb2b48ee5812c085ffaaa5213d256562108a4"
     },
     {
       "path": ".gitignore",
@@ -53,11 +53,11 @@
     },
     {
       "path": "README.md",
-      "sha256": "e5c9ae0a8c72c201c6d9375f5ee093b568e4cc45ec3848c86b6bcd155a11a32b"
+      "sha256": "b065ebe328c9bc62aa21f78de8fe25a93fd07dc796e6e302ec34d0d2c0d9fc93"
     },
     {
       "path": "README.ru.md",
-      "sha256": "482f245d47aeb8d0f64072d819587e3e759b4556d900dde3a1488d44bcc7bbf0"
+      "sha256": "64edfd2876e51ec047130b61ae8f2b842c208f0b89575094f853e35c8ad1a0e9"
     },
     {
       "path": "SECURITY.md",
@@ -245,7 +245,7 @@
     },
     {
       "path": "docs/PLATFORM_STATUS.md",
-      "sha256": "76adf4130e9ed4d50e03953a7cd1bffccaf3bc5ac77471b0c6f4502d241a35a5"
+      "sha256": "92f338cbc5cb094c5a1ef64d31258fa4080010dbe11cfd08307c22b56b19d22f"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PREVIEW.md",
@@ -262,6 +262,10 @@
     {
       "path": "docs/RELEASE_0_4_17.md",
       "sha256": "c0a1271885b32e0209f3955b607a7f8cc4baf5881bd226f11dc8631037dd4af3"
+    },
+    {
+      "path": "docs/RELEASE_0_4_18.md",
+      "sha256": "c715d0fadb8065fbd41fef01f5df92b6ad1f26bf9e18756f9cbcda10193fb75a"
     },
     {
       "path": "docs/SERVER_NODE.md",
@@ -281,11 +285,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "0b6034034df67ef967a4bb48e752ad50567cd87723374330fe960e13f8fafeae"
+      "sha256": "f732d818e7a892e75a062cee5fd89bb8ecfe2b85a03786cb21de2651f40ba7db"
     },
     {
       "path": "package.json",
-      "sha256": "cc423a432841270612ba724b086b46158132643e902f2b5850a85710e6ecc191"
+      "sha256": "f768ac63f96d9fea3cb9f9b83c687326c65f1efc45cc4fc4cfe36fef5c51f54b"
     },
     {
       "path": "packages/deployment/src/defaults.js",
@@ -326,6 +330,10 @@
     {
       "path": "packages/protocol/src/index.js",
       "sha256": "e12fd0a25dc3d8e22e0924d0e87e36c53699c0d57b87d4903069d0af276836f6"
+    },
+    {
+      "path": "packages/protocol/src/introduction.js",
+      "sha256": "e9d4787f9da91e54f084c9a789efc5b79f52aa1294c201e5f8e2069d2c961cb5"
     },
     {
       "path": "packages/protocol/src/protocol.js",
@@ -405,7 +413,7 @@
     },
     {
       "path": "packages/runtime/src/signaling.js",
-      "sha256": "3dd862e051be84cd26e8eaaea0b8a7057a31244a3f72e0f0e4ab40f236a3d9a7"
+      "sha256": "3e1bb41a5850ee95811143a0aea1e9f0bdefe8cf9938e2ad0d442b9e1844c921"
     },
     {
       "path": "packages/runtime/src/state.js",
@@ -502,6 +510,10 @@
     {
       "path": "test/github-server-install.test.mjs",
       "sha256": "81166001ed4225e4b03b3e5a4041e80cb1cfa7f8480d3087727bab55df964966"
+    },
+    {
+      "path": "test/introduction.test.mjs",
+      "sha256": "4c277b2f3e6bac600f5e44df9125381e2abf547ce887bf81f08a95b6d1f69dcd"
     },
     {
       "path": "test/language.test.mjs",

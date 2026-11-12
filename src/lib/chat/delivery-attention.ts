@@ -4,6 +4,7 @@ import {activeNodeTransfer,effectiveDeliveryIssue} from './node-transfer';
 import { messageStatus } from './message-presentation';
 export type DeliveryAttention = {count:number;label:string;detail:string;tone:'waiting'|'action'|'danger'|'success'|'radio-waiting'};
 const labels:Record<DeliveryIssue,string>={
+  contact_connecting:'Устанавливаем защищённую связь',
   direct_unavailable:'Нет прямой связи',direct_receipt_timeout:'Нет подтверждения',contact_pending:'Ждём принятия',
   node_not_configured:'Нет ноды',node_sending_disabled:'Нода выключена',keys_missing:'Ждём ключи',keys_expired:'Ждём новые ключи',keys_exhausted:'Ключи закончились',
   node_unavailable:'Подключаемся к ноде',node_timeout:'Повторяем запрос',node_denied:'Нет доступа к ноде',node_full:'Нода заполнена',node_rate_limit:'Ждём разрешения ноды',

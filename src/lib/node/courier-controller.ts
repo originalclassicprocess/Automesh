@@ -412,7 +412,7 @@ export class CourierController {
         !this.port.state().pending.some(j => j.body.id === m.id));
       if (!unreserved.length) continue;
       const issue = (code: DeliveryIssue, error?: unknown) => { for (const m of unreserved) this.port.issue?.(peer,m.id,code,error); };
-      if (c.contact !== 'accepted') { if (c.contact === 'outgoing' || c.contact === 'new') issue('contact_pending'); continue; }
+      if (c.contact !== 'accepted') { if (c.contact === 'outgoing' || c.contact === 'new') issue('contact_connecting'); continue; }
       try { await this.port.authorize?.(peer); this.current(); } catch(error) { this.current(); issue(deliveryIssueForError(error,'primary_policy_invalid'),error); continue; }
       if (!bundle) { keyWait = true; issue('keys_missing'); continue; }
       try { validateCourierBundle(bundle, peer, this.port.address,true); await verifyCourier(bundle, 'prekeys', peer); } catch { keyWait = true; issue('keys_missing'); continue; }

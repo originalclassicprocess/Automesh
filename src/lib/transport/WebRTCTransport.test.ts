@@ -9,6 +9,7 @@ import { registrationProofBytes } from './registration-proof.js';
 import type { CourierReply } from '$lib/node/courier-controller';
 import { ATTACHMENT_PROTOCOL } from '$lib/node/attachment-protocol.js';
 import { base64 } from '$lib/node/offline-crypto';
+import { INTRODUCTION_PROTOCOL } from '../../../nodes/packages/protocol/src/introduction.js';
 
 class FakeWebSocket {
   static readonly OPEN = 1;
@@ -20,6 +21,7 @@ class FakeWebSocket {
   static unavailableUrls = new Set<string>();
   static hangingUrls = new Set<string>();
   static wrongProbeProtocol = false;
+  static introductionProtocol: string | undefined;
 
   readyState = FakeWebSocket.OPEN;
   bufferedAmount = 0;
@@ -57,7 +59,7 @@ class FakeWebSocket {
       }));
     } else if (message.type === 'register_proof') {
       queueMicrotask(() => this.onmessage?.({
-        data: JSON.stringify({ type: 'registered', address: message.address, attachmentProtocol: ATTACHMENT_PROTOCOL, ...(FakeWebSocket.registrationIceMode ? { iceMode: FakeWebSocket.registrationIceMode } : {}) }),
+        data: JSON.stringify({ type: 'registered', address: message.address, attachmentProtocol: ATTACHMENT_PROTOCOL, introductionProtocol:FakeWebSocket.introductionProtocol, ...(FakeWebSocket.registrationIceMode ? { iceMode: FakeWebSocket.registrationIceMode } : {}) }),
       }));
     }
   }
@@ -184,6 +186,7 @@ describe('WebRTC peer session', () => {
     FakeWebSocket.unavailableUrls.clear();
     FakeWebSocket.hangingUrls.clear();
     FakeWebSocket.wrongProbeProtocol = false;
+    FakeWebSocket.introductionProtocol = undefined;
     FakePeerConnection.instances = [];
     FakePeerConnection.manualGathering = false;
     vi.stubGlobal('WebSocket', FakeWebSocket);
@@ -259,6 +262,22 @@ describe('WebRTC peer session', () => {
       registrationProofBytes(address, 'a'.repeat(64)),
     )).toBe(true);
     await transport.disconnect();
+  });
+
+  it('uses introductions only when advertised, without creating a WebRTC peer or treating signaling as delivery',async()=>{
+    FakeWebSocket.introductionProtocol=INTRODUCTION_PROTOCOL;
+    const identity=new WebCryptoIdentity(),other=new WebCryptoIdentity();
+    const publicKey=(await identity.create()).publicKey,peerKey=(await other.create()).publicKey;
+    const address=await getAccountId(bytesToHex(publicKey)),peer=await getAccountId(bytesToHex(peerKey));
+    const transport=new WebRTCTransport(),received=vi.fn(),joined=vi.fn();transport.onIntroduction(received);transport.onPeerChange(joined);
+    try{
+      await transport.init(address,{publicKey,sign:bytes=>identity.sign(bytes)});
+      expect(transport.supportsIntroduction()).toBe(true);transport.sendIntroduction(peer);
+      const socket=FakeWebSocket.instances[0];expect(socket.sent.at(-1)).toMatchObject({type:'introduction',protocol:INTRODUCTION_PROTOCOL,to:peer,kind:'open'});
+      socket.emit({type:'introduction',protocol:INTRODUCTION_PROTOCOL,from:peer,to:address,kind:'frame',frame:'AAAA'});
+      await vi.waitFor(()=>expect(received).toHaveBeenCalled());expect(joined).not.toHaveBeenCalled();expect(FakePeerConnection.instances).toHaveLength(0);
+      await transport.disconnect();expect(transport.supportsIntroduction()).toBe(false);expect(()=>transport.sendIntroduction(peer)).toThrow('introduction_unavailable');
+    }finally{await transport.disconnect();identity.dispose();other.dispose();}
   });
 
   it('refuses an old signaling server that registers an Account ID without proof', async () => {

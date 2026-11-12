@@ -65,7 +65,7 @@ it.each([
   {keys:'missing' as const,reason:'keys_missing'},
   {keys:'expired' as const,reason:'keys_expired'},
   {keys:'exhausted' as const,reason:'keys_exhausted'},
-  {contact:'outgoing' as const,reason:'contact_pending'},
+  {contact:'outgoing' as const,reason:'contact_connecting'},
   {deny:true,reason:'primary_disabled'},
 ])('does not invent rights or prekeys and gives a precise reason: %j',async({reason,...spec})=>{
   const f=await setup(spec);try{await f.worker.poll();expect(f.deposits).toHaveLength(0);expect(f.issues).toContain(reason);}finally{await f.close();}
