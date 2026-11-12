@@ -1,7 +1,20 @@
 import type { TransportMessage } from './transport';
 import { encodeMessage, decodeMessage } from '../message/transport-codec';
-import { base64, unbase64 } from '../node/offline-crypto';
-import { INTRODUCTION_MAX_BYTES } from '../../../nodes/packages/protocol/src/introduction.js';
+import { INTRODUCTION_MAX_BYTES, INTRODUCTION_PROTOCOL, validIntroductionFrame } from '../../../nodes/packages/protocol/src/introduction.js';
+
+// The signaling contract uses padded RFC 4648 Base64, not the unpadded
+// Base64URL used by offline mailbox objects. Keep its wire encoding explicit.
+function encodeFrame(bytes: Uint8Array): string {
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 4096) text += String.fromCharCode(...bytes.subarray(i, i + 4096));
+  return btoa(text);
+}
+function decodeFrame(value: string): Uint8Array {
+  if (!validIntroductionFrame({protocol:INTRODUCTION_PROTOCOL,kind:'frame',frame:value})) throw Error('invalid_introduction_encoding');
+  const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0));
+  if (encodeFrame(bytes) !== value) throw Error('invalid_introduction_encoding');
+  return bytes;
+}
 
 export type IntroductionWire = { peer: string; route: string; kind: 'open' | 'frame' | 'unavailable'; frame?: string };
 export interface IntroductionPort {
@@ -36,7 +49,7 @@ export class IntroductionRelay {
       if (event.kind === 'frame') {
         try {
           if (typeof event.frame !== 'string' || event.frame.length > INTRODUCTION_MAX_BYTES * 4 / 3) return;
-          const bytes = unbase64(event.frame!);
+          const bytes = decodeFrame(event.frame!);
           if (bytes.length > INTRODUCTION_MAX_BYTES) return;
           message = decodeMessage(bytes);
           if (message.from !== event.peer || message.to !== self) return;
@@ -80,7 +93,7 @@ export class IntroductionRelay {
     if (this.stopped || !route || !this.allowed(message.to)) throw Error('introduction_unavailable');
     const bytes = new Uint8Array(encodeMessage(message));
     if (bytes.length > INTRODUCTION_MAX_BYTES) throw Error('introduction_too_large');
-    this.port.send(message.to, route, base64(bytes));
+    this.port.send(message.to, route, encodeFrame(bytes));
   }
   release(peer: string) {
     if (this.routes.delete(peer)) for (const cb of this.peers) cb(peer, false);
