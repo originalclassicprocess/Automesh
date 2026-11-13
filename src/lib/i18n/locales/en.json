@@ -2972,5 +2972,17 @@
   "m_e996bb3314c8": "The request is saved in this app. Delivery to your contact has not been confirmed yet.",
   "m_79522dcd3694": "Secure introduction is currently unavailable",
   "m_6c54ce04bfd3": "○ No direct connection",
-  "m_185e886c5810": "Node queue not checked"
+  "m_185e886c5810": "Node queue not checked",
+  "m_c8efde7c9ae2": "Keep the app open to continue.",
+  "m_c7121bd7d381": "The recipient’s Automesh confirmed receipt of the message. You can close the app.",
+  "m_3579e9e56523": "LoRa sending is stopped. Choose retry to make another attempt.",
+  "m_a07df745ce3b": "No Automesh receipt was received. Check the board connection and retry if needed.",
+  "m_65c09674c67b": "The node confirmed storage of the encrypted message, including all parts for a file. Recipient receipt is not confirmed yet. You can close Automesh; the delivery node must stay on.",
+  "m_ee672d4a73f0": "The file offer was received; the file itself is not fully downloaded. Choose download to receive the file.",
+  "m_91e23a257893": "Waiting for a connection, keys or permission for the next request. Retries are automatic; keep the app open.",
+  "m_672716f9a515": "Yellow means sending or waiting for an Automesh receipt: keep the app open. Red means check or retry. Green means the recipient’s Automesh confirmed receipt. Gray means you stopped sending.",
+  "m_6db058a4c60e": "A neighboring node confirmed retransmission. Sending to the radio network is complete; you can close the app. This does not confirm receipt by every participant or reading.",
+  "m_f0715d2fd1d0": "Your board accepted the message. Receipt by channel participants is not confirmed yet. Keep the app open until the sending result arrives.",
+  "m_6252a91aeeeb": "Accepted personal contacts only. Up to 320 bytes including message formatting. Files, calls and disappearing messages are not sent over radio. Keep the app open until the recipient’s Automesh confirms receipt. A board response remains yellow; green means confirmed receipt in Automesh.",
+  "m_b31ab1cb08ea": "LoRa sending is paused. It will continue after the board connection is restored."
 }

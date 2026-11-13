@@ -16,17 +16,22 @@ describe('radio queue presentation',()=>{
     expect(chats.byPeer.peer.messages).toHaveLength(6);
     expect(radioQueueView(updateConversation(chats,'peer',c=>({...c,messages:messages.map(m=>({...m,delivery:'delivered'}))})))).toEqual([]);
   });
-  it('uses yellow for work, red for failure and green for recipient-board evidence in both messages and chat rows',()=>{
+  it('keeps board evidence yellow until Automesh receipt and separates manual stop from failure',()=>{
     for(const radioDelivery of ['queued','transmitting','awaiting'] as const){
-      expect(messageStatus({...base,radioDelivery}).tone).toBe('warning');
+      expect(messageStatus({...base,radioDelivery}).tone).toBe('waiting');
       expect(chatActivity([{...base,radioDelivery}])?.tone).toBe('warning');
     }
-    for(const radioDelivery of ['retry','stopped'] as const){
+    for(const radioDelivery of ['retry'] as const){
       expect(messageStatus({...base,radioDelivery}).tone).toBe('error');
       expect(chatActivity([{...base,radioDelivery}])?.tone).toBe('danger');
     }
-    expect(messageStatus({...base,radioDelivery:'board'})).toMatchObject({label:'Принято платой собеседника',tone:'success'});
-    expect(chatActivity([{...base,radioDelivery:'board'}])?.tone).toBe('success');
+    expect(messageStatus({...base,radioDelivery:'board'})).toMatchObject({label:'Принято платой собеседника',tone:'waiting'});
+    expect(chatActivity([{...base,radioDelivery:'board'}])?.tone).toBe('warning');
+    expect(messageStatus({...base,radioDelivery:'stopped',radioSuppressed:true}).tone).toBe('neutral');
+    expect(chatActivity([{...base,radioDelivery:'stopped',radioSuppressed:true}])).toBeNull();
+    expect(messageStatus({...base,radioDelivery:'stopped'}).tone).toBe('waiting');
+    expect(messageStatus({...base,radioDelivery:'retry',delivery:'stored'})).toMatchObject({tone:'success',label:'На ноде'});
+    expect(messageStatus({...base,radioDelivery:'received'}).tone).toBe('success');
     expect(chatActivity([{...base,radioDelivery:'retry'},{...base,id:'other',radioDelivery:'transmitting'}])?.tone).toBe('danger');
   });
 });

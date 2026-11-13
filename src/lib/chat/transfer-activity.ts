@@ -13,7 +13,8 @@ export function transferActivity(messages: readonly ChatEntry[]): TransferSummar
   for (const m of messages) {
     if (m.nodeQueue || !m.file || m.fileDeleted || m.restoredFromBackup || ['ready','canceled','rejected'].includes(m.fileStatus ?? '')) continue;
     const outgoing = m.direction === 'outgoing', status = m.fileStatus;
-    if (outgoing && ['stored','delivered','read'].includes(m.delivery ?? '')) continue;
+    // A receipt for the offer/read caption does not complete the file bytes.
+    if (outgoing && m.delivery === 'stored') continue;
     if (outgoing ? !['queued','sending','offered','failed'].includes(status ?? '') :
       status !== 'receiving' && status !== 'failed' && !(m.fileAccepted && ['queued','offered'].includes(status ?? ''))) continue;
     const group = outgoing ? result.outgoing : result.incoming;

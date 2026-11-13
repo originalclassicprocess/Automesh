@@ -14,7 +14,7 @@ $effect(() => { if (update.phase !== 'available' || !discardTemporary) confirmed
 <section aria-label={$i18n.text("Обновление приложения")}>
   <h4>{$i18n.text("Версия и обновления")} <HelpInfo label={$i18n.text("Справка: обновления")} text={$i18n.text("Проверка сравнивает эту вкладку с опубликованной версией. Обновление заменяет код приложения, но не очищает доверенный аккаунт и историю. Другие вкладки обновляются отдельно; временный недоверенный сеанс может исчезнуть.")} /> {#if update.phase === 'available'}<span class="available">{$i18n.text("Есть обновление")}</span>{/if}</h4>
   <small>{$i18n.text("Версия этой вкладки:")} <code>{version}</code></small>
-  <p role="status" aria-live="polite">{$i18n.text(update.message)}</p>
+  <p role="status" aria-live="polite" class:waiting={busy} class:complete={update.phase==='current'||update.phase==='available'} class:failed={update.phase==='error'} class:neutral={update.phase==='idle'||update.phase==='unsupported'}>{$i18n.text(update.message)}</p>
   <button type="button" onclick={onCheck} disabled={busy}>{$i18n.text("Проверить обновления")}</button>
   {#if update.phase === 'available'}
     {#if discardTemporary}
@@ -27,6 +27,7 @@ $effect(() => { if (update.phase !== 'available' || !discardTemporary) confirmed
 </section>
 
 <style>
+  .waiting{color:var(--warning)}.complete{color:var(--success)}.failed{color:var(--danger)}.neutral{color:var(--muted)}
   section { margin-top: 1.2rem; }
   small { display: block; overflow-wrap: anywhere; margin: .5rem 0; }
   button { margin: 0 .5rem .5rem 0; }

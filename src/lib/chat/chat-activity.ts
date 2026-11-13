@@ -28,15 +28,15 @@ export function chatActivity(messages: readonly ChatEntry[], { summarizeTransfer
   const status = (label: string, tone: 'success' | 'warning' | 'danger' | 'muted', showTransfer = true) =>
     ({ label, tone, detail: details, transfer: showTransfer && summarizeTransfers ? transfer : '' });
   if (expired) return status(`Срок истёк · ${expired}`, 'danger');
-  if (queue.canceling.length) return status(`Отменяем · ${queue.canceling.length}`, 'danger');
   if (attention?.tone === 'danger') return status(attention.label, 'danger');
-  if (attention?.tone === 'action') return status(attention.label, 'warning');
+  if (attention?.tone === 'action') return status(attention.label, 'danger');
   const failed = transfers.outgoing.failed + transfers.incoming.failed;
-  if (failed) return status(`Ошибка передачи · ${failed}`, 'warning');
-  if (transfer && summarizeTransfers) return status(transfer, transfers.outgoing.active || transfers.incoming.active || nodeActive.length ? 'success' : 'muted', false);
+  if (failed) return status(`Ошибка передачи · ${failed}`, 'danger');
+  if (queue.canceling.length) return status(`Отменяем · ${queue.canceling.length}`, 'warning');
+  if (transfer && summarizeTransfers) return status(transfer, 'warning', false);
   const nodeSummary = summarizeTransfers ? nodeActive : nodeActive.filter(m => !m.file);
-  if (nodeSummary.length) return status(`Отправляем на ноду · ${nodeSummary.length}`, 'success');
-  if (attention) return status(attention.label, attention.tone === 'success' ? 'success' : attention.tone === 'radio-waiting' ? 'warning' : 'muted');
+  if (nodeSummary.length) return status(`Отправляем на ноду · ${nodeSummary.length}`, 'warning');
+  if (attention) return status(attention.label, attention.tone === 'success' ? 'success' : 'warning');
   if (queue.waiting.length) return status(`На ноде · ${queue.waiting.length}`, 'success');
   if (canceled) return status(`Отменено вами · ${canceled}`, 'muted');
   return null;

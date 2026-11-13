@@ -107,9 +107,9 @@ export function nativeChatEntry(m:ChannelMessage):ChatEntry {
 }
 export function nativeMessageStatus(m:ChannelMessage):MessageStatus {
   const label=m.status==='mesh'?'Доставлено в сеть':m.status==='accepted'?'Передано плате':m.status==='queued'?'Отправляем…':m.status==='failed'?'Доставка в сеть не подтверждена':'Нет подтверждения платы';
-  return {icon:m.status==='mesh'?'✓':'◷',label,tone:m.status==='mesh'?'success':m.status==='failed'?'error':'warning',detail:m.failure?channelFailureLabel(m.failure):m.status==='mesh'?
-    'Соседний узел подтвердил ретрансляцию. Это не подтверждение всех участников и не прочтение.':m.status==='accepted'?
-    'Ваша плата приняла сообщение. Получение участниками канала ещё не подтверждено.':m.status==='queued'?
+  return {icon:m.status==='mesh'?'✓':'◷',label,tone:m.status==='mesh'?'success':m.status==='failed'||m.status==='unknown'?'error':'waiting',detail:m.failure?channelFailureLabel(m.failure):m.status==='mesh'?
+    'Соседний узел подтвердил ретрансляцию. Отправка в радиосеть завершена; можно закрыть приложение. Это не подтверждение всех участников и не прочтение.':m.status==='accepted'?
+    'Ваша плата приняла сообщение. Получение участниками канала ещё не подтверждено. Оставьте приложение открытым до результата отправки.':m.status==='queued'?
     'Сообщение передаётся плате. Оставьте приложение открытым.':'Подтверждение не получено. Сообщение могло дойти; ручной повтор может создать копию.'};
 }
 export function nativeFailureAction(f?:ChannelFailure):'wait'|'connect'|'shorten'|'retry' {

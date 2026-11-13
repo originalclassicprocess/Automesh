@@ -7,6 +7,11 @@ it('counts directions separately, including queued files and byte-weighted progr
   expect(summary.outgoing).toMatchObject({count:2,active:1,waiting:1,failed:0,percent:25});
   expect(summary.incoming).toMatchObject({count:1,active:1,percent:20});
 });
+it('keeps incomplete file bytes visible after a receipt for its offer or caption',()=>{
+ for(const delivery of ['delivered','read'] as const)
+   expect(transferActivity([file({delivery,fileStatus:'sending',fileProgress:50})]).outgoing).toMatchObject({count:1,active:1,percent:50});
+ expect(transferActivity([file({delivery:'delivered',fileStatus:'ready'})]).outgoing.count).toBe(0);
+});
 it('disappears after durable node/receiver confirmation, excludes unaccepted offers, and retains failures visibly',()=>{
   const result=transferActivity([file({delivery:'stored'}),file({fileStatus:'offered',fileProgress:100}),file({fileStatus:'ready'}),
     file({fileStatus:'canceled'}),file({fileStatus:'rejected'}),file({fileDeleted:true}),file({restoredFromBackup:true}),

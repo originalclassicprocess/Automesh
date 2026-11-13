@@ -24,12 +24,12 @@
   {#if relevantError}<details class="danger"><summary>{$i18n.text('Причина ошибки')}</summary><p>{$i18n.system(relevantError)}</p></details>{/if}
   {#if selected}<div class="rows" id={detailId}>{#each items.filter(i=>i.kind===selected) as item (`${item.peer}:${item.message.id}`)}<div class="row">
     <button class="message" onclick={()=>{onClose();onOpen(item.peer,item.message.id);}}><strong>{name(item.peer)}</strong><span>{item.message.text.slice(0,80)}</span></button>
-    {#if connected&&['retry','board','awaiting'].includes(item.kind)}<button class="retry" onclick={()=>onRetry(item.peer,item.message.id)}>{$i18n.text('Повторить по LoRa')}</button>{/if}
+    {#if connected&&['retry','board','awaiting','paused','stopped'].includes(item.kind)}<button class="retry" onclick={()=>onRetry(item.peer,item.message.id)}>{$i18n.text('Повторить по LoRa')}</button>{/if}
   </div>{:else}<p class="muted">{$i18n.text('Нет незавершённых отправок LoRa.')}</p>{/each}</div>
   {:else}<p class="hint">{$i18n.text('Нажмите на показатель, чтобы увидеть подробности.')}</p>{/if}
   <div class="actions">{#if !connected}<button disabled={connecting} onclick={onConnect}>{$i18n.text('Подключить плату')}</button>{/if}<button onclick={()=>{onClose();onSettings();}}>{$i18n.text('Настройки LoRa')}</button></div>
   <details><summary>{$i18n.text('Что означают цвета?')}</summary>
-    <p>{$i18n.text('Жёлтый — передаём или ждём ответа. Оставьте приложение открытым. Красный — отправка не подтверждена, нужен повтор. Зелёный — все части подтверждены платой собеседника.')}</p>
+    <p>{$i18n.text('Жёлтый — передаём или ждём подтверждения Automesh: оставьте приложение открытым. Красный — нужна проверка или повтор. Зелёный — Automesh собеседника подтвердил получение. Серый — отправка остановлена вами.')}</p>
     <p>{$i18n.text('Буфер платы ограничен и не заменяет постоянное хранилище. После сохранения в Automesh сообщение исчезает из этого индикатора, но остаётся в чате. Прочтение — отдельный статус.')}</p>
   </details>
 </CompactDialog>

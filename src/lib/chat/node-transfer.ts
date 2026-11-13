@@ -7,10 +7,11 @@ export function activeNodeTransfer(m:ChatEntry):boolean{
 }
 export function effectiveDeliveryIssue(m:ChatEntry){
   const issue=isDeliveryIssue(m.deliveryIssue)?m.deliveryIssue:undefined;
-  return issue&&activeNodeTransfer(m)&&!deliveryNeedsAction(issue)?undefined:issue;
+  return issue&&activeNodeTransfer(m)&&!deliveryNeedsAction(issue,m.deliveryError)?undefined:issue;
 }
 export function nodeTransferUpdate(m:ChatEntry,stage:CourierStage|undefined):ChatEntry{
-  const clear=stage==='uploading'||stage==='preparing'&&!!m.deliveryIssue&&!deliveryNeedsAction(m.deliveryIssue);
+  const blocked=!!m.deliveryIssue&&deliveryNeedsAction(m.deliveryIssue,m.deliveryError);
+  const clear=(stage==='uploading'||stage==='preparing')&&!blocked;
   return {...m,courierStage:stage,...clear?{deliveryIssue:undefined,deliveryError:undefined}:{}};
 }
 

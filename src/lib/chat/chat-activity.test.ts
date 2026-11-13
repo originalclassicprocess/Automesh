@@ -10,24 +10,24 @@ const upload: ChatEntry = { ...message, file:{ id:'m', name:'file.png', mime:'im
 describe('compact chat activity', () => {
   it('shows progress instead of a stale reconnect warning and never claims delivery', () => {
     const status=chatActivity([{...upload,deliveryIssue:'node_unavailable'}]);
-    expect(status).toMatchObject({label:'↑ 1 · 40%',tone:'success'});
+    expect(status).toMatchObject({label:'↑ 1 · 40%',tone:'warning'});
     expect(status?.detail).not.toContain('Подключаемся к ноде');
     expect(chatActivity([{...upload,delivery:'stored'}])?.label).toBe('На ноде · 1');
     expect(chatActivity([{...upload,delivery:'delivered',fileStatus:'ready'}])).toBeNull();
   });
   it('keeps action failures prominent while retaining another transfer’s progress', () => {
     const status=chatActivity([upload,{...message,id:'quota',deliveryIssue:'node_profile_files_full'}]);
-    expect(status).toMatchObject({tone:'warning',label:'Квота файлов профиля',transfer:'↑ 1 · 40%'});
+    expect(status).toMatchObject({tone:'danger',label:'Квота файлов профиля',transfer:'↑ 1 · 40%'});
     expect(status?.detail).toContain('profile_files');
   });
   it('distinguishes expiry and cancellation, and respects cleared counters', () => {
     expect(chatActivity([{...message,nodeQueue:'expired'}])).toMatchObject({tone:'danger',label:'Срок истёк · 1'});
-    expect(chatActivity([{...message,nodeQueue:'canceling'}])).toMatchObject({tone:'danger',label:'Отменяем · 1'});
+    expect(chatActivity([{...message,nodeQueue:'canceling'}])).toMatchObject({tone:'warning',label:'Отменяем · 1'});
     expect(chatActivity([{...message,nodeQueue:'canceled'}])).toMatchObject({tone:'muted',label:'Отменено вами · 1'});
     expect(chatActivity([{...message,nodeQueue:'expired',nodeQueueDismissed:true}])).toBeNull();
   });
   it('does not hide an in-flight text envelope behind the file-only controls', () => {
-    expect(chatActivity([{...message,courierStage:'preparing'}])).toMatchObject({tone:'success',label:'Отправляем на ноду · 1'});
+    expect(chatActivity([{...message,courierStage:'preparing'}])).toMatchObject({tone:'warning',label:'Отправляем на ноду · 1'});
   });
   it('keeps row activity passive and detailed counters inside a closed disclosure', () => {
     const conversation:Conversation={peerAddress:'example',messages:[upload],draft:'',unread:4,connection:'connected',error:'',sending:false,contact:'accepted'};

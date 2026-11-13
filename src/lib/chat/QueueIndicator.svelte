@@ -1,13 +1,12 @@
 <script lang="ts">
   import { tr as i18n } from '$lib/i18n/language';
-  import {onMount} from 'svelte';
   import {queueIndicatorStates,queueCount} from './queue-indicator';
   let {stored,transmitting,stopped,expired=0,retrying=0,errors,canceling,onOpen,expanded=false,quota,unknown=false}:{stored:number;transmitting:number;stopped:number;expired?:number;retrying?:number;errors:number;canceling:number;onOpen:()=>void;expanded?:boolean;quota?:{count:number;label:string};unknown?:boolean}=$props();
-  let index=$state(0);
   const states=$derived(queueIndicatorStates({stored,transmitting,stopped,expired,retrying,errors,canceling,quota,unknown}));
-  const current=$derived(states[index%states.length]);
+  // Keep the most urgent state visible. Cycling through green stored copies
+  // while another file is uploading would falsely suggest it is safe to close.
+  const current=$derived(states[0]);
   const description=$derived(states.map(s=>`${s.label}: ${queueCount(s)}`).join('. '));
-  onMount(()=>{const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');const timer=setInterval(()=>{index=reduced.matches?0:(index+1)%states.length;},3500);return()=>clearInterval(timer);});
 </script>
 <button type="button" class="queue-indicator" class:danger={current.tone==='danger'} class:warning={current.tone==='warning'} class:success={current.tone==='success'} onclick={onOpen}
   title={$i18n("m_8f61f143c1ca", {v0: ($i18n.system(current.label)), v1: (queueCount(current))})} aria-label={$i18n("m_bfe60658c1ce", {v0: ($i18n.system(description))})} aria-haspopup="dialog" aria-expanded={expanded}>
