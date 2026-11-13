@@ -1,6 +1,7 @@
 import { setDeliveryStatus, type ChatEntry, type SessionChats } from '$lib/chat/session-chats';
 import type { MessageDetails } from '$lib/chat/message-details';
 import { deliveryIssueForError, type DeliveryIssue } from './delivery-issues';
+import { localOutgoing, pendingText } from './delivery-work';
 
 export interface TextSender { send(text: string, peer: string, messageId: string, details?: MessageDetails): Promise<void> }
 type OutboxPort<T> = {
@@ -22,8 +23,7 @@ export class OutboxController<T extends TextSender> {
   constructor(private readonly port: OutboxPort<T>) {}
   private key(peer: string, id: string) { return `${peer}:${id}`; }
   private pending(message: ChatEntry | undefined): message is ChatEntry {
-    return !!message && !message.radioDelivery && !message.nodeQueue && !message.file && !message.deviceMessage && !message.restoredFromBackup && message.direction === 'outgoing' &&
-      (message.delivery === 'queued' || message.delivery === 'sent' || message.delivery === 'stored');
+    return pendingText(message);
   }
   private ready(peer: string, message: ChatEntry | undefined): message is ChatEntry {
     return this.pending(message) && !this.timers.has(this.key(peer, message.id));
@@ -95,7 +95,7 @@ export class OutboxController<T extends TextSender> {
           else await sender.send(ready.text, peer, ready.id);
           if (this.epoch !== epoch || this.port.sender() !== sender) return;
           const latest = this.port.state().byPeer[peer]?.messages.find(entry => entry.id === message.id);
-          if (!latest || latest.nodeQueue || latest.delivery === 'delivered' || latest.delivery === 'read' || latest.deviceMessage || latest.restoredFromBackup || latest.file) {
+          if (!localOutgoing(latest) || latest.delivery === 'delivered' || latest.delivery === 'read' || latest.file) {
             this.acknowledge(peer, message.id); continue;
           }
           this.delivery(peer, message.id, 'sent'); this.persist();
@@ -105,7 +105,7 @@ export class OutboxController<T extends TextSender> {
           const latest = this.port.state().byPeer[peer]?.messages.find(entry => entry.id === message.id);
           // A receipt can arrive on another route while send() is still pending.
           // Its confirmed result wins over a late rejection from the old channel.
-          if (!latest || latest.nodeQueue || latest.delivery === 'delivered' || latest.delivery === 'read' || latest.deviceMessage || latest.restoredFromBackup || latest.file) {
+          if (!localOutgoing(latest) || latest.delivery === 'delivered' || latest.delivery === 'read' || latest.file) {
             this.acknowledge(peer, message.id); continue;
           }
           this.delivery(peer, message.id, 'queued');

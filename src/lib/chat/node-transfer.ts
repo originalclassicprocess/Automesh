@@ -21,3 +21,12 @@ export function peerDisconnectedMessage(m:ChatEntry):ChatEntry{
    fileStatus:m.fileStatus==='sending'?'queued':m.fileStatus==='receiving'?'offered':m.fileStatus,
    fileProgress:m.fileStatus==='sending'||m.fileStatus==='receiving'?0:m.fileProgress};
 }
+
+// A late failure/cancel from a previous path cannot undo a completed transfer.
+export function fileEntryUpdate(m:ChatEntry,patch:Partial<ChatEntry>):ChatEntry{
+  if(m.fileStatus==='ready'&&patch.fileStatus!=='ready'){
+    const {fileStatus:_,fileProgress:__,fileAccepted:___,...rest}=patch;
+    return {...m,...rest};
+  }
+  return {...m,...patch};
+}

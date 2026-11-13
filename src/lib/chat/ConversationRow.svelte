@@ -14,7 +14,7 @@
 </script>
 <button type="button" class="conversation-row" aria-current={active ? 'true' : undefined} title={accountId} onclick={onOpen}>
   <span class="row-avatar">{#if radio}<span class="radio-avatar"><ChatIcon name="radio"/></span>{:else}<Avatar {accountId} {photo} size={32} />{/if}
-    {#if !self&&!radio}<span class="presence" class:connected={conversation.connection === 'connected'} title={conversation.connection === 'connected' ? $i18n.text("На связи") : conversation.connection === 'connecting' ? $i18n.text("Подключаемся") : $i18n.text("Не в сети")}></span>{/if}
+    {#if !self&&!radio}<span class="presence" class:connected={conversation.connection === 'connected'} title={conversation.connection === 'connected' ? $i18n.text("На связи") : conversation.connection === 'connecting' ? $i18n.text("Подключаемся") : $i18n.text("Нет прямой связи")}></span>{/if}
   </span>
   <span class="row-content">
     <span class="row-heading"><span class="row-name">{name}</span>{#if radio}<span class="radio-badge">LoRa</span><ChannelSecurity value={radio.encryption} compact/>{/if}

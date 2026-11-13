@@ -1,4 +1,5 @@
 import type { IdentityProvider } from '$lib/identity/identity';
+import { pendingText } from '$lib/application/delivery-work';
 import { deliveryIssueForError, type DeliveryIssue } from '$lib/application/delivery-issues';
 import type { ChatMessage } from '$lib/chat/ChatService';
 import type { SessionChats } from '$lib/chat/session-chats';
@@ -21,6 +22,9 @@ export class OfflineController {
   private controller = new AbortController();
   private chain = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private started = false;
+  private running = false;
+  private requested = false;
   constructor(private port: Port) {}
   stop() { this.active = false; this.controller.abort(); clearTimeout(this.timer); }
   settled() { return this.chain; }
@@ -40,10 +44,23 @@ export class OfflineController {
     } finally { clearTimeout(timer); this.controller.signal.removeEventListener('abort', abort); }
   }
   start() {
-    const tick = async () => { if (!this.active) return;
-      try { await this.poll(); } catch { if (this.active) this.port.error('Офлайн-узел недоступен или конверт не прошёл проверку. Очередь сохранена; повторим попытку.'); }
-      if (this.active) this.timer = setTimeout(tick, 10000);
-    }; void tick();
+    if (this.started) return;
+    this.started = true; this.wake();
+  }
+  wake() {
+    if (!this.active || !this.started) return;
+    this.requested = true;
+    if (!this.running) { clearTimeout(this.timer); this.timer = setTimeout(() => void this.tick(), 50); }
+  }
+  private async tick() {
+    if (!this.active || this.running) return;
+    this.running = true; this.requested = false;
+    try { await this.poll(); }
+    catch { if (this.active) this.port.error('Офлайн-узел недоступен или конверт не прошёл проверку. Очередь сохранена; повторим попытку.'); }
+    finally {
+      this.running = false;
+      if (this.active) this.timer = setTimeout(() => void this.tick(), this.requested ? 50 : 10000);
+    }
   }
   configure(node: NodeAddress, enabled: boolean) { return this.serial(async () => {
     const state = this.port.state();
@@ -133,7 +150,7 @@ export class OfflineController {
       try { await this.port.authorize?.(peer); this.current(); }
       catch(error) { this.current(); for (const m of contact.messages.filter(m => !m.nodeQueue && m.direction === 'outgoing' && m.delivery === 'queued')) this.port.issue?.(peer,m.id,deliveryIssueForError(error,'primary_policy_invalid'),error); continue; }
       try { validateBundle(bundle, peer, this.port.address); await verifyObject(bundle, 'prekeys', peer); } catch { continue; }
-      for (const message of contact.messages.filter(msg => !msg.radioDelivery && !msg.nodeQueue && !msg.restoredFromBackup && !msg.file && !msg.deviceMessage && msg.direction === 'outgoing' && ['queued', 'sent', 'stored'].includes(msg.delivery ?? ''))) {
+      for (const message of contact.messages.filter(pendingText)) {
         const state = this.port.state(); if (state.pending.some(mail => mail.messageId === message.id && mail.peer === peer)) continue;
         const key = bundle.body.keys.find(key => !state.used[key.id]);
         if (!key || reserved >= 10 || state.pending.length >= MAX_OFFLINE_PENDING || Object.keys(state.used).length >= 4096) break;

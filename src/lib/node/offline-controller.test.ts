@@ -9,6 +9,18 @@ import { emptySessionChats, ensureConversation, recordSentMessage, setContactSta
 async function account() { const identity = new WebCryptoIdentity(); await identity.create();
   return { identity, address: await accountIdFromPublicKey(await identity.getPublicKeyBytes()) }; }
 describe('prekey exhaustion and durable reservation', () => {
+  it('coalesces foreground wakes, retries a wake during failure and cannot restart after lock',async()=>{
+    vi.useFakeTimers();let reject!:(error:Error)=>void;
+    const worker=new OfflineController({address:'me',identity:{} as any,state:emptyOfflineState,update:()=>{},chats:emptySessionChats,
+      persist:async()=>true,receive:()=>{},delivery:()=>{},publish:async()=>{},error:()=>{}});
+    const poll=vi.spyOn(worker,'poll').mockImplementationOnce(()=>new Promise<void>((_resolve,fail)=>{reject=fail;})).mockResolvedValue();
+    try{
+      worker.start();worker.start();for(let i=0;i<20;i++)worker.wake();
+      await vi.advanceTimersByTimeAsync(50);expect(poll).toHaveBeenCalledTimes(1);
+      worker.wake();reject(Error('network_changed'));await vi.advanceTimersByTimeAsync(50);expect(poll).toHaveBeenCalledTimes(2);
+      worker.stop();worker.wake();worker.start();await vi.advanceTimersByTimeAsync(30000);expect(poll).toHaveBeenCalledTimes(2);
+    }finally{worker.stop();vi.useRealTimers();}
+  });
   it('LAN-only mode does not poll a stored public mailbox', async () => {
     const a = await account(), request = vi.fn();
     let state = { ...emptyOfflineState(), enabled: true, node: { url: 'https://node.automesh.space', nodeId: keyId() } };

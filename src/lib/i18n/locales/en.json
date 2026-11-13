@@ -2970,5 +2970,7 @@
   "m_145ec61d2264": "No shared route available",
   "m_debcfa38e98a": "Secure exchange could not be completed",
   "m_e996bb3314c8": "The request is saved in this app. Delivery to your contact has not been confirmed yet.",
-  "m_79522dcd3694": "Secure introduction is currently unavailable"
+  "m_79522dcd3694": "Secure introduction is currently unavailable",
+  "m_6c54ce04bfd3": "○ No direct connection",
+  "m_185e886c5810": "Node queue not checked"
 }

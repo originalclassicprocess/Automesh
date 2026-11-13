@@ -7,6 +7,13 @@ it('keeps an empty queue gray and bounds the badge text without losing the acces
  expect(queueIndicatorStates({stopped:0,errors:0,canceling:0,stored:0,transmitting:0})).toMatchObject([{count:0,tone:'muted'}]);
  const html=render(QueueIndicator,{props:{stopped:0,errors:0,canceling:0,stored:1234,transmitting:0,onOpen:()=>{}}}).body;expect(html).toContain('99+');expect(html).toContain('1234');
 });
+it('shows an unknown node count as a question mark, with no false empty or zero label',()=>{
+ const props={stopped:0,errors:0,canceling:0,stored:0,transmitting:0,unknown:true,onOpen:()=>{}};
+ expect(queueIndicatorStates(props)).toMatchObject([{kind:'unknown',tone:'muted'}]);
+ const html=render(QueueIndicator,{props}).body;
+ expect(html).toContain('?');expect(html).not.toContain('Очередь пуста');expect(html).not.toContain(': 0');
+ expect(queueIndicatorStates({...props,stored:2,errors:1}).map(s=>s.kind)).toEqual(['errors','unknown','stored']);
+});
 
 it('separates user cancellation, automatic expiry, canceling, attention and live transfer colors',()=>{
  const states=queueIndicatorStates({stopped:1,expired:2,canceling:3,errors:4,stored:5,transmitting:6,retrying:7});
