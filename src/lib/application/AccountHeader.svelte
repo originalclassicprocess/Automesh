@@ -6,6 +6,7 @@
   import ContactShare from '$lib/chat/ContactShare.svelte';
   import CompactDialog from './CompactDialog.svelte';
   import type {QueueIndicatorState} from '$lib/chat/queue-indicator';
+  import {queueCount} from '$lib/chat/queue-indicator';
   let { accountId, avatar, photo = false, nickname, profile, expanded = false, settings = false, warning = false, update = false,
     disabled = false, lockDisabled = false, panicDisabled = false, onProfile, onPanic, onLock, onSettings, network, contactUrl='', contactEnabled=true, queueState, networkAvailable=false }: {
     accountId: string; avatar: string; photo?: boolean; nickname: string; profile: string; expanded?: boolean; settings?: boolean;
@@ -79,10 +80,10 @@
   <div class="header-utility">
     <div class="connection-hub" class:folded class:open={hubOpen}>
       <button type="button" class="icon-button hub-toggle" hidden={!folded} onclick={()=>hubOpen=!hubOpen}
-        aria-expanded={hubOpen} aria-controls={hubId} aria-label={$i18n("m_deee63ce06c0", {v0: ($i18n.text(hubLabel)), v1: (queueState?`. ${$i18n.system(queueState.label)}: ${queueState.count}`:'')})} title={$i18n.text(hubLabel)}>
+        aria-expanded={hubOpen} aria-controls={hubId} aria-label={$i18n("m_deee63ce06c0", {v0: ($i18n.text(hubLabel)), v1: (queueState?`. ${$i18n.system(queueState.label)}: ${queueCount(queueState)}`:'')})} title={$i18n.text(hubLabel)}>
         <span class="hub-network"><ChatIcon name="network" /></span>{#if queueState}<span class="hub-cloud" class:success={queueState.tone==='success'} class:warning={queueState.tone==='warning'} class:danger={queueState.tone==='danger'} aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 18a4 4 0 1 1 .6-8 6 6 0 0 1 11.7 1A3.5 3.5 0 1 1 19 18Z" /></svg></span>{/if}
         <span class="hub-dot" class:connected={networkAvailable} aria-hidden="true"></span>
-        {#if queueState&&queueState.count>0}<span class="hub-count" class:success={queueState.tone==='success'} class:warning={queueState.tone==='warning'} class:danger={queueState.tone==='danger'} aria-hidden="true">{queueState.count>99?'99+':queueState.count}</span>{/if}
+        {#if queueState&&(queueState.kind==='unknown'||queueState.count>0)}<span class="hub-count" class:success={queueState.tone==='success'} class:warning={queueState.tone==='warning'} class:danger={queueState.tone==='danger'} aria-hidden="true">{queueCount(queueState,true)}</span>{/if}
       </button>
       <div class="hub-panel" id={hubId} inert={folded&&!hubOpen} aria-hidden={folded&&!hubOpen}>
         <div class="hub-content" role="group" aria-label={$i18n.text(hubLabel)}>{@render network()}</div>

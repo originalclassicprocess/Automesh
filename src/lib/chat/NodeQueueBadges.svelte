@@ -15,12 +15,12 @@
   <span class="badges" class:compact aria-label={$i18n.text("Очередь этого чата")}>
     {#if compact}
       {#if summary.waiting.length}<span class="pill">☁ {summary.waiting.length}</span>{/if}
-      {#if summary.canceling.length}<span class="pill danger">◷ {summary.canceling.length}</span>{/if}
+      {#if summary.canceling.length}<span class="pill warning">◷ {summary.canceling.length}</span>{/if}
       {#if summary.expired.length}<span class="pill danger">⊘ {summary.expired.length}</span>{/if}
       {#if summary.stopped.length}<span class="pill stopped">⊘ {summary.stopped.length}</span>{/if}
     {:else}
     {#if summary.waiting.length}<button type="button" disabled={!onJump} onclick={()=>jump('waiting')} title={$i18n.text("Сохранено на ноде, получение ещё не подтверждено. Нажимайте, чтобы переходить к сообщениям.")}>☁ {compact?'':$i18n.text("На ноде")}{summary.waiting.length}</button>{/if}
-    {#if summary.canceling.length}<button type="button" class="danger" disabled={!onJump} onclick={()=>jump('canceling')} title={$i18n.text("Отмена ещё не подтверждена нодой")}>{$i18n("m_94691b926041", {v0: (summary.canceling.length)})}</button>{/if}
+    {#if summary.canceling.length}<button type="button" class="warning" disabled={!onJump} onclick={()=>jump('canceling')} title={$i18n.text("Отмена ещё не подтверждена нодой")}>{$i18n("m_94691b926041", {v0: (summary.canceling.length)})}</button>{/if}
     {#if summary.stopped.length}<button type="button" class="stopped" disabled={!onJump} onclick={()=>jump('stopped')} title={$i18n.text("Отменено вами. В меню сообщения можно отправить снова.")}>⊘ {compact?'':$i18n.text("Отменено вами")}{summary.stopped.length}</button>
     {/if}
     {#if summary.expired.length}<button type="button" class="danger" disabled={!onJump} onclick={()=>jump('expired')} title={$i18n.text("Нода удалила по сроку. В меню сообщения можно отправить снова.")}>{$i18n("m_8d34f7810b92", {v0: (summary.expired.length)})}</button>{/if}
@@ -33,5 +33,5 @@
 <style>
   .badges{display:flex;flex-wrap:wrap;gap:5px;margin:3px 0;font-size:12px;align-items:center}
   button,.pill{font:inherit;min-height:28px;padding:3px 8px;border-radius:12px;border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--success)}
-  button:disabled{opacity:1}.stopped{color:var(--muted);border-color:var(--line);background:var(--surface)}.danger{color:var(--danger);background:var(--surface);border-color:var(--line)}.clear{min-width:28px;padding:3px}.compact{font-size:11px}
+  button:disabled{opacity:1}.stopped{color:var(--muted);border-color:var(--line);background:var(--surface)}.danger{color:var(--danger);background:var(--surface);border-color:var(--line)}.warning{color:var(--warning);background:var(--warning-soft);border-color:var(--line)}.clear{min-width:28px;padding:3px}.compact{font-size:11px}
 </style>

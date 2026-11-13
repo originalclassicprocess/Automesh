@@ -5,6 +5,8 @@
   import LanguageSettings from '$lib/i18n/LanguageSettings.svelte';
 
 import { removeLegacyBrowserLogs } from '$lib/application/legacy-cleanup';
+import { RecoveryController } from '$lib/application/recovery';
+import { pendingFile, pendingFileOffer, peerNeedsRecovery } from '$lib/application/delivery-work';
 import { version } from '$app/environment';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -162,7 +164,7 @@ import {queueIndicatorStates} from '$lib/chat/queue-indicator';
 import NodeQueueOverview from '$lib/chat/NodeQueueOverview.svelte';
 import {freshQueueSnapshot,queueQuotaFull,queueQuotaLabel,messageQuotaFull} from '$lib/node/queue-quota';
 import {cleanupErrors,cleanupWaiting} from '$lib/node/queue-cleanup';
-import {nodeTransferUpdate,peerDisconnectedMessage} from '$lib/chat/node-transfer';
+import {nodeTransferUpdate,peerDisconnectedMessage,fileEntryUpdate} from '$lib/chat/node-transfer';
 import {nodeInteractionGroups,nodeInteractionCounts} from '$lib/chat/node-queue-overview';
 import {dismissQueueNotices,applyNodeOutcome} from '$lib/chat/node-queue';
 import ThemeSelector from '$lib/application/ThemeSelector.svelte';
@@ -428,6 +430,7 @@ let courierStatus = $state(idleCourierStatus());
 let deliveryDiagnostics = $state(emptyDeliveryDiagnostics());
 let receiveRoutingStamp = '';
 let receiveRecoveryBusy = $state(false);
+const deliveryRecovery = new RecoveryController();
 let requiredReceiveUrls = $derived(courierState.node && (courierState.enabled || courierState.keys.length || courierState.pending.length || courierState.incomingFiles.length)
   ? receiveRouting(configuredNodes, networkSettings, page.url.href, courierState).required : []);
 let receivingViaHttp = $derived(!!deliveryDiagnostics.inboxAt && !deliveryDiagnostics.inboxFailure && Date.now() - deliveryDiagnostics.inboxAt < 20_000);
@@ -448,15 +451,31 @@ async function refreshReceiveRouting(): Promise<void> {
   if (routedTransport === transport && screen === 'account' && !endingSession) receiveRoutingStamp = stamp;
 }
 async function resumeDelivery(): Promise<void> {
-  if (screen !== 'account' || endingSession || receiveRecoveryBusy) return;
-  const transport = routedTransport;
-  receiveRecoveryBusy = true;
-  courierDelivery?.wake();
-  void deviceRuntime?.wake().catch(error => { deviceStatus = deviceDeliveryExplanation(error); });
-  try { await refreshReceiveRouting();
-    if (routedTransport !== transport || screen !== 'account' || endingSession) return;
-    await transport?.resume(); if (routedTransport === transport && screen === 'account' && !endingSession) courierDelivery?.wake(); }
-  finally { receiveRecoveryBusy = false; }
+  if (screen !== 'account' || endingSession) return;
+  const transport = routedTransport, active = chat, generation = authGeneration;
+  const current = () => generation === authGeneration && chat === active && routedTransport === transport && screen === 'account' && !endingSession;
+  await Promise.all([
+    deliveryRecovery.request('queues', () => { if (current()) { courierDelivery?.wake(); offlineDelivery?.wake(); } }),
+    deliveryRecovery.request('devices', async () => {
+      if (!current()) return;
+      try { await deviceRuntime?.wake(); }
+      catch (error) { if (current()) deviceStatus = deviceDeliveryExplanation(error); }
+    }),
+    deliveryRecovery.request('signaling', async () => {
+      if (!current()) return;
+      receiveRecoveryBusy = true;
+      try { await refreshReceiveRouting(); if (current()) await transport?.resume(); }
+      finally { if (current()) receiveRecoveryBusy = false; }
+    }),
+    deliveryRecovery.request('peers', () => {
+      if (!current() || !active) return;
+      for (const peer of sessionChats.order) {
+        if (peer === address || !peerNeedsRecovery(sessionChats.byPeer[peer])) continue;
+        if (sessionChats.byPeer[peer].connection === 'connected') resumeConnectedPeer(peer, active, true);
+        else { publishDeliveryKeys(peer, true); void active.connect(peer).catch(() => {}); }
+      }
+    }),
+  ]);
 }
 let deviceRetryAfter = 0, deviceRetryDelay = 15000;
 async function recoverConfiguredDeviceNode(): Promise<void> {
@@ -686,13 +705,16 @@ let rootBackTimer: ReturnType<typeof setTimeout> | undefined;
 function rootRoute(screen: Screen): PageRoute {
   return { screen, layer: '', view: 'chats', peer: '', card: '', pane: 'list', settings: 'account', connection: 'direct', gallery: '' };
 }
-$effect(() => {
+function currentPageRoute(): PageRoute {
   const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : mediaOpen || receivedPack ? 'media-library' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
     backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
-  const route: PageRoute = screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
+  return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
     connection: accountView === 'profile' && settingsSection === 'connection' ? connectionSection : 'direct',
     media: accountView === 'profile' && settingsSection === 'files' ? mediaSettingsSection : 'overview', gallery: galleryId } : { ...rootRoute(screen), layer };
+}
+$effect(() => {
+  const route = currentPageRoute();
   if (!routerReady || !pageNavigation) return;
   const scope = screen === 'account' ? address : screen === 'unlock' ? 'locked' : 'authentication';
   if (navigationAccount !== scope) {
@@ -1141,7 +1163,11 @@ let previewGeneration = 0;
 let lastActivity = Date.now();
 
 onMount(() => {
-  const keyBudgetTimer = setInterval(() => { keyBudgetNow = Date.now(); void recoverConfiguredDeviceNode().catch(() => {});
+  let lastRecoveryCheck = Date.now();
+  const keyBudgetTimer = setInterval(() => { keyBudgetNow = Date.now();
+    if (!document.hidden && keyBudgetNow - lastRecoveryCheck > 30_000) void resumeDelivery();
+    lastRecoveryCheck = keyBudgetNow;
+    void recoverConfiguredDeviceNode().catch(() => {});
     for (const peer of sessionChats.order) publishDeliveryKeys(peer);
     void automaticRadio();
     void recoverRadio();
@@ -1199,8 +1225,10 @@ onMount(() => {
   // a reactive page.state can still point at the screen we are leaving.
   const onPageBack = (event: PopStateEvent) => queueMicrotask(() => {
     if (navigationBusy()) { pageNavigation?.stay(); return; }
-    if (audioControls?.dismissOverlay()) { pageNavigation?.stay(); return; }
-    if (allProfileChats && accountView === 'chats' && profileNetwork) { allProfileChats = false; pageNavigation?.stay(); return; }
+    // The viewer is above audio/profile-list controls. A browser history Back
+    // must dismiss media before touching those underlying views.
+    if (!galleryId && audioControls?.dismissOverlay()) { pageNavigation?.stay(); return; }
+    if (!galleryId && mobilePane === 'list' && allProfileChats && accountView === 'chats' && profileNetwork) { allProfileChats = false; pageNavigation?.stay(); return; }
     restoringPage = true;
     pageNavigation?.pop(historyPageState(event.state));
     void tick().then(() => { restoringPage = false; });
@@ -1260,10 +1288,12 @@ onMount(() => {
     }
   };
 
-  const handleFocus = () => {scanVisibleMessages();void recoverRadio(true);};
+  const handleFocus = () => {checkIdleTimeout();scanVisibleMessages();void resumeDelivery();void recoverRadio(true);};
   const handlePageShow = (event: PageTransitionEvent) => { if (event.persisted) {void resumeDelivery();void recoverRadio(true);} };
   window.addEventListener('pageshow', handlePageShow);
   window.addEventListener('online', resumeDelivery);
+  const connection = (navigator as Navigator & {connection?: EventTarget}).connection;
+  connection?.addEventListener('change', resumeDelivery);
 
   const handleActivity = () => {
     if (screen === 'account' && autoLockIsDue(lastActivity, Date.now(), autoLockMinutes)) {
@@ -1322,6 +1352,7 @@ onMount(() => {
     window.removeEventListener('focus', handleFocus);
     window.removeEventListener('pageshow', handlePageShow);
     window.removeEventListener('online', resumeDelivery);
+    connection?.removeEventListener('change', resumeDelivery);
     window.clearInterval(idleTimer);
     for (const eventName of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
       window.removeEventListener(eventName, handleActivity);
@@ -1358,6 +1389,7 @@ async function applyAppUpdate(): Promise<void> {
 }
 
 function clearSensitiveData() {
+  deliveryRecovery.reset(); receiveRecoveryBusy = false;
   if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState(); radioDiagnostics = null; radioErrorText = '';
   historyTarget = null;
@@ -1775,13 +1807,14 @@ function restorePageRoute(route: PageRoute): void {
   }
   if (route.screen !== 'account') return;
   if (screen !== 'account' || !address) return;
+  const reopenChat = route.peer !== sessionChats.activePeer || route.pane !== mobilePane || route.view !== accountView;
   actionMode = null; selecting = false; selectedMessages = []; attachmentMenu = false;
   messageTools = null;
   if (route.layer !== 'media-library') { mediaOpen = false; receivedPack = null; }
   if (accountView !== route.view || peerCardAddress !== route.card) changeAccountView(route.view);
   if (route.peer && !sessionChats.byPeer[route.peer]) return;
   sessionChats = { ...sessionChats, activePeer: route.peer };
-  mobilePane = route.pane; chatOpenToken++;
+  mobilePane = route.pane; if (reopenChat) chatOpenToken++;
   if (route.view === 'profile') {
     const destination = settingsLocation(route.settings, route.connection, route.media);
     if (settingsSection !== destination.section) selectSettings(destination.section);
@@ -1796,13 +1829,13 @@ function backWithinApp(): void {
   if(radioOverviewOpen){radioOverviewOpen=false;return;}
   if (navigationBusy()) return;
   if (ephemeralView) { closeEphemeral(); return; }
+  if (galleryId) { closeGallery(); return; }
   if (sendOptionsOpen) { sendOptionsOpen = false; return; }
   if (emojiOpen) { emojiOpen = false; return; }
   if (chatSearchOpen) { toggleChatSearch(); return; }
   if (audioControls?.dismissOverlay()) return;
   if (mediaOpen || receivedPack) { mediaOpen = false; receivedPack = null; return; }
   if (messageTools) { messageTools = null; return; }
-  if (galleryId) { closeGallery(); return; }
   if (screen === 'account' && accountView === 'profile' && !openHelp && !pendingExit && !backupOpen && !panicOpen && !memoryConfirmation && !nodeScannerOpen && !networkSummaryOpen && !nodeBudgetOpen) {
     const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane};
     const parent=settingsParent(route);
@@ -2782,11 +2815,16 @@ function openGallery(peer: string, id: string): void {
   galleryId = id;
   void ensureImageUrl(peer, id);
 }
-function closeGallery(): void {
-  // Closing media updates this level instead of pushing a new "closed" view
-  // which would make the next Back reopen the same media.
-  restoringPage = true; galleryId = '';
+function closeGallery(): Promise<void> {
+  if (!galleryId) return Promise.resolve();
+  // Native modal Back/cancel can be consumed without a popstate. Consume the
+  // viewer's history level as well, so the NEXT Back reaches the chat list.
+  const parent = { ...currentPageRoute(), gallery: '' };
+  restoringPage = true;
+  if (pageNavigation) pageNavigation.backTo(route => route.screen === screen && !route.gallery, parent);
+  else galleryId = '';
   void tick().then(() => { restoringPage = false; });
+  return pageNavigation?.settled() ?? Promise.resolve();
 }
 
 function moveGallery(direction: -1 | 1): void {
@@ -2800,7 +2838,7 @@ async function galleryAction(action: 'download' | 'share' | 'forward' | 'reply' 
   const message = galleryItems[galleryIndex];
   if (!message || actionBusy || memoryBusy || endingSession || switchingTrust || pinBusy || attachingFiles || voiceBusy) return;
   if (action === 'download') { downloadMessage(peer, message); return; }
-  closeGallery();
+  await closeGallery();
   // Let the native viewer release focus before opening another dialog or input.
   await tick();
   if (generation !== authGeneration || screen !== 'account' || peer !== sessionChats.activePeer ||
@@ -2851,7 +2889,7 @@ function updateFileEntry(peer: string, id: string, patch: Partial<import('$lib/c
   if (!sessionChats.byPeer[peer]) return;
   sessionChats = updateConversation(sessionChats, peer, (conversation) => ({
     ...conversation,
-    messages: conversation.messages.map((message) => message.id === id && message.file ? { ...message, ...patch } : message),
+    messages: conversation.messages.map((message) => message.id === id && message.file ? fileEntryUpdate(message, patch) : message),
   }));
 }
 
@@ -3052,17 +3090,18 @@ async function enqueueAttachment(file: File, peer: string, activeChat: ChatServi
       else sessionFiles.delete(fileTransferKey(peer, id));
       return false;
     }
-    const previousChats = sessionChats;
     sessionChats = recordSentMessage(sessionChats, peer, { id, text: '', from: address,
       timestamp: Date.now(), direction: 'outgoing', details: offer.details, file: offer,
-      delivery: peer === address ? 'delivered' : 'queued',
+      delivery: 'saving',
       fileStatus: peer === address ? 'ready' : 'queued', fileProgress: peer === address ? bytes.length : 0 });
     if (!await persistLocalChats()) {
-      if (chat === activeChat) sessionChats = previousChats;
+      if (chat === activeChat) sessionChats = updateConversation(sessionChats,peer,c => ({...c,messages:c.messages.filter(m=>m.id!==id)}));
       if (fileWasTrusted) await deleteLocalFileData(fileAccountId, fileTransferKey(peer, id));
       else sessionFiles.delete(fileTransferKey(peer, id));
       throw new Error('Не удалось сохранить файл и историю.');
     }
+    if (chat !== activeChat || address !== fileAccountId) return false;
+    sessionChats = setDeliveryStatus(sessionChats,peer,id,peer === address ? 'delivered' : 'queued');
     if (!extra) { const nextReplies = { ...replyDrafts }; delete nextReplies[peer]; replyDrafts = nextReplies; }
     if (peer === address) return true;
     courierDelivery?.wake();
@@ -3096,7 +3135,7 @@ $effect(() => {
 
 async function offerFile(peer: string, id: string, activeChat: ChatService): Promise<void> {
   const entry = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id && message.direction === 'outgoing');
-  if (!entry?.file || chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted' ||
+  if (!pendingFile(entry) || chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted' ||
     sessionChats.byPeer[peer]?.connection !== 'connected') return;
   try {
     await activeChat.sendFileOffer(entry.file, peer);
@@ -3192,7 +3231,7 @@ const queueChats=$derived(sessionChats.order.filter(peer=>!!sessionChats.byPeer[
 const queueTotals=$derived(nodeInteractionCounts(queueChats));
 const remoteQueue=$derived(courierStatus.connection==='connected'&&freshQueueSnapshot(courierStatus.queue,keyBudgetNow)?courierStatus.queue:undefined);
 const quotaAlert=$derived(remoteQueue?.quota&&queueQuotaFull(remoteQueue.quota)?{count:messageQuotaFull(remoteQueue.quota)?remoteQueue.quota.profileMessages??0:remoteQueue.quota.profileFiles,label:queueQuotaLabel(remoteQueue.quota)}:undefined);
-const headerQueue=$derived({quota:quotaAlert,stored:remoteQueue?.messages??queueTotals.waiting,transmitting:queueTotals.transmitting,
+const headerQueue=$derived({quota:quotaAlert,unknown:!!courierState.node&&!remoteQueue,stored:remoteQueue?.messages??queueTotals.waiting,transmitting:queueTotals.transmitting,
   retrying:queueTotals.retrying+cleanupWaiting(courierStatus.cleanup),stopped:queueTotals.stopped,expired:queueTotals.expired,
   errors:queueTotals.errors+cleanupErrors(courierStatus.cleanup),canceling:queueTotals.canceling});
 function recordNodeOutcome(peer:string,id:string,value:'canceling'|'canceled'|'expired') {
@@ -3252,17 +3291,18 @@ async function sendFileData(peer: string, id: string, activeChat: ChatService): 
   if (sendingFiles.has(key)) return;
   if (sendingFiles.size >= 2) { scheduleFileRetry(peer, id, activeChat); return; }
   const entry = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id && message.direction === 'outgoing');
-  if (!entry?.file || entry.nodeQueue || entry.fileStatus === 'ready' || chat !== activeChat) return;
+  if (!pendingFile(entry) || chat !== activeChat) return;
   sendingFiles.add(key);
   try {
     const bytes = await getFileBytes(peer, id);
     if (!bytes || bytes.length !== entry.file.size || await sha256Hex(bytes) !== entry.file.sha256)
       throw new Error('Файл больше не доступен в этом браузере.');
+    if (chat !== activeChat || !pendingFile(sessionChats.byPeer[peer]?.messages.find(m => m.id === id))) return;
     updateFileEntry(peer, id, { fileStatus: 'sending', fileProgress: 0 });
     for (let offset = 0, index = 0; offset < bytes.length; offset += FILE_CHUNK_BYTES, index++) {
       if (chat !== activeChat || sessionChats.byPeer[peer]?.connection !== 'connected' ||
         sessionChats.byPeer[peer]?.contact !== 'accepted' ||
-        sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)?.fileStatus === 'canceled')
+        !pendingFile(sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)))
         throw new Error('Передача прервана.');
       await activeChat.sendFileChunk(id, index, bytes.subarray(offset, offset + FILE_CHUNK_BYTES), peer);
       if (index % 8 === 0 || offset + FILE_CHUNK_BYTES >= bytes.length)
@@ -3350,6 +3390,17 @@ function receiptKey(peer: string, messageId: string): string {
 
 function flushOutbox(peer: string, sendingChat: ChatService): Promise<void> {
   return outbox.flush(peer, sendingChat);
+}
+
+function resumeConnectedPeer(peer: string, active: ChatService, refreshKeys = false): void {
+  if (chat !== active || sessionChats.byPeer[peer]?.connection !== 'connected') return;
+  void outbox.reconnect(peer, active);
+  if (sessionChats.byPeer[peer].contact !== 'accepted') return;
+  publishDeliveryKeys(peer, refreshKeys);
+  void flushReadReceipts(peer, active);
+  for (const entry of sessionChats.byPeer[peer].messages) {
+    if (pendingFileOffer(entry)) void offerFile(peer, entry.id, active);
+  }
 }
 
 async function openConversation(peer: string) {
@@ -4099,6 +4150,7 @@ async function initializeChat() {
   }
   if (!profileNetwork) { signalingStatus = 'idle'; return; }
 
+  deliveryRecovery.reset(); receiveRecoveryBusy = false;
   const stoppingOffline = stopOfflineDelivery();
   const previousChat = chat;
   const generation = authGeneration;
@@ -4417,10 +4469,7 @@ async function initializeChat() {
     if (transportStatus !== 'connected') return;
     for (const peer of sessionChats.order) {
       if (peer === address) continue;
-      if (sessionChats.byPeer[peer].contact === 'accepted' || sessionChats.byPeer[peer].contact === 'outgoing' ||
-        sessionChats.byPeer[peer].messages.some((message) =>
-        message.direction === 'outgoing' && (message.delivery === 'queued' || message.delivery === 'sent' ||
-          (message.file && (message.fileStatus === 'queued' || message.fileStatus === 'offered' || message.fileStatus === 'failed'))))) {
+      if (peerNeedsRecovery(sessionChats.byPeer[peer])) {
         void nextChat.connect(peer).catch(() => {});
       }
     }
@@ -4448,15 +4497,7 @@ async function initializeChat() {
         void nextChat.sendReadPreference(readReceiptsEnabled, peer.address).catch(() => {});
         void flushReadReceipts(peer.address, nextChat);
       }
-      void outbox.reconnect(peer.address, nextChat);
-      if (sessionChats.byPeer[peer.address]?.contact === 'accepted') {
-        for (const entry of sessionChats.byPeer[peer.address].messages) {
-          if (entry.direction === 'outgoing' && entry.file &&
-            (entry.fileStatus === 'queued' || entry.fileStatus === 'offered' || entry.fileStatus === 'failed')) {
-            void offerFile(peer.address, entry.id, nextChat);
-          }
-        }
-      }
+      resumeConnectedPeer(peer.address, nextChat);
     } else {
       for (const key of incomingFiles.keys()) if (key.startsWith(`${peer.address}:`)) incomingFiles.delete(key);
       peerReadConfirmed.delete(peer.address);
@@ -5635,7 +5676,7 @@ async function changePassword(): Promise<void> {
         {:else}
         <button class="peer-heading" onclick={() => activeConversation.peerAddress === address ? changeAccountView('own') : openPeerCard(activeConversation.peerAddress)} title={$i18n.text("Открыть карточку")}>
           <Avatar accountId={activeConversation.peerAddress} photo={contactPhoto(activeConversation.peerAddress)} size={32} />
-          <span>{contactName(activeConversation.peerAddress)}<br /><small class="peer-status">{activeConversation.peerAddress === address ? $i18n.text("Только на этом устройстве") : activeConversation.connection === 'connected' ? $i18n.text("● На связи") : activeConversation.connection === 'connecting' ? $i18n.text("Подключаемся…") : $i18n.text("○ Не в сети")}</small>{#if activeRadioNode}<RadioPresence heard={radioHeard[activeRadioNode]} now={keyBudgetNow} connected={radioConnection==='connected'}/>{/if}</span>
+          <span>{contactName(activeConversation.peerAddress)}<br /><small class="peer-status">{activeConversation.peerAddress === address ? $i18n.text("Только на этом устройстве") : activeConversation.connection === 'connected' ? $i18n.text("● На связи") : activeConversation.connection === 'connecting' ? $i18n.text("Подключаемся…") : $i18n.text("○ Нет прямой связи")}</small>{#if activeRadioNode}<RadioPresence heard={radioHeard[activeRadioNode]} now={keyBudgetNow} connected={radioConnection==='connected'}/>{/if}</span>
         </button>
         {#if isRoutineConnectionNotice(activeConversation.error)}
           <ConnectionNotice text={activeConversation.error} onRetry={() => void openDirectChat(activeConversation.peerAddress)} />

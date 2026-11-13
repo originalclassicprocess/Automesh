@@ -11,7 +11,8 @@ describe('message presentation', () => {
     expect(messageStatus({ ...base, delivery: 'delivered', deliveryIssue: 'node_timeout' }).label).toBe('Доставлено');
   });
   it('never treats unknown, queued, sent or node storage as receipt', () => {
-    for (const delivery of [undefined, 'queued', 'sending', 'sent'] as const) expect(messageStatus({ ...base, delivery }).tone).toBe('waiting');
+    for (const delivery of ['queued', 'sending', 'sent'] as const) expect(messageStatus({ ...base, delivery }).tone).toBe('waiting');
+    expect(messageStatus(base).tone).toBe('neutral');
     expect(messageStatus({ ...base, delivery: 'stored' }).label).toBe('На ноде');
     expect(messageStatus({ ...base, delivery: 'delivered' }).label).toBe('Доставлено');
   });
@@ -38,9 +39,9 @@ describe('message presentation', () => {
     const old = { ...file, importedFromDevice: true, restoredFromBackup: true, fileStatus: 'ready' as const };
     expect(messageStatus(old)).toMatchObject({ label: 'Файл сохранён', tone: 'success' });
     expect(messageProvenance(old)).toContain('История с другого устройства');
-    expect(messageStatus({ ...old, fileStatus: 'canceled' })).toMatchObject({ label: 'Файл не перенесён', tone: 'waiting' });
+    expect(messageStatus({ ...old, fileStatus: 'canceled' })).toMatchObject({ label: 'Файл не перенесён', tone: 'neutral' });
     expect(canDownloadMessage({ ...old, fileStatus: 'canceled' })).toBe(false);
-    expect(messageStatus({ ...base, deviceMessage: true }).tone).toBe('waiting');
+    expect(messageStatus({ ...base, deviceMessage: true }).tone).toBe('neutral');
     expect(messageStatus({ ...base, deviceMessage: true, delivery: 'delivered' })).toMatchObject({ label: 'Доставлено', tone: 'success' });
   });
 });
@@ -48,10 +49,27 @@ describe('message presentation', () => {
 it('keeps preparation, HTTPS upload, automatic retry and actionable quota separate',()=>{
  const m={...file,delivery:'queued' as const,deliveryIssue:'node_unavailable' as const};
  expect(messageStatus({...m,courierStage:'preparing'}).label).toBe('Готовим файл для ноды');
- expect(messageStatus({...m,courierStage:'uploading'})).toMatchObject({label:'Загружаем на ноду 50%',tone:'success'});
+ expect(messageStatus({...m,courierStage:'uploading'})).toMatchObject({label:'Загружаем на ноду 50%',tone:'waiting'});
  expect(messageStatus({...m,courierStage:'retrying'}).label).toBe('Повторяем подключение к ноде');
- expect(messageStatus({...m,courierStage:'uploading',deliveryIssue:'node_profile_files_full'}).tone).toBe('warning');
- expect(messageStatus({...m,courierStage:'uploading',delivery:'delivered'}).label).toBe('Доставлено');
+ expect(messageStatus({...m,courierStage:'uploading',deliveryIssue:'node_profile_files_full'}).tone).toBe('error');
+ expect(messageStatus({...m,courierStage:'uploading',delivery:'delivered'})).toMatchObject({label:'Отправляем 50%',tone:'waiting'});
  expect(messageStatus({...m,courierStage:'uploading',nodeQueue:'expired'}).tone).toBe('error');
- expect(messageStatus({...m,nodeQueue:'canceled'}).tone).toBe('waiting');
+ expect(messageStatus({...m,nodeQueue:'canceled'}).tone).toBe('neutral');
+});
+it('never uses green for buffered bytes, offer receipts or cancellation still awaiting node confirmation',()=>{
+ for(const delivery of ['sent','delivered','read'] as const){
+   expect(messageStatus({...file,fileProgress:100,delivery},false,true).tone).toBe('waiting');
+ }
+ expect(messageStatus({...file,fileProgress:100,courierStage:'uploading'})).toMatchObject({tone:'waiting',label:'Подтверждаем приём нодой'});
+ expect(messageStatus({...base,nodeQueue:'canceling'}).tone).toBe('waiting');
+ expect(messageStatus({...file,delivery:'stored'}).detail).toContain('нода доставки должна оставаться включённой');
+ expect(messageStatus({...file,fileStatus:'ready',deliveryIssue:'node_denied'}).tone).toBe('success');
+});
+it('separates automatic waiting from repairs, including optional nodes and rejected key sources',()=>{
+ for(const deliveryIssue of ['contact_pending','direct_unavailable','node_timeout','keys_missing','node_not_configured','node_sending_disabled'] as const)
+   expect(messageStatus({...base,delivery:'queued',deliveryIssue}).tone).toBe('waiting');
+ for(const deliveryIssue of ['node_denied','node_full','local_storage','primary_policy_invalid','network_forbidden'] as const)
+   expect(messageStatus({...base,delivery:'queued',deliveryIssue}).tone).toBe('error');
+ expect(messageStatus({...base,delivery:'queued',deliveryIssue:'keys_source_unavailable',deliveryError:'prekey_source_not_approved'}).tone).toBe('error');
+ expect(messageStatus({...base,delivery:'queued',deliveryIssue:'keys_source_unavailable',deliveryError:'request_timeout'}).tone).toBe('waiting');
 });

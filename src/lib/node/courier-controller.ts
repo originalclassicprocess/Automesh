@@ -2,6 +2,7 @@ import type { IdentityProvider } from '$lib/identity/identity';
 import { deliveryIssueForError, deliveryIssueText, safeDeliveryErrorCode, type DeliveryIssue } from '$lib/application/delivery-issues';
 import type { ChatMessage } from '$lib/chat/ChatService';
 import type { SessionChats } from '$lib/chat/session-chats';
+import { localOutgoing } from '$lib/application/delivery-work';
 import type {CourierStage} from '$lib/chat/node-transfer';
 import { encodeChatContent, decodeChatContent } from '$lib/chat/message-details';
 import { signedNodeRequest, requireNodeNetwork } from './client';
@@ -134,11 +135,10 @@ export class CourierController {
     if (!this.active || this.running) return;
     this.running = true; this.requested = false;
     try { await this.poll(); } catch (error) { if (this.active) {
-      this.requested = false;
       for(const [id,{peer}] of this.activities)this.activity(peer,id,'retrying');
       const reason = deliveryIssueForError(error,'node_unavailable');
       for (const peer of this.port.chats().order) for (const m of this.port.chats().byPeer[peer].messages)
-        if (!m.restoredFromBackup && !m.deviceMessage && m.direction === 'outgoing' && ['queued','sent','stored'].includes(m.delivery ?? '') &&
+        if (localOutgoing(m) && !m.fileDeleted && !['ready','rejected','canceled'].includes(m.fileStatus ?? '') && ['queued','sent','stored'].includes(m.delivery ?? '') &&
             (this.port.chats().byPeer[peer].connection !== 'connected' || m.directFallback || this.port.state().pending.some(j => j.body.id === m.id))) this.port.issue?.(peer,m.id,reason,error);
       this.port.error(deliveryIssueText(reason,error));
     } } finally {
@@ -369,7 +369,6 @@ export class CourierController {
         const result = await this.request('/inbox/list', { cursor: this.inboxCursor });
         if (result.protocol !== 'automesh-inbox-v1' || !Array.isArray(result.deliveries) || result.deliveries.length > 8 ||
             typeof result.cursor !== 'string' || (result.cursor !== '' && !/^[a-f0-9]{32}$/.test(result.cursor))) throw new Error('invalid_courier_inbox');
-        this.inboxCursor = result.cursor;
         this.trace({ inboxAt: Date.now(), inboxFailure: '' });
         for (const data of result.deliveries) {
           try {
@@ -380,6 +379,10 @@ export class CourierController {
             if (error instanceof Error && error.message === 'courier_not_saved') throw error;
           }
         }
+        // A failed save throws before advancing. Invalid envelopes remain
+        // unacknowledged and are revisited on the next scan, without trapping
+        // all later pages behind a malformed entry. Saved receipts deduplicate.
+        this.inboxCursor = result.cursor;
         if (this.inboxCursor) this.wake();
       } catch (error) {
         this.current(); this.trace({ inboxFailure: 'Не удалось проверить входящую очередь. Повторим автоматически.' });
@@ -393,7 +396,7 @@ export class CourierController {
     await this.replenishPrekeys(health.prekeyPeers);
     this.refreshKeyStocks();
     let count = 0; let keyWait = false; let fileWait = false;let sourceFailures=0;
-    const eligible = (m: import('$lib/chat/session-chats').ChatEntry) => !m.radioDelivery && !m.nodeQueue && !m.restoredFromBackup && !m.deviceMessage && m.direction === 'outgoing' && (m.file
+    const eligible = (m: import('$lib/chat/session-chats').ChatEntry) => localOutgoing(m) && (m.file
       ? !m.fileDeleted && !['ready', 'rejected', 'canceled'].includes(m.fileStatus ?? '') && !!this.port.files
       : ['queued', 'sent', 'stored'].includes(m.delivery ?? ''));
     // Authorization and file uploads await external work. Re-read user intent

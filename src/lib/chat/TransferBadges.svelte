@@ -29,7 +29,7 @@
 {/if}
 <style>
   .transfer-badges { display:flex;flex-wrap:wrap;gap:5px;padding:3px 0;min-width:0;flex-shrink:0; }
-  .transfer-badge { display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);border-radius:12px;padding:3px 7px;font-size:12px;font-weight:600;line-height:1.4;font-variant-numeric:tabular-nums; }
+  .transfer-badge { display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid var(--line);background:var(--warning-soft);color:var(--warning);border-radius:12px;padding:3px 7px;font-size:12px;font-weight:600;line-height:1.4;font-variant-numeric:tabular-nums; }
   .transfer-badge:disabled{opacity:1} button.transfer-badge{font-family:inherit;min-height:28px}
   .meter { display:inline-grid;place-items:center;width:20px;height:20px;flex-shrink:0;border-radius:50%;background:radial-gradient(closest-side,var(--surface) 73%,transparent 76%),conic-gradient(currentColor var(--progress),var(--line) 0); }
   .failed { color:var(--danger);border-color:var(--danger);background:var(--surface); }

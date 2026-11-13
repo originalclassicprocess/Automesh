@@ -5,7 +5,7 @@
 </script>
 <span class="delivery-summary">
   {#if provenance}<span class="copy-note" title={$i18n.text(provenance)} aria-label={$i18n.text(provenance)}>↔</span>{/if}
-  <button type="button" class="delivery-status" class:confirmed={status.tone === 'success'} class:failed={status.tone === 'error'} class:warning={status.tone === 'warning'}
+  <button type="button" class="delivery-status" class:confirmed={status.tone === 'success'} class:failed={status.tone === 'error'} class:warning={status.tone === 'waiting'}
     title={[$i18n.system(status.detail), $i18n.text(provenance)].filter(Boolean).join(' ')} aria-label={$i18n("m_5fb5440ae978", {v0: ($i18n.system(status.label))})} onclick={onDetails}>
     <span aria-hidden="true">{status.icon}</span> {$i18n.system(status.label)}
   </button>

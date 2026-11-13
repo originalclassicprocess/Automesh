@@ -364,6 +364,52 @@ async function ephemeralCourierBaseline(){
   await until(()=>receiver.evaluate(async({phrase,peer})=>{const {accountFromMnemonic}=await import('/src/lib/application/account.ts');const {deriveChatStoreKey,loadLocalChatData,loadLocalFileData}=await import('/src/lib/chat/local-store.ts');const x=await accountFromMnemonic(phrase);try{const key=await deriveChatStoreKey(x.identitySeed,x.accountId),data=await loadLocalChatData(key,x.accountId);const rows=data.chats.byPeer[peer].messages.filter(m=>m.details?.ephemeral);if(rows.length!==2||rows.some(m=>!m.ephemeralState?.expired||m.text||m.file))return false;for(const row of rows){if(await loadLocalFileData(key,x.accountId,`${peer}:${row.id}`))return false;}return true;}finally{x.identitySeed.fill(0);x.provider.dispose();}}, {phrase:phrases[1],peer:alice.address}),'durable file cleanup and empty tombstones');
   assert.equal(requests.some(p=>p.startsWith('/devices/')),false);assert.deepEqual(errors,[]);await ac.close();await bc.close();console.log(`Passed protected courier: text and file received with sender closed via ${nodeOrigin}; recipient open reports queued offline, sender copies retired after unlock, durable content/file deletion verified.`);
 }
+async function backHierarchyBaseline(){
+  const ctx=await context();await ctx.addInitScript(()=>{try{localStorage.setItem('automesh.ui-language.v1','ru');}catch{}});
+  const a=await ctx.newPage();await a.setViewportSize({width:390,height:844});
+  const owner=await prepare(a,phrases[0],{noNode:true});await unlock(a);
+  const row=a.locator(`.conversation-row[title="${owner.address}"]`);
+  await row.click();await a.locator('.chat-layout.show-chat').waitFor();
+  const png=await a.evaluate(()=>{const c=document.createElement('canvas');c.width=24;c.height=24;const x=c.getContext('2d');x.fillStyle='#3a6841';x.fillRect(0,0,24,24);return c.toDataURL('image/png').split(',')[1];});
+  await a.getByLabel('Выбрать файлы для отправки',{exact:true}).setInputFiles(Array.from({length:8},(_,i)=>({name:`back-${i}.png`,mimeType:'image/png',buffer:Buffer.from(png,'base64')})));
+  await a.getByRole('button',{name:'Отправить сообщение',exact:true}).click();
+  await until(()=>a.locator('.message-image').count().then(n=>n===8),'eight local media fixtures');
+  const viewer=a.getByRole('dialog',{name:'Просмотр фото и видео',exact:true});
+  for(const close of ['native-cancel','toolbar','browser']){
+    const length=await a.evaluate(()=>history.length);
+    await a.locator('.message-image').first().click();await viewer.waitFor();
+    for(let photo=0;photo<20;photo++)await a.keyboard.press('ArrowRight');
+    assert.equal(await a.evaluate(()=>history.length),length+1,'photos must share one viewer history entry');
+    const scroll=await a.locator('[data-chat-scroll]').evaluate(n=>n.scrollTop);
+    const mediaState=await a.evaluate(()=>JSON.stringify(history.state));
+    if(close==='native-cancel')await a.keyboard.press('Escape');
+    else if(close==='toolbar')await viewer.getByRole('button',{name:'Закрыть просмотр',exact:true}).click();
+    else await a.goBack();
+    await viewer.waitFor({state:'hidden'});await a.locator('.chat-layout.show-chat').waitFor();
+    await until(()=>a.evaluate(before=>JSON.stringify(history.state)!==before,mediaState),'viewer history level consumed');
+    assert.ok(Math.abs(await a.locator('[data-chat-scroll]').evaluate(n=>n.scrollTop)-scroll)<=1,'closing media preserves the chat scroll position');
+    if(close==='toolbar')await a.locator('.chat-back').click();else await a.goBack();
+    await a.locator('.chat-layout.show-list').waitFor();assert.equal(await viewer.count(),0);
+    await row.click();await a.locator('.chat-layout.show-chat').waitFor();
+  }
+  // Closing media to reply must wait for the native history traversal too.
+  await a.locator('.message-image').first().click();await viewer.waitFor();
+  await viewer.getByRole('button',{name:'Действия с медиа',exact:true}).click();
+  await viewer.getByRole('button',{name:'Ответить',exact:true}).click();
+  await viewer.waitFor({state:'hidden'});await a.locator('.composer-reply').waitFor();
+  await a.goBack();await a.locator('.chat-layout.show-list').waitFor();
+  // The same shared history controller must retain settings parent levels.
+  await a.getByRole('button',{name:'Настройки',exact:true}).click();await a.getByRole('button',{name:/Связь и ноды/}).first().click();
+  await a.locator('nav[aria-label="Связь и ноды"]').getByRole('button',{name:/Ноды доставки/}).click();
+  await a.getByRole('button',{name:'Получение сообщений',exact:true}).click();
+  const back=()=>a.getByRole('button',{name:'Назад',exact:true}).click();
+  await back();await a.getByRole('heading',{name:'Мои ноды',exact:true}).waitFor();
+  await back();await a.getByRole('region',{name:'Обзор подключений',exact:true}).waitFor();
+  await back();await a.getByRole('heading',{name:'Настройки',exact:true}).waitFor();
+  await back();await a.locator('.chat-layout.show-list').waitFor();
+  assert.deepEqual(errors,[]);await ctx.close();
+  console.log('Passed mobile Back hierarchy: 20-photo browsing per open, native modal cancel, viewer/chat Back buttons, browser Back, repeated reopen, preserved scroll, reply after close and settings parents.');
+}
 async function interfaceBaseline(){
   const ac=await context(),a=await ac.newPage();await prepare(a,phrases[0],{noNode:true});await unlock(a);
   await a.getByRole('button',{name:'Настройки',exact:true}).click();await a.getByRole('button',{name:/Связь и ноды/}).first().click();
@@ -405,7 +451,7 @@ async function interfaceBaseline(){
 try{
   await until(async()=>{try{return (await fetch(origin)).ok;}catch{return false;}},'vite:'+diagnostic);
   const executablePath=[chromium.executablePath(),'C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync);browser=await chromium.launch({executablePath,headless:true});
-  if(process.argv.includes('--history-only'))await historyBaseline();else if(process.argv.includes('--ephemeral-courier-only'))await ephemeralCourierBaseline();else if(process.argv.includes('--chat-ux-only'))await chatUxBaseline();else if(process.argv.includes('--interface-only'))await interfaceBaseline();else if(process.argv.includes('--primary-only'))await primaryBaseline();else{
+  if(process.argv.includes('--back-hierarchy-only'))await backHierarchyBaseline();else if(process.argv.includes('--history-only'))await historyBaseline();else if(process.argv.includes('--ephemeral-courier-only'))await ephemeralCourierBaseline();else if(process.argv.includes('--chat-ux-only'))await chatUxBaseline();else if(process.argv.includes('--interface-only'))await interfaceBaseline();else if(process.argv.includes('--primary-only'))await primaryBaseline();else{
   if (!process.argv.includes('--direct-only')) {
   const faults={denyPublish:true},ac=await context(),bc=await context(faults),cc=await context();const a=await ac.newPage(),b=await bc.newPage(),c=await cc.newPage();
   const alice=await prepare(a,phrases[0]),bob=await prepare(b,phrases[1],{peer:alice.address,personal:true});await prepare(a,phrases[0],{peer:bob.address});

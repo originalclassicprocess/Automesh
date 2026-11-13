@@ -12,6 +12,68 @@ import { emptySessionChats, ensureConversation, recordSentMessage, setContactSta
 async function account() { const identity = new WebCryptoIdentity(); await identity.create();
   return { identity, address: await accountIdFromPublicKey(await identity.getPublicKeyBytes()) }; }
 describe('courier durable actor', () => {
+  it('does not acknowledge an invalid envelope or let it trap later local inbox pages',async()=>{
+    const [b,n]=await Promise.all([account(),account()]);const cursors:string[]=[],receive=vi.fn(),ack=vi.fn();
+    let state={...emptyCourierState(),node:{url:'https://node.example',nodeId:'a'.repeat(32),address:n.address}};
+    const worker=new CourierController({...b,state:()=>state,update:s=>{state=s as typeof state;},chats:emptySessionChats,
+      persist:async()=>true,receive,delivery:()=>{},publish:async()=>{},error:()=>{},
+      request:async(_url,_node,_identity,_address,path,body:any)=>{
+        if(path==='/outbox/status')return {address:n.address,inboxProtocol:'automesh-inbox-v1'};
+        if(path==='/inbox/list'){cursors.push(body.cursor);return {protocol:'automesh-inbox-v1',deliveries:body.cursor?[]:[{}],cursor:body.cursor?'':'c'.repeat(32)};}
+        ack();throw Error('unexpected_request');
+      }});
+    try{await worker.poll();await worker.poll();expect(cursors).toEqual(['','c'.repeat(32)]);expect(receive).not.toHaveBeenCalled();expect(ack).not.toHaveBeenCalled();}
+    finally{worker.stop();await worker.settled();b.identity.dispose();n.identity.dispose();}
+  });
+  it('retries the same local inbox page after a failed durable save, without redelivering or reusing keys', async () => {
+    const [a,b,n] = await Promise.all([account(),account(),account()]);
+    const expiresAt = Date.now()+60000;
+    const keys = await Promise.all(Array.from({length:3},()=>generateCourierKey(a.address,expiresAt)));
+    const bundle = await signCourier('prekeys',{protocol:COURIER_PROTOCOL,from:b.address,to:a.address,expiresAt,
+      keys:keys.map(({id,publicKey})=>({id,publicKey}))},b.identity);
+    const deliveries = await Promise.all(keys.map(async(key,i)=>{
+      const job = await createCourierJob(a.identity,a.address,n.address,bundle,key,crypto.randomUUID(),Date.now(),encodeChatContent('page '+i));
+      return {from:n.address,job,hop:await signCourier('hop',{protocol:COURIER_PROTOCOL,courier:n.address,id:job.body.id,digest:await cipherDigest(job.body.packet)},n.identity)};
+    }));
+    let state = {...emptyCourierState(),node:{url:'https://node.example',nodeId:'a'.repeat(32),address:n.address},keys};
+    let committed = emptyCourierState(), allowSave = false;
+    const received:string[] = [], acked = new Set<string>(), cursors:string[] = [];
+    const chats = setContactState(ensureConversation(emptySessionChats(),a.address),a.address,'accepted');
+    const worker = new CourierController({...b,state:()=>state,update:s=>{state=s as typeof state;},chats:()=>chats,
+      persist:async()=>{if(received.length===2&&!allowSave)return false;committed=restoreCourierState(state);return true;},
+      receive:message=>received.push(message.id),delivery:()=>{},publish:async()=>{},error:()=>{},
+      request:async(_url,_node,_identity,_address,path,body:any)=>{
+        if(path==='/outbox/status')return {address:n.address,inboxProtocol:'automesh-inbox-v1'};
+        if(path==='/inbox/list'){cursors.push(body.cursor);return {protocol:'automesh-inbox-v1',cursor:body.cursor?'':'c'.repeat(32),deliveries:body.cursor?deliveries.slice(2):deliveries.slice(0,2)};}
+        if(path==='/inbox/ack'){
+          const proof=JSON.parse(body.receipt);await verifyCourier(proof,'receipt',b.address);
+          expect(committed.acks.some(a=>a.id===proof.body.id&&a.receipt===body.receipt)).toBe(true);
+          acked.add(proof.body.id);return {acknowledged:true};
+        }
+        throw Error('unexpected_request');
+      }});
+    try {
+      await expect(worker.poll()).rejects.toThrow('courier_not_saved');expect(acked.size).toBe(1);
+      allowSave=true;await worker.poll();expect(cursors).toEqual(['','']);expect(acked.size).toBe(2);
+      await worker.poll();expect(cursors).toEqual(['','','c'.repeat(32)]);expect(acked.size).toBe(3);
+      expect(received).toEqual(deliveries.map(d=>d.job.body.id));expect(state.keys).toHaveLength(0);
+    }finally{worker.stop();await worker.settled();for(const who of[a,b,n])who.identity.dispose();}
+  });
+  it('keeps a wake received during a failed poll and does not replace radio/cancellation/confirmed states',async()=>{
+    vi.useFakeTimers();let reject!:(error:Error)=>void;
+    const chats=setContactState(recordSentMessage(emptySessionChats(),'peer',{id:'live',from:'me',direction:'outgoing',text:'x',timestamp:1,delivery:'queued'}),'peer','accepted');
+    const m=chats.byPeer.peer.messages[0];
+    chats.byPeer.peer.messages.push({...m,id:'history',importedFromDevice:true},{...m,id:'cancel',nodeQueue:'canceling'},
+      {...m,id:'radio',radioDelivery:'queued'},{...m,id:'confirmed',delivery:'delivered'});
+    const issue=vi.fn(),worker=new CourierController({address:'me',identity:{} as any,state:emptyCourierState,update:()=>{},chats:()=>chats,
+      persist:async()=>true,receive:()=>{},delivery:()=>{},publish:async()=>{},error:()=>{},issue});
+    const poll=vi.spyOn(worker,'poll').mockImplementationOnce(()=>new Promise<void>((_resolve,fail)=>{reject=fail;})).mockResolvedValue();
+    try {
+      worker.start();await vi.advanceTimersByTimeAsync(50);worker.wake();reject(Error('connection_lost'));
+      await vi.advanceTimersByTimeAsync(50);expect(poll).toHaveBeenCalledTimes(2);
+      expect(issue.mock.calls.map(call=>call[1])).toEqual(['live']);
+    }finally{worker.stop();vi.useRealTimers();}
+  });
   it('keeps the failed page cursor for retry while accepting other valid remote envelopes',async()=>{
     const [a,b,n]=await Promise.all([account(),account(),account()]);let now=Date.now();
     const clock=vi.spyOn(Date,'now').mockImplementation(()=>now),expiresAt=now+60000;

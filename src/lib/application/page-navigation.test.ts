@@ -14,6 +14,20 @@ function fixture() {
   return { nav, history, entries, restore, rootBack };
 }
 describe('in-app browser Back', () => {
+  it('waits for modal history traversal before another action and preserves the parent marker', async () => {
+    const entries:unknown[]=[{}];let at=0,popped:unknown;
+    const restore=vi.fn(),go=vi.fn((delta:number)=>{at+=delta;popped=entries[at];});
+    const history:HistoryPort={get state(){return entries[at];},pushState(s){entries.splice(++at);entries.push(s);},
+      replaceState(s){entries[at]=s;},back(){go(-1);},go};
+    const nav=new PageNavigation(history,restore,()=>{},()=> 'test');
+    nav.start('list');nav.visit('chat');const parent=history.state;nav.visit('viewer');
+    nav.backTo(r=>r==='chat','chat');const done=vi.fn();const settled=nav.settled().then(done);
+    nav.replace('chat');expect(history.state).toEqual(parent);
+    nav.returnToRoot('list');expect(go).toHaveBeenCalledTimes(1);
+    await Promise.resolve();expect(done).not.toHaveBeenCalled();
+    nav.pop(popped);await settled;expect(done).toHaveBeenCalledOnce();expect(restore).toHaveBeenLastCalledWith('chat');
+    nav.back();const closed=nav.settled();nav.clear();await closed;
+  });
   it('returns straight to all chats, discards gallery snapshots and keeps root Back guarded', () => {
     const f = fixture(); f.nav.start('chats'); f.nav.visit('conversation'); f.nav.visit('gallery'); f.nav.visit('media-details');
     const discarded = f.history.state;

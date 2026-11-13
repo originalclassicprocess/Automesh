@@ -18,6 +18,11 @@ function fixture(options: {authorize?(peer:string):Promise<void>;issue?(peer:str
     get sender() { return sender; }, set sender(value) { sender = value; } };
 }
 describe('outbox independent of UI and transport implementation', () => {
+  it('never replays imported history on reconnect, even when its old status is queued', async () => {
+    const f = fixture(); f.state.byPeer.peer.messages[0].importedFromDevice = true;
+    await f.outbox.reconnect('peer', f.sender); await vi.advanceTimersByTimeAsync(120000);
+    expect(f.sender.send).not.toHaveBeenCalled(); f.outbox.reset();
+  });
   it('does not send cancellation requests or terminal node outcomes through direct retry', async()=>{
     for(const nodeQueue of ['canceling','canceled','expired'] as const){
       const f=fixture();f.state.byPeer.peer.messages[0].nodeQueue=nodeQueue;

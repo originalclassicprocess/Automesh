@@ -17,6 +17,7 @@ import { WebCryptoIdentity } from '$lib/identity/webcrypto';
 import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import { registrationProofBytes } from '$lib/transport/registration-proof.js';
 import { CourierController, type CourierDelivery, type CourierReply } from '$lib/node/courier-controller';
+import { RecoveryController } from '$lib/application/recovery';
 import { attachmentHash } from '$lib/node/attachment-crypto';
 import { ATTACHMENT_CHUNK_BYTES } from '$lib/node/attachment-protocol.js';
 import { unbase64 } from '$lib/node/offline-crypto';
@@ -106,6 +107,36 @@ afterEach(async () => {
   if (directory) await rm(directory, { recursive: true, force: true }); directory = ''; vi.unstubAllGlobals();
 });
 describe('outgoing courier with authenticated LAN upload and real internet-relay transport', () => {
+  it('recovers a lost signed receipt after unlock while signaling fails, without another prekey or duplicate',async()=>{
+    const [alice,bob]=await Promise.all([account(),account()]),endpoint=await start('');
+    let loseReceipt=false;
+    vi.stubGlobal('fetch',async(url:any,init?:RequestInit)=>{
+      const response=await nativeFetch(String(url).replace('https://queue.example',endpoint.url).replace(/^https:/,'http:'),init);
+      if(loseReceipt&&String(url).endsWith('/outbox/receipts')){loseReceipt=false;throw new TypeError('connection_lost_after_response');}
+      return response;
+    });
+    const admin=`http://127.0.0.1:${node!.control.address().port}`;
+    const code=(await(await nativeFetch(admin+'/status',{headers:{Authorization:'Bearer '+'b'.repeat(64)}})).json()).pairCode;
+    await signedNodeRequest(endpoint.url,endpoint.nodeId,alice.identity,alice.address,'/node/join',{code},new AbortController().signal);
+    const a=client(alice,bob.address),b=client(bob,alice.address);a.connect(b.worker);b.connect(a.worker);
+    await a.worker.configure({...endpoint,url:'https://queue.example'},true);await a.worker.publish(bob.address);await b.worker.publish(alice.address);
+    const id=a.send('survive a lost receipt');await a.worker.poll();await a.worker.settled();
+    const job=structuredClone(a.state().pending[0]),used=structuredClone(a.state().used);
+    await b.worker.poll();await b.worker.settled();expect(b.chats().byPeer[alice.address].messages).toHaveLength(1);
+    loseReceipt=true;await expect(a.worker.poll()).rejects.toThrow();expect(a.state().pending[0]).toEqual(job);
+    a.worker.stop();await a.worker.settled();
+    let state=restoreCourierState(a.saved()),chats=a.chats();
+    const sender=new CourierController({...alice,state:()=>state,update:s=>{state=s;},chats:()=>chats,persist:async()=>true,
+      receive:()=>{},delivery:(peer,id,status)=>{chats=setDeliveryStatus(chats,peer,id,status);},publish:async()=>{},error:()=>{}});
+    workers.push(sender);const recovery=new RecoveryController(0);
+    try{
+      await Promise.all([recovery.request('signaling',()=>{throw Error('signaling_unavailable');}),
+        recovery.request('queue',async()=>{await sender.poll();await sender.settled();})]);
+      expect(state.pending).toHaveLength(0);expect(state.used).toEqual(used);
+      expect(chats.byPeer[bob.address]).toMatchObject({contact:'accepted',messages:[{id,delivery:'delivered'}]});
+      expect(b.chats().byPeer[alice.address].messages).toHaveLength(1);expect(sockets).toHaveLength(0);
+    }finally{recovery.reset();}
+  });
   it('replaces retry errors with real HTTPS upload activity and never claims recipient delivery',async()=>{
     const [alice,bob]=await Promise.all([account(),account()]),endpoint=await start('');
     let failPart=true;const seen:Array<{stage:unknown;issue:unknown;upload:number;errors:number;label:string}>=[];

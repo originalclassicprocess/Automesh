@@ -1,9 +1,17 @@
 import {describe,expect,it} from 'vitest';
 import {appendChannelMessage,channelMessageStatus,channelText,channelSignature,emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelEncryption,visibleNativeChannels,nativeChannelToken,removeNativeMessages,nativeMessageKey,mergeNativeHistory,nativeHistoryLimit,type ChannelMessage} from './native-channels';
 import {inlineMessageLinks} from '$lib/chat/message-links';
+import {nativeMessageStatus} from './native-channels';
 import {bytesField,fields,numberField,TEXT_MESSAGE_APP,toChannelTextPacket,toRadioPacket} from './meshtastic-wire';
 import type {RadioSnapshot} from './serial-radio';
 const snapshot=(node=100,index=0,key=1):RadioSnapshot=>({node,firmware:'test',profile:{region:9,preset:0,slot:2,primary:''},channels:[{index,name:'City',psk:new Uint8Array([key]),role:1,uplink:false,downlink:false,aead:false}]});
+it('keeps Meshtastic handoff yellow, completed broadcast green, and missing evidence actionable',()=>{
+ const message:ChannelMessage={id:1,from:100,name:'test',text:'hello',timestamp:1,outgoing:true,status:'queued'};
+ for(const status of ['queued','accepted'] as const)expect(nativeMessageStatus({...message,status}).tone).toBe('waiting');
+ for(const status of ['failed','unknown'] as const)expect(nativeMessageStatus({...message,status}).tone).toBe('error');
+ expect(nativeMessageStatus({...message,status:'mesh'})).toMatchObject({tone:'success',label:'Доставлено в сеть'});
+ expect(nativeMessageStatus({...message,status:'mesh'}).detail).toContain('не подтверждение всех участников');
+});
 const message=(id=1,from=200,timestamp=id):ChannelMessage=>({id,from,name:'🐰',text:'hello',timestamp,outgoing:false,status:'accepted'});
 
 describe('native Meshtastic channel isolation',()=>{

@@ -7,7 +7,8 @@ it('retains an older waiting outgoing message even after an incoming reply and c
   expect(deliveryAttention([{...base,deliveryIssue:'keys_missing'},{...base,id:'two'},{...base,id:'in',direction:'incoming',delivery:undefined}])).toMatchObject({label:'Ждём ключи',count:2,tone:'waiting'});
 });
 it('does not duplicate ordinary sent/stored/delivered/read statuses, imported archives or transfers',()=>{
-  for(const delivery of ['sent','stored','delivered','read'] as const)expect(deliveryAttention([{...base,delivery}])).toBeNull();
+  for(const delivery of ['stored','delivered','read'] as const)expect(deliveryAttention([{...base,delivery}])).toBeNull();
+  expect(deliveryAttention([{...base,delivery:'sent'}])).toMatchObject({tone:'waiting',label:'Ждём подтверждения'});
   expect(deliveryAttention([{...base,restoredFromBackup:true}])).toBeNull();
   expect(deliveryAttention([{...base,file:{id:'id',name:'x',size:1,mime:'text/plain',sha256:'a'.repeat(64)}}])).toBeNull();
   expect(deliveryAttention([{...base,deliveryIssue:'keys_missing',file:{id:'id',name:'x',size:1,mime:'text/plain',sha256:'a'.repeat(64)}}])?.label).toBe('Ждём ключи');

@@ -7,7 +7,7 @@ it('distinguishes a full profile from available node capacity and a connected tr
   const snapshot=readQueueSnapshot({messages:36,quota:{protocol:'automesh-queue-quota-v1',profileFiles:16,profileFileLimit:16,nodeFiles:16,nodeFileLimit:128,reservedBytes:5*1048576,maxBytes:64*1048576}},1000)!;
   expect(queueQuotaFull(snapshot.quota)).toBe(true);expect(queueQuotaLabel(snapshot.quota)).toBe('Квота файлов профиля заполнена');
   expect(freshQueueSnapshot(snapshot,46001)).toBe(false);
-  expect(queueIndicatorStates({stored:6,transmitting:0,stopped:0,errors:0,canceling:0,quota:{count:16,label:queueQuotaLabel(snapshot.quota)}})).toEqual(expect.arrayContaining([expect.objectContaining({kind:'quota',tone:'warning',count:16})]));
+  expect(queueIndicatorStates({stored:6,transmitting:0,stopped:0,errors:0,canceling:0,quota:{count:16,label:queueQuotaLabel(snapshot.quota)}})).toEqual(expect.arrayContaining([expect.objectContaining({kind:'quota',tone:'danger',count:16})]));
   const html=render(NodeQuotaDetails,{props:{snapshot,connected:false}}).body;
   expect(html).toContain('16 / 16');expect(html).not.toContain('16 / 128');expect(html).not.toContain('МБ');expect(html).toContain('данные устарели');expect(html).not.toContain('Квота свободна');
 });

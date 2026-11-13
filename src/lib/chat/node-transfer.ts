@@ -7,10 +7,11 @@ export function activeNodeTransfer(m:ChatEntry):boolean{
 }
 export function effectiveDeliveryIssue(m:ChatEntry){
   const issue=isDeliveryIssue(m.deliveryIssue)?m.deliveryIssue:undefined;
-  return issue&&activeNodeTransfer(m)&&!deliveryNeedsAction(issue)?undefined:issue;
+  return issue&&activeNodeTransfer(m)&&!deliveryNeedsAction(issue,m.deliveryError)?undefined:issue;
 }
 export function nodeTransferUpdate(m:ChatEntry,stage:CourierStage|undefined):ChatEntry{
-  const clear=stage==='uploading'||stage==='preparing'&&!!m.deliveryIssue&&!deliveryNeedsAction(m.deliveryIssue);
+  const blocked=!!m.deliveryIssue&&deliveryNeedsAction(m.deliveryIssue,m.deliveryError);
+  const clear=(stage==='uploading'||stage==='preparing')&&!blocked;
   return {...m,courierStage:stage,...clear?{deliveryIssue:undefined,deliveryError:undefined}:{}};
 }
 
@@ -20,4 +21,13 @@ export function peerDisconnectedMessage(m:ChatEntry):ChatEntry{
  return {...m,delivery:m.delivery==='sending'?'queued':m.delivery,
    fileStatus:m.fileStatus==='sending'?'queued':m.fileStatus==='receiving'?'offered':m.fileStatus,
    fileProgress:m.fileStatus==='sending'||m.fileStatus==='receiving'?0:m.fileProgress};
+}
+
+// A late failure/cancel from a previous path cannot undo a completed transfer.
+export function fileEntryUpdate(m:ChatEntry,patch:Partial<ChatEntry>):ChatEntry{
+  if(m.fileStatus==='ready'&&patch.fileStatus!=='ready'){
+    const {fileStatus:_,fileProgress:__,fileAccepted:___,...rest}=patch;
+    return {...m,...rest};
+  }
+  return {...m,...patch};
 }

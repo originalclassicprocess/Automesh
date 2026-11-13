@@ -26,8 +26,11 @@ export const deliveryIssues = {
   network_forbidden: ['Маршрут запрещён настройками', 'Выбранная интернет-нода недоступна в режиме «Только LAN». Данные не отправлены в запрещённую сеть.'],
 } as const;
 export type DeliveryIssue = keyof typeof deliveryIssues;
-const actionIssues=new Set<DeliveryIssue>(['node_not_configured','node_sending_disabled','node_denied','node_full','node_files_full','node_profile_files_full','node_storage_full','node_messages_full','node_profile_messages_full','local_storage','primary_disabled','primary_policy_invalid','network_forbidden']);
-export const deliveryNeedsAction=(code:DeliveryIssue)=>actionIssues.has(code);
+const actionIssues=new Set<DeliveryIssue>(['node_denied','node_full','node_files_full','node_profile_files_full','node_storage_full','node_messages_full','node_profile_messages_full','local_storage','primary_disabled','primary_policy_invalid','network_forbidden']);
+// Optional node setup does not block a direct send. A rejected/unapproved key
+// source, unlike a temporary timeout, needs inspection rather than mere waiting.
+export const deliveryNeedsAction=(code:DeliveryIssue,error?:unknown)=>actionIssues.has(code)||code==='keys_source_unavailable'&&typeof error==='string'&&
+  ['prekey_denied','invalid_prekey','invalid_prekey_allocation','prekey_already_used','prekey_source_not_approved'].includes(error);
 const errorCodes = ['invalid_node_request','invalid_courier_inventory','invalid_recipient_grant','primary_disabled','primary_policy_invalid','primary_session_changed','not_member','unauthorized','sender_not_allowed',
   'prekey_denied','prekey_capacity','prekeys_unavailable','invalid_prekey','invalid_prekey_allocation','prekey_already_used','prekey_source_not_approved','courier_prekey_limit',
   'not_owner','device_denied','rate_limit','too_many_challenges','mailbox_full','member_limit','sender_limit','internet_disabled',
