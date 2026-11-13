@@ -27,6 +27,7 @@ export class PageNavigation<T> {
   private root: T | undefined;
   private active = false;
   private backPending = false;
+  private backWaiters: Array<() => void> = [];
   private session = '';
   private trail: number[] = [];
   constructor(private history: HistoryPort, private restore: (route: T) => void,
@@ -62,13 +63,16 @@ export class PageNavigation<T> {
   // a dismissed modal or an expired account-creation screen).
   replace(route: T): void {
     if (!this.active) return;
-    this.routes.set(this.current, route); this.write(this.current, true);
+    this.routes.set(this.current, route);
+    // A restored UI may render before an asynchronous history.go finishes.
+    // Do not overwrite the destination's framework marker with the old index.
+    if (!this.backPending) this.write(this.current, true);
   }
   // Explicit "all chats" is a hierarchy jump, not a replay of visited media.
   // Invalidate discarded snapshots, including browser Forward, then collapse
   // to the guarded root. Indices are opaque IDs, NOT physical history offsets.
   returnToRoot(root: T): void {
-    if (!this.active) return;
+    if (!this.active || this.backPending) return;
     const position = this.trail.lastIndexOf(this.current);
     this.root = root;
     for (const index of this.routes.keys()) this.routes.set(index, root);
@@ -78,14 +82,21 @@ export class PageNavigation<T> {
       this.history.go(1 - position);
     } else this.replace(root);
   }
-  stay(): void { this.backPending = false; if (this.active) this.write(this.current, false); }
+  private finishBack(): void {
+    this.backPending = false;
+    for (const resolve of this.backWaiters.splice(0)) resolve();
+  }
+  settled(): Promise<void> {
+    return this.backPending ? new Promise(resolve => this.backWaiters.push(resolve)) : Promise.resolve();
+  }
+  stay(): void { this.finishBack(); if (this.active) this.write(this.current, false); }
   rearmRoot(): void {
     if (!this.active || this.current !== 0 || this.root === undefined) return;
     this.current = 1; this.routes.set(1, this.root); this.write(1, false);
     this.trail = [0, 1];
   }
   pop(state: unknown): void {
-    this.backPending = false;
+    this.finishBack();
     if (!this.active || !state || typeof state !== 'object') return;
     const marker = (state as Record<string, unknown>)[KEY] as Marker | undefined;
     if (!marker || marker.session !== this.session || !Number.isInteger(marker.index)) return;
@@ -118,5 +129,5 @@ export class PageNavigation<T> {
     else this.replace(target);
   }
   // Old browser entries cannot restore an unlocked view after lock/logout.
-  clear(): void { this.routes.clear(); this.trail = []; this.root = undefined; this.active = false; this.backPending = false; }
+  clear(): void { this.routes.clear(); this.trail = []; this.root = undefined; this.active = false; this.finishBack(); }
 }

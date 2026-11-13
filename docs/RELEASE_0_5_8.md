@@ -28,3 +28,16 @@ receipts cannot turn unfinished byte transfers green. The aggregate queue keeps
 the highest-priority status visible rather than rotating through green copies.
 See the [complete user status inventory](USER_STATUS_CONTRACT.md).
 No new message-path card or global safe-to-close indicator is planned.
+
+Mobile Back follows the media/chat hierarchy. Browsing photos replaces the same
+viewer history entry. Closing media consumes that entry, including native modal
+cancel that may not emit `popstate`; the next Back reaches the chat list. A late
+render cannot overwrite the parent history marker while traversal is pending.
+Reply/share actions wait for that traversal before opening their next UI.
+
+Verification: navigation unit regressions and an isolated real-browser fixture
+at 390px cover 20 photo changes per open, native modal cancel, browser Back,
+viewer/chat close buttons, repeated reopen, and replying after viewer close.
+These exercise browser events; physical iOS/Android system gestures still need
+device acceptance. Run `scripts/test-device-live.mjs <playwright-node-modules>
+--back-hierarchy-only` with a disposable test browser, never a user profile.

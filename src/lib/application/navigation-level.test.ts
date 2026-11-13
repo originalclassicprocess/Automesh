@@ -3,6 +3,27 @@ import { PageNavigation, type HistoryPort } from './page-navigation';
 import { navigationLevel, type NavigationView } from './navigation-level';
 const root: NavigationView = { screen:'account', layer:'', view:'chats', pane:'chat', peer:'contact', card:'', settings:'overview', gallery:'' };
 describe('hierarchical navigation', () => {
+  it('closes one viewer level after many photos, then returns to all chats, including repeated opens', () => {
+    const entries: unknown[] = [{}]; let at = 0; const restored: NavigationView[] = [];
+    const history: HistoryPort = { get state() { return entries[at]; },
+      pushState(s) { entries.splice(++at); entries.push(s); }, replaceState(s) { entries[at] = s; },
+      back() { if (at > 0) nav.pop(entries[--at]); },
+      go(delta) { at += delta; nav.pop(entries[at]); } };
+    const nav = new PageNavigation(history, (r: NavigationView) => restored.push(r), () => {}, () => 'test', navigationLevel);
+    const list = {...root,pane:'list',peer:''}; nav.start(list); nav.visit(root);
+    for (let cycle=0;cycle<4;cycle++) {
+      for (let photo=0;photo<25;photo++) nav.visit({...root,gallery:`private-photo-${cycle}-${photo}`});
+      expect(entries).toHaveLength(4);
+      // The native modal consumes Back/cancel without emitting popstate.
+      nav.backTo(route=>!route.gallery,root);
+      expect(restored.at(-1)).toEqual(root);
+    }
+    nav.back(); expect(restored.at(-1)).toEqual(list);
+    expect(JSON.stringify(entries)).not.toContain('private-photo');
+    // A real browser history traversal also closes media in a single step.
+    nav.visit(root); nav.visit({...root,gallery:'last-photo'}); nav.back();
+    expect(restored.at(-1)).toEqual(root); nav.back(); expect(restored.at(-1)).toEqual(list);
+  });
   it('skips settings tabs: detail → settings menu → the same chat', () => {
     const entries: unknown[] = [{}]; let at = 0; const restored: NavigationView[] = [];
     const history: HistoryPort = { get state() { return entries[at]; },

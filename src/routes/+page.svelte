@@ -705,13 +705,16 @@ let rootBackTimer: ReturnType<typeof setTimeout> | undefined;
 function rootRoute(screen: Screen): PageRoute {
   return { screen, layer: '', view: 'chats', peer: '', card: '', pane: 'list', settings: 'account', connection: 'direct', gallery: '' };
 }
-$effect(() => {
+function currentPageRoute(): PageRoute {
   const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : mediaOpen || receivedPack ? 'media-library' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
     backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
-  const route: PageRoute = screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
+  return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
     connection: accountView === 'profile' && settingsSection === 'connection' ? connectionSection : 'direct',
     media: accountView === 'profile' && settingsSection === 'files' ? mediaSettingsSection : 'overview', gallery: galleryId } : { ...rootRoute(screen), layer };
+}
+$effect(() => {
+  const route = currentPageRoute();
   if (!routerReady || !pageNavigation) return;
   const scope = screen === 'account' ? address : screen === 'unlock' ? 'locked' : 'authentication';
   if (navigationAccount !== scope) {
@@ -1222,8 +1225,10 @@ onMount(() => {
   // a reactive page.state can still point at the screen we are leaving.
   const onPageBack = (event: PopStateEvent) => queueMicrotask(() => {
     if (navigationBusy()) { pageNavigation?.stay(); return; }
-    if (audioControls?.dismissOverlay()) { pageNavigation?.stay(); return; }
-    if (allProfileChats && accountView === 'chats' && profileNetwork) { allProfileChats = false; pageNavigation?.stay(); return; }
+    // The viewer is above audio/profile-list controls. A browser history Back
+    // must dismiss media before touching those underlying views.
+    if (!galleryId && audioControls?.dismissOverlay()) { pageNavigation?.stay(); return; }
+    if (!galleryId && mobilePane === 'list' && allProfileChats && accountView === 'chats' && profileNetwork) { allProfileChats = false; pageNavigation?.stay(); return; }
     restoringPage = true;
     pageNavigation?.pop(historyPageState(event.state));
     void tick().then(() => { restoringPage = false; });
@@ -1802,13 +1807,14 @@ function restorePageRoute(route: PageRoute): void {
   }
   if (route.screen !== 'account') return;
   if (screen !== 'account' || !address) return;
+  const reopenChat = route.peer !== sessionChats.activePeer || route.pane !== mobilePane || route.view !== accountView;
   actionMode = null; selecting = false; selectedMessages = []; attachmentMenu = false;
   messageTools = null;
   if (route.layer !== 'media-library') { mediaOpen = false; receivedPack = null; }
   if (accountView !== route.view || peerCardAddress !== route.card) changeAccountView(route.view);
   if (route.peer && !sessionChats.byPeer[route.peer]) return;
   sessionChats = { ...sessionChats, activePeer: route.peer };
-  mobilePane = route.pane; chatOpenToken++;
+  mobilePane = route.pane; if (reopenChat) chatOpenToken++;
   if (route.view === 'profile') {
     const destination = settingsLocation(route.settings, route.connection, route.media);
     if (settingsSection !== destination.section) selectSettings(destination.section);
@@ -1823,13 +1829,13 @@ function backWithinApp(): void {
   if(radioOverviewOpen){radioOverviewOpen=false;return;}
   if (navigationBusy()) return;
   if (ephemeralView) { closeEphemeral(); return; }
+  if (galleryId) { closeGallery(); return; }
   if (sendOptionsOpen) { sendOptionsOpen = false; return; }
   if (emojiOpen) { emojiOpen = false; return; }
   if (chatSearchOpen) { toggleChatSearch(); return; }
   if (audioControls?.dismissOverlay()) return;
   if (mediaOpen || receivedPack) { mediaOpen = false; receivedPack = null; return; }
   if (messageTools) { messageTools = null; return; }
-  if (galleryId) { closeGallery(); return; }
   if (screen === 'account' && accountView === 'profile' && !openHelp && !pendingExit && !backupOpen && !panicOpen && !memoryConfirmation && !nodeScannerOpen && !networkSummaryOpen && !nodeBudgetOpen) {
     const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane};
     const parent=settingsParent(route);
@@ -2809,11 +2815,16 @@ function openGallery(peer: string, id: string): void {
   galleryId = id;
   void ensureImageUrl(peer, id);
 }
-function closeGallery(): void {
-  // Closing media updates this level instead of pushing a new "closed" view
-  // which would make the next Back reopen the same media.
-  restoringPage = true; galleryId = '';
+function closeGallery(): Promise<void> {
+  if (!galleryId) return Promise.resolve();
+  // Native modal Back/cancel can be consumed without a popstate. Consume the
+  // viewer's history level as well, so the NEXT Back reaches the chat list.
+  const parent = { ...currentPageRoute(), gallery: '' };
+  restoringPage = true;
+  if (pageNavigation) pageNavigation.backTo(route => route.screen === screen && !route.gallery, parent);
+  else galleryId = '';
   void tick().then(() => { restoringPage = false; });
+  return pageNavigation?.settled() ?? Promise.resolve();
 }
 
 function moveGallery(direction: -1 | 1): void {
@@ -2827,7 +2838,7 @@ async function galleryAction(action: 'download' | 'share' | 'forward' | 'reply' 
   const message = galleryItems[galleryIndex];
   if (!message || actionBusy || memoryBusy || endingSession || switchingTrust || pinBusy || attachingFiles || voiceBusy) return;
   if (action === 'download') { downloadMessage(peer, message); return; }
-  closeGallery();
+  await closeGallery();
   // Let the native viewer release focus before opening another dialog or input.
   await tick();
   if (generation !== authGeneration || screen !== 'account' || peer !== sessionChats.activePeer ||
