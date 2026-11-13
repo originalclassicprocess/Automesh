@@ -16,7 +16,7 @@ describe('radio queue presentation',()=>{
     expect(chats.byPeer.peer.messages).toHaveLength(6);
     expect(radioQueueView(updateConversation(chats,'peer',c=>({...c,messages:messages.map(m=>({...m,delivery:'delivered'}))})))).toEqual([]);
   });
-  it('keeps board evidence yellow until Automesh receipt and separates manual stop from failure',()=>{
+  it('shows recipient board handoff green while keeping in-flight work yellow and failures red',()=>{
     for(const radioDelivery of ['queued','transmitting','awaiting'] as const){
       expect(messageStatus({...base,radioDelivery}).tone).toBe('waiting');
       expect(chatActivity([{...base,radioDelivery}])?.tone).toBe('warning');
@@ -25,8 +25,8 @@ describe('radio queue presentation',()=>{
       expect(messageStatus({...base,radioDelivery}).tone).toBe('error');
       expect(chatActivity([{...base,radioDelivery}])?.tone).toBe('danger');
     }
-    expect(messageStatus({...base,radioDelivery:'board'})).toMatchObject({label:'Принято платой собеседника',tone:'waiting'});
-    expect(chatActivity([{...base,radioDelivery:'board'}])?.tone).toBe('warning');
+    expect(messageStatus({...base,radioDelivery:'board'})).toMatchObject({label:'Принято платой собеседника',tone:'success'});
+    expect(chatActivity([{...base,radioDelivery:'board'}])?.tone).toBe('success');
     expect(messageStatus({...base,radioDelivery:'stopped',radioSuppressed:true}).tone).toBe('neutral');
     expect(chatActivity([{...base,radioDelivery:'stopped',radioSuppressed:true}])).toBeNull();
     expect(messageStatus({...base,radioDelivery:'stopped'}).tone).toBe('waiting');

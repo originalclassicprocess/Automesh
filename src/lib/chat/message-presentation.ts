@@ -11,13 +11,13 @@ export function messageStatus(message: ChatEntry, self = false, showRead = false
     detail: tone === 'waiting' && !detail.includes('открыт') ? `${detail} Для продолжения оставьте приложение открытым.` : detail, tone });
   if (message.radioDelivery && !message.nodeQueue && !message.restoredFromBackup && !message.importedFromDevice && !['stored','delivered','read'].includes(message.delivery ?? '') && message.direction === 'outgoing') {
     const label = { queued: 'В очереди LoRa', transmitting: 'Отправляем по LoRa', awaiting: 'Ждём ответа платы', board: 'Принято платой собеседника', received: 'Доставлено', retry: 'LoRa: нужен повтор', stopped: 'LoRa приостановлена' }[message.radioDelivery];
-    return result(message.radioDelivery === 'received' ? '✓' : '◷', label,
+    return result(['received','board'].includes(message.radioDelivery) ? '✓' : '◷', label,
       message.radioDelivery === 'received' ? 'Automesh собеседника подтвердил получение сообщения. Можно закрыть приложение.' :
       message.radioDelivery === 'stopped' ? message.radioSuppressed ? 'Отправка по LoRa остановлена. Для новой попытки выберите повтор.' : 'Отправка по LoRa приостановлена. Продолжим после восстановления подключения к плате.' :
       message.radioDelivery === 'retry' ? 'Подтверждение Automesh не получено. Проверьте соединение с платой и повторите отправку при необходимости.' :
       message.radioDelivery === 'board' ? 'Плата собеседника подтвердила все части. Сохранение в Automesh и прочтение ещё не подтверждены. Буфер платы ограничен и может быть потерян при перезагрузке. Копия отправки сохранена для ручного повтора.' :
       'Ждём подтверждения платы или сохранения в Automesh собеседника. Пока статус жёлтый, оставьте приложение открытым. Красный означает, что отправка не подтверждена; доступен повтор.',
-      message.radioDelivery === 'received' ? 'success' : message.radioDelivery === 'stopped' && message.radioSuppressed ? 'neutral' : message.radioDelivery === 'retry' ? 'error' : 'waiting');
+      ['received','board'].includes(message.radioDelivery) ? 'success' : message.radioDelivery === 'stopped' && message.radioSuppressed ? 'neutral' : message.radioDelivery === 'retry' ? 'error' : 'waiting');
   }
   if (message.restoredFromBackup && message.importedFromDevice) {
     if (message.fileDeleted) return result('⊘', 'Файл удалён', 'Исторический файл удалён на этом устройстве.', 'neutral');

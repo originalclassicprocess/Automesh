@@ -2738,7 +2738,7 @@
   "m_2693f98fb57a": "Waiting for the recipient radio or confirmation of saving in their Automesh app. Keep the app open while the status is yellow. Red means sending is not confirmed; you can retry.",
   "m_669038ad3921": "The local LoRa queue has 64 unconfirmed messages. This is an app limit, not the radio storage limit. Wait for delivery or return unneeded transmissions to normal delivery.",
   "m_9c66ba2dfc93": "This transmission is already in progress or confirmed. It does not need to be queued again.",
-  "m_4435a18c5097": "Accepted personal contacts only. Up to 320 bytes including message formatting. Files, calls and disappearing messages are not sent by radio. Keep the app open until the radio responds. Green confirms radio reception; saving in Automesh is confirmed separately.",
+  "m_4435a18c5097": "Accepted personal contacts only. Up to 320 bytes including message formatting. Files, calls and disappearing messages are not sent over radio. Keep the app open until the board responds. Green confirms receipt by the board; saving in Automesh is confirmed separately.",
   "m_76f69281990b": "The radio could not find a route to the recipient. Check their availability and retry.",
   "m_cd1287d4609c": "The radio timed out waiting for an acknowledgement. Reception is unconfirmed; you can retry.",
   "m_b3fb2b009bc4": "The radio exhausted its retries without acknowledgement. You can retry later.",
@@ -2984,5 +2984,6 @@
   "m_6db058a4c60e": "A neighboring node confirmed retransmission. Sending to the radio network is complete; you can close the app. This does not confirm receipt by every participant or reading.",
   "m_f0715d2fd1d0": "Your board accepted the message. Receipt by channel participants is not confirmed yet. Keep the app open until the sending result arrives.",
   "m_6252a91aeeeb": "Accepted personal contacts only. Up to 320 bytes including message formatting. Files, calls and disappearing messages are not sent over radio. Keep the app open until the recipient’s Automesh confirms receipt. A board response remains yellow; green means confirmed receipt in Automesh.",
-  "m_b31ab1cb08ea": "LoRa sending is paused. It will continue after the board connection is restored."
+  "m_b31ab1cb08ea": "LoRa sending is paused. It will continue after the board connection is restored.",
+  "m_f40620dabdcd": "Yellow means sending or waiting for a board response: keep the app open. Red means check or retry. Green means all parts were accepted by the recipient’s board or received by Automesh. Gray means you stopped sending."
 }

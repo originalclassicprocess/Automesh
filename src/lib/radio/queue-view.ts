@@ -2,7 +2,7 @@ import type { SessionChats } from '$lib/chat/session-chats';
 export const radioCategories = [
   { id: 'sending', label: 'Отправляем', tone: 'waiting' },
   { id: 'awaiting', label: 'Ждём ответа платы', tone: 'waiting' },
-  { id: 'board', label: 'Принято платой', tone: 'waiting' },
+  { id: 'board', label: 'Принято платой', tone: 'success' },
   { id: 'retry', label: 'Нужен повтор', tone: 'danger' },
   { id: 'paused', label: 'LoRa приостановлена', tone: 'waiting' },
   { id: 'stopped', label: 'Отменено вами', tone: 'neutral' },

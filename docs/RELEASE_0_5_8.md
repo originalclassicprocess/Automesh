@@ -20,9 +20,11 @@ No node upgrade or contact reset is required. This candidate is not deployed.
 See [recovery verification and limits](DELIVERY_RECOVERY_2026-11-13.md).
 
 Delivery status colors now describe the user's next action consistently: green
-for completion/durable handoff, yellow for work that needs the app to stay open,
+for completion or confirmed handoff, yellow for work that needs the app to stay open,
 red for repairs or deliberate retry, and gray for history/intentional stops.
-Node uploads and recipient-board-only LoRa receipts remain yellow. File-offer
+Node uploads remain yellow; confirmed recipient-board LoRa handoff is green,
+with board-buffer limitations explained in existing status details. File-offer
 receipts cannot turn unfinished byte transfers green. The aggregate queue keeps
 the highest-priority status visible rather than rotating through green copies.
 See the [complete user status inventory](USER_STATUS_CONTRACT.md).
+No new message-path card or global safe-to-close indicator is planned.
