@@ -1,4 +1,4 @@
-# Automesh 0.5.8 · local candidate
+# Automesh 0.5.8
 
 Restore existing delivery paths when returning to the app or changing networks.
 Foreground, restored-page, online and supported network-change events coalesce
@@ -15,7 +15,7 @@ sends cancellation. Outgoing files are saved before being made eligible to send.
 The contact header now says “No direct connection” rather than asserting that a
 contact is offline: node delivery may still work. Account addresses, encryption,
 signed receipts, consent, existing node APIs and routing policies are unchanged.
-No node upgrade or contact reset is required. This candidate is not deployed.
+No node upgrade or contact reset is required.
 
 See [recovery verification and limits](DELIVERY_RECOVERY_2026-11-13.md).
 
