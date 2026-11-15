@@ -817,6 +817,16 @@
       ]
     },
     {
+      "name": "agent-base",
+      "version": "7.1.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "ansi-regex",
       "version": "5.0.1",
       "license": "MIT",
@@ -847,6 +857,16 @@
       ]
     },
     {
+      "name": "asn1.js",
+      "version": "5.4.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "assertion-error",
       "version": "2.0.1",
       "license": "MIT",
@@ -864,6 +884,26 @@
       "installed": true,
       "notices": [
         "LICENSE"
+      ]
+    },
+    {
+      "name": "bn.js",
+      "version": "4.12.5",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "buffer-equal-constant-time",
+      "version": "1.0.1",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.txt"
       ]
     },
     {
@@ -967,6 +1007,16 @@
       ]
     },
     {
+      "name": "debug",
+      "version": "4.4.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "decamelize",
       "version": "1.2.0",
       "license": "MIT",
@@ -1014,6 +1064,16 @@
       "installed": true,
       "notices": [
         "LICENSE.md"
+      ]
+    },
+    {
+      "name": "ecdsa-sig-formatter",
+      "version": "1.0.11",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
       ]
     },
     {
@@ -1175,6 +1235,37 @@
       ]
     },
     {
+      "name": "http_ece",
+      "version": "1.2.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:http-ece.txt"
+      ],
+      "noticeSource": "https://raw.githubusercontent.com/martinthomson/encrypted-content-encoding/0562510a30819f52424724a6fd5504becacd98a1/LICENSE"
+    },
+    {
+      "name": "https-proxy-agent",
+      "version": "7.0.6",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "inherits",
+      "version": "2.0.4",
+      "license": "ISC",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "is-core-module",
       "version": "2.17.0",
       "license": "MIT",
@@ -1217,6 +1308,26 @@
       "version": "1.4.0",
       "license": "Apache-2.0",
       "development": false,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "jwa",
+      "version": "2.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "jws",
+      "version": "4.0.1",
+      "license": "MIT",
+      "development": true,
       "installed": true,
       "notices": [
         "LICENSE"
@@ -1361,6 +1472,26 @@
       ]
     },
     {
+      "name": "minimalistic-assert",
+      "version": "1.0.1",
+      "license": "ISC",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "minimist",
+      "version": "1.2.8",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "mri",
       "version": "1.2.0",
       "license": "MIT",
@@ -1378,6 +1509,16 @@
       "installed": true,
       "notices": [
         "license"
+      ]
+    },
+    {
+      "name": "ms",
+      "version": "2.1.3",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license.md"
       ]
     },
     {
@@ -1579,6 +1720,26 @@
       "installed": true,
       "notices": [
         "license"
+      ]
+    },
+    {
+      "name": "safe-buffer",
+      "version": "5.2.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "safer-buffer",
+      "version": "2.1.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
       ]
     },
     {
@@ -1788,6 +1949,16 @@
       "installed": true,
       "notices": [
         "LICENSE.md"
+      ]
+    },
+    {
+      "name": "web-push",
+      "version": "3.6.7",
+      "license": "MPL-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
       ]
     },
     {

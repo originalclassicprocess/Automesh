@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createSignalingServer } from './signaling.js';
 import { createDevicePairingRelay } from './device-pairing.js';
+import { createNotifications } from './notifications.js';
 
 function signalingOrigins(origin, additional = []) {
   if (!Array.isArray(additional) || additional.length > 16) throw new Error('Invalid SIGNALING_ALLOWED_ORIGINS');
@@ -34,10 +35,11 @@ export function deploymentConfig(env = process.env) {
     allowedSignalingOrigins: signalingOrigins(origin.origin, additional) };
 }
 
-export function createApplicationServer(handler, { origin, maxConnections = 256, allowedSignalingOrigins = [] } = {}) {
+export function createApplicationServer(handler, { origin, maxConnections = 256, allowedSignalingOrigins = [], notificationsDirectory, notificationsEnabled = true } = {}) {
   const allowedOrigins = signalingOrigins(origin, allowedSignalingOrigins);
   const httpsOrigin = new URL(origin).protocol === 'https:';
   const pairing = createDevicePairingRelay({ origin });
+  const notifications = createNotifications({ origin, directory: notificationsDirectory, enabled: notificationsEnabled });
   const app = createServer({ maxHeaderSize: 16 * 1024 }, (request, response) => {
     // TLS may terminate at the hosting proxy. Trust configured ORIGIN, never
     // an untrusted forwarded header; leave HTTP localhost development alone.
@@ -52,6 +54,9 @@ export function createApplicationServer(handler, { origin, maxConnections = 256,
     try { pathname = decodeURIComponent(new URL(request.url, origin).pathname); }
     catch { reject(400, 'Bad request'); return; }
     if (request.url.length > 4096) { reject(414, 'URL too long'); return; }
+    if (pathname.startsWith('/api/notifications/')) {
+      void notifications.handle(request, response, pathname).catch(() => { if (!response.headersSent) reject(503, 'Notifications unavailable'); else if (!response.writableEnded) response.destroy(); }); return;
+    }
     if (pathname.startsWith('/api/device-pair/')) {
       void pairing.handle(request, response, pathname).catch(() => { if (!response.headersSent) reject(400, 'Invalid pairing request'); else if (!response.writableEnded) response.destroy(); }); return;
     }
@@ -69,7 +74,7 @@ export function createApplicationServer(handler, { origin, maxConnections = 256,
     // Keep worker/version revalidating even if the adapter sets its own header.
     const writeHead = response.writeHead;
     response.writeHead = function (...args) {
-      if (['/', '/service-worker.js', '/_app/version.json'].includes(pathname)) {
+      if (['/', '/service-worker.js', '/notification-worker.js', '/_app/version.json'].includes(pathname)) {
         this.setHeader('Cache-Control', 'no-store');
         const headers = typeof args[1] === 'object' ? args[1] : args[2];
         if (headers && !Array.isArray(headers)) for (const key of Object.keys(headers))
@@ -90,6 +95,7 @@ export function createApplicationServer(handler, { origin, maxConnections = 256,
     allowDiagnosticPeers: false, maxConnections });
   async function close() {
     pairing.close();
+    await notifications.close();
     for (const socket of signaling.clients) socket.terminate();
     await new Promise(resolve => signaling.close(resolve));
     await new Promise(resolve => app.close(resolve));

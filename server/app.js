@@ -7,7 +7,9 @@ process.env.ORIGIN = config.origin;
 // not accidentally join a different development registry on port 3001.
 process.env.MESH_RUNTIME_LOCAL_SIGNAL_URL ||= config.origin.replace(/^http/, 'ws') + '/signal';
 const { handler } = await import('../build/handler.js');
-const runtime = createApplicationServer(handler, config);
+const runtime = createApplicationServer(handler, { ...config,
+  notificationsDirectory: process.env.AUTOMESH_NOTIFICATIONS_DIRECTORY,
+  notificationsEnabled: process.env.AUTOMESH_NOTIFICATIONS_ENABLED !== '0' });
 const startupError = (error) => {
   console.error(`Application startup failed (${error.code || 'server_error'}).`);
   process.exitCode = 1;

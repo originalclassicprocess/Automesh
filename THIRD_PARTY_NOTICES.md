@@ -15,8 +15,11 @@ site. `static/PASSWORD_NOTICES.txt` contains additional password-estimator data
 notices. `docs/THIRD_PARTY_MEDIA_NOTICES.md` records the ZIP dependency.
 
 The dependency tree is NOT uniformly MIT: it contains MIT, ISC, BSD-3-Clause,
-Apache-2.0 and MPL-2.0. MPL entries are Lightning CSS build tools; project source
-does not copy/modify their source files. Their own license must remain intact
+Apache-2.0 and MPL-2.0. MPL entries include Lightning CSS build tools and
+web-push 3.6.7, bundled in the server notification build.
+Its source files and license are preserved in `docs/third-party-licenses/web-push-3.6.7/`,
+with the build recipe in `scripts/bundle-notifications.mjs`. Project source
+does not modify those upstream source files. Their own license must remain intact
 if those binaries/source are redistributed. Optional packages for other OSes
 are listed but cannot be inspected from absent local files; platform release
 builds must regenerate/verify notices for their own installed dependencies.

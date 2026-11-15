@@ -26,7 +26,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('Referrer-Policy', 'no-referrer');
   response.headers.set('Permissions-Policy', 'geolocation=(), microphone=(self)');
-  if (event.url.pathname === '/' || event.url.pathname === '/service-worker.js' || event.url.pathname === '/_app/version.json')
+  if (event.url.pathname === '/' || event.url.pathname === '/service-worker.js' || event.url.pathname === '/notification-worker.js' || event.url.pathname === '/_app/version.json')
     response.headers.set('Cache-Control', 'no-store');
   return response;
 };

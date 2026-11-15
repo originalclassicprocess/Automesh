@@ -34,6 +34,7 @@ type Port = { address: string; identity: IdentityProvider; state(): CourierState
   chats(): SessionChats; persist(): Promise<boolean>; receive(m: ChatMessage): void;
   authorize?(peer: string): Promise<void>; issue?(peer: string, id: string, issue: DeliveryIssue | undefined, error?: unknown): void;
   activity?(peer:string,id:string,stage:CourierStage|undefined):void;
+  notification?(peer:string,id:string,providers:unknown):Promise<unknown>;
   outcome?(peer:string,id:string,status:'canceling'|'canceled'|'expired'):void;
   usage?(bytes:number,files:number):void;
   delivery(peer: string, id: string, status: 'queued' | 'stored' | 'delivered'): void;
@@ -493,7 +494,13 @@ export class CourierController {
           if (!await this.uploadFile(job)) { this.wake(); continue; }
           if (!uploadable(job)) continue;
         }
-        const result = await this.request('/outbox/put', { job });
+        let notification:unknown;
+        if(!job.body.lanOnly&&health.notificationProtocol==='automesh-notification-wake-v1')try{
+          notification=await this.port.notification?.(job.body.to,job.body.id,health.notificationProviders);
+        }catch{/* Notification preparation is optional and never blocks a stored-message attempt. */}
+        this.current();
+        if(!uploadable(job))continue;
+        const result = await this.request('/outbox/put', { job, ...(notification?{notification}:{}) });
         if (['canceled','expired'].includes(result.status)) { await this.finishQueue(job,result.status); continue; }
         if (!['stored', 'acknowledged'].includes(result.status)) throw new Error('invalid_courier_store');
         this.activity(job.body.to,job.body.id,undefined);

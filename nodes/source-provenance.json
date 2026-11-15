@@ -1,7 +1,7 @@
 {
   "repository": "originalclassicprocess/automesh-nodes",
-  "commit": "43c2299e60153e102a3b9cc9aba9dbe0af763d6a",
-  "version": "0.4.18",
+  "commit": "63f26e94c14f369c1774d816729b5703cff68b5f",
+  "version": "0.4.19",
   "files": [
     {
       "path": ".github/CODEOWNERS",
@@ -29,7 +29,7 @@
     },
     {
       "path": ".github/workflows/release.yml",
-      "sha256": "deac2ca2d2f360057d2dcba0f80fb2b48ee5812c085ffaaa5213d256562108a4"
+      "sha256": "6ce82e105b2e86d82c2a6e86165e045a9dd360d75dcd6c6fd62e3df5892a30ff"
     },
     {
       "path": ".gitignore",
@@ -37,7 +37,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "afd55c45a43a14f6bd8706e9ba9bddce80c2b9ee6f36f2e1689efef32aaa33c4"
+      "sha256": "1289346727f49d5a7a68440b0d34e4791ba77af1d4678d45b1ca324a6825ef1c"
     },
     {
       "path": "CONTRIBUTING.md",
@@ -268,6 +268,10 @@
       "sha256": "c715d0fadb8065fbd41fef01f5df92b6ad1f26bf9e18756f9cbcda10193fb75a"
     },
     {
+      "path": "docs/RELEASE_0_4_19.md",
+      "sha256": "b3c20f02348220dae78e67687715f777d539de6bda1a50ee61e2d5eb39561011"
+    },
+    {
       "path": "docs/SERVER_NODE.md",
       "sha256": "a674fabcb38051e240bd998b39efd65283a3a6fe1d9703fe2a903d67eeaeac85"
     },
@@ -285,11 +289,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "f732d818e7a892e75a062cee5fd89bb8ecfe2b85a03786cb21de2651f40ba7db"
+      "sha256": "99de2738262f421b845fa896bfce0eb13aecbd673163d55d657c526746c4e882"
     },
     {
       "path": "package.json",
-      "sha256": "f768ac63f96d9fea3cb9f9b83c687326c65f1efc45cc4fc4cfe36fef5c51f54b"
+      "sha256": "42758e7c9236bdc58c5f832ad1553876590ba91dbe3f3144a4cc2a134223e08c"
     },
     {
       "path": "packages/deployment/src/defaults.js",
@@ -353,7 +357,7 @@
     },
     {
       "path": "packages/runtime/src/application.js",
-      "sha256": "54e6a011d4fa4a7d250b63fce6eb7f68e146db138c763490cc3f9800c5e203c6"
+      "sha256": "8e71f16fc883c11a4f2ffc61d3126083b9975af437dd2ffbc2d0974b53626eda"
     },
     {
       "path": "packages/runtime/src/attachments.js",
@@ -390,6 +394,10 @@
     {
       "path": "packages/runtime/src/mailboxes.js",
       "sha256": "7779f57a2d58021ef5c3d718af71fcf7d8f0bd17c0df753ae92504f952d74172"
+    },
+    {
+      "path": "packages/runtime/src/notification-wakes.js",
+      "sha256": "38d0fa53158a90b8df4524bd5d339a3cb2ae6f121ff10877e4ce44db3eb0466e"
     },
     {
       "path": "packages/runtime/src/panel.js",
@@ -518,6 +526,10 @@
     {
       "path": "test/language.test.mjs",
       "sha256": "62296d12275b2f059c1c697371219f6e0c85dc1ab30adf125e5d7fbaaae219f6"
+    },
+    {
+      "path": "test/notification-wakes.test.mjs",
+      "sha256": "566635577967ddb8ad5ab2f75dec9905543209ea7a1e128ee5b4b329013a1c91"
     },
     {
       "path": "test/panel-ui.test.mjs",

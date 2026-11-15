@@ -17,8 +17,10 @@ import { isDeliveryIssue, isDeliveryErrorCode } from '$lib/application/delivery-
 import { normalizeEphemeralState } from './ephemeral';
 import { normalizeRadioState, radioDeliveries, type RadioAccountState } from '$lib/radio/account-state';
 import { normalizeNativeChannels,type NativeChannels } from '$lib/radio/native-channels';
+import { normalizeNotifications, type NotificationState } from '$lib/notifications/state';
 
 export type LocalChatData = {
+  notifications?: NotificationState;
   meshtastic?:NativeChannels;
   radioState?: RadioAccountState;
   deviceSettings?: DeviceSettings;
@@ -271,6 +273,7 @@ function cleanData(value: unknown): LocalChatData {
   }
   return {
     ...(raw.deviceSettings !== undefined ? { deviceSettings: normalizeDeviceSettings(raw.deviceSettings) } : {}),
+    ...(raw.notifications !== undefined ? { notifications: normalizeNotifications(raw.notifications) } : {}),
     ...(raw.radioState !== undefined ? { radioState: normalizeRadioState(raw.radioState) } : {}),
     ...(raw.meshtastic !== undefined ? {meshtastic:normalizeNativeChannels(raw.meshtastic)}:{}),
     selfNickname: cleanName(raw.selfNickname),
