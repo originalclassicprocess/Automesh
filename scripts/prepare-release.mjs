@@ -2,6 +2,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync
 import { resolve, join, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildInformation } from './build-info.mjs';
+import { bundleNotifications } from './bundle-notifications.mjs';
+import { execFileSync } from 'node:child_process';
 
 const root = resolve(import.meta.dirname, '..');
 const build = join(root, 'build');
@@ -39,6 +41,7 @@ const copy = path => {
 copy('build'); copy('app.cjs'); copy('LICENSE'); copy('.env.example'); copy('docs/DEPLOYMENT.md'); copy('docs/UPDATES.md'); copy('docs/CHAT_UX_CHECKLIST.md'); copy('CHANGELOG.md'); copy('HISTORY.md'); copy('docs/PUBLIC_SOURCE_PREVIEW.md');
 copy('THIRD_PARTY_NOTICES.md'); copy('README.md'); copy('README.ru.md'); copy('SECURITY.md'); copy('CONTRIBUTING.md');
 copy('docs/ARCHITECTURE.md'); copy('docs/PUBLIC_RELEASE_PLAN.md');
+copy('docs/NOTIFICATIONS.md'); copy('docs/RELEASE_0_5_9.md');
 copy('docs/PUBLIC_READINESS_2026-11-08.md');
 copy('docs/DEPENDENCY_LICENSE_REVIEW.md'); copy('docs/DEPENDENCY_SECURITY_2026-11-08.md');
 copy('docs/third-party-licenses');
@@ -91,11 +94,13 @@ writeFileSync(join(destination, 'docs/build-info.json'), JSON.stringify(buildInf
 // current assets win; old tabs can still load their own hashed modules.
 for (const previousRelease of previousReleases) cpSync(join(previousRelease, 'build/client/_app/immutable'),
   join(destination, 'build/client/_app/immutable'), { recursive: true, force: false });
-for (const path of ['server/app.js', 'server/application.js', 'server/device-pairing.js', 'server/signaling.js', 'server/limits.js',
+for (const path of ['server/app.js', 'server/application.js', 'server/device-pairing.js', 'server/notifications.js', 'server/signaling.js', 'server/limits.js',
   'src/lib/addressing/account-id.js', 'src/lib/addressing/bech32m.js', 'src/lib/transport/registration-proof.js', 'src/lib/node/courier-protocol.js', 'src/lib/node/attachment-protocol.js']) copy(path);
 // Thin compatibility entries above resolve to the single shared implementation.
 // Site hosting needs only signaling + the wire contract, not node queues/admin.
 for (const path of ['nodes/LICENSE', 'nodes/packages/protocol/src', 'nodes/packages/deployment/src', 'nodes/packages/runtime/src/signaling.js', 'nodes/packages/runtime/src/limits.js']) copy(path);
+await bundleNotifications(destination);
+execFileSync(process.execPath, [join(root,'scripts/test-notifications-package.mjs'),destination], {stdio:'inherit',timeout:20000,windowsHide:true});
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 pkg.scripts = { start: 'node server/app.js' }; delete pkg.devDependencies;
 pkg.engines = { node: '>=22.12.0' };

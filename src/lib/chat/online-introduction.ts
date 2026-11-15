@@ -21,7 +21,7 @@ type Packet =
   | { kind: 'request'; request: IntroductionRequest }
   | { kind: 'received' | 'accept'; requestId: string }
   | { kind: 'sync' }
-  | { kind: 'courier' | 'offline'; bundle: unknown };
+  | { kind: 'courier' | 'offline' | 'notification'; bundle: unknown };
 export interface IntroductionOptions {
   identity: ChatIdentity;
   port: IntroductionPort;
@@ -34,7 +34,7 @@ export interface IntroductionOptions {
   receive(message: ChatMessage): Promise<void>;
   received(peer: string, id: string): Promise<void>;
   accept(peer: string): Promise<void>;
-  keys(peer: string, kind: 'courier' | 'offline', bundle: unknown): Promise<void>;
+  keys(peer: string, kind: 'courier' | 'offline' | 'notification', bundle: unknown): Promise<void>;
   ready(peer: string): void;
   status(peer: string, status: IntroductionStatus): void;
 }
@@ -224,7 +224,7 @@ export class OnlineIntroduction {
     if (o.contact(peer) !== 'accepted') return;
     if (packet.kind === 'sync') {
       if (!this.remoteSync.has(peer)) { this.remoteSync.add(peer); o.ready(peer); }
-    } else if ((packet.kind === 'courier' || packet.kind === 'offline') && packet.bundle && typeof packet.bundle === 'object') {
+    } else if ((packet.kind === 'courier' || packet.kind === 'offline' || packet.kind === 'notification') && packet.bundle && typeof packet.bundle === 'object') {
       await o.keys(peer, packet.kind, packet.bundle); this.guard(peer, epoch); o.status(peer, 'accepted');
     }
   }
@@ -236,7 +236,7 @@ export class OnlineIntroduction {
     if (!this.isReady(peer)) { this.start(peer); throw Error('introduction_unavailable'); }
     await this.send(peer, {kind:'accept', requestId});
   }
-  async sendKeys(peer: string, kind: 'courier' | 'offline', bundle: unknown) {
+  async sendKeys(peer: string, kind: 'courier' | 'offline' | 'notification', bundle: unknown) {
     if (this.options.contact(peer) !== 'accepted') throw Error('introduction_not_accepted');
     // Consent precedes prekeys even when the UI publishes them concurrently.
     if (this.options.incomingRequest(peer)) await this.accept(peer);

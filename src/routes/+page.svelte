@@ -55,6 +55,9 @@ import { settingsMenu, settingsDescriptions, settingsLocation, connectionMenu, m
 import QRCode from 'qrcode';
 import { onMount, tick, untrack, type Snippet } from 'svelte';
 import NotificationToast from '$lib/application/NotificationToast.svelte';
+import NotificationSettings from '$lib/notifications/NotificationSettings.svelte';
+import { NotificationController, browserSubscription, notificationDevice, showIncomingNotification } from '$lib/notifications/client';
+import { emptyNotifications, normalizeNotifications, rememberNotificationRoute } from '$lib/notifications/state';
 import { accountNotice, type AppNotice } from '$lib/application/notices';
 import { browser, dev } from '$app/environment';
 import { afterNavigate, pushState, replaceState } from '$app/navigation';
@@ -516,6 +519,7 @@ function receiveOfflineMessage(msg: ChatMessage): void {
 async function configureCourier(node: NonNullable<CourierState['node']>, enabled: boolean): Promise<void> {
   if (!trustedSession || !courierDelivery || endingSession || memoryBusy) throw new Error('offline_requires_trusted');
   await courierDelivery.configure(node, enabled); courierError = '';
+  notificationController?.nodeChanged();
   await refreshReceiveRouting();
   if (enabled) await retryDevices(true);
   if (enabled) for (const peer of sessionChats.order) if (sessionChats.byPeer[peer]?.connection === 'connected') publishDeliveryKeys(peer, true);
@@ -586,6 +590,7 @@ async function preparePrimaryQueues(generation: number): Promise<void> {
 async function configureOfflineDelivery(node: NodeAddress, enabled: boolean): Promise<void> {
   if (!trustedSession || !offlineDelivery || endingSession || memoryBusy) throw new Error('offline_requires_trusted');
   await offlineDelivery.configure(node, enabled);
+  notificationController?.nodeChanged();
   offlineDeliveryError = '';
   if (enabled) for (const peer of sessionChats.order) {
     if (sessionChats.byPeer[peer]?.connection === 'connected') void offlineDelivery.publish(peer).catch(() => {});
@@ -597,6 +602,26 @@ let nodeWorkToken = 0;
 const nodeProbes = new Map<string, AbortController>();
 
 let sessionChats = $state<SessionChats>(emptySessionChats());
+let notificationState = $state(emptyNotifications());
+let notificationStatus = $state('');
+let notificationController = $state.raw<NotificationController | null>(null);
+const defaultNotificationProvider = browser ? `${location.origin}/api/notifications` : '';
+async function enableNotifications(provider: string) {
+  if (!notificationController) throw Error('notification_unavailable');
+  await notificationController.enable(provider);
+}
+async function disableNotifications() {
+  if (!notificationController) throw Error('notification_unavailable');
+  await notificationController.disable();
+}
+async function testNotification() {
+  if (!notificationController) throw Error('notification_unavailable');
+  await notificationController.test();
+}
+function incomingNotification(peer: string): void {
+  if (!browser || !document.hidden || !notificationState.enabled || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
+  void showIncomingNotification(notificationState.provider || defaultNotificationProvider, $uiLocale.startsWith('ru') ? 'ru' : 'en').catch(() => {});
+}
 let directConnections = $derived(Object.fromEntries(sessionChats.order.filter(peer => peer !== address).map((peer) => [peer, sessionChats.byPeer[peer].connection])));
 let chatOpenToken = $state(0);
 let signalingStatus = $state<TransportStatus>('idle');
@@ -1169,6 +1194,7 @@ onMount(() => {
     lastRecoveryCheck = keyBudgetNow;
     void recoverConfiguredDeviceNode().catch(() => {});
     for (const peer of sessionChats.order) publishDeliveryKeys(peer);
+    void notificationController?.tick();
     void automaticRadio();
     void recoverRadio();
   }, 10_000);
@@ -1288,7 +1314,7 @@ onMount(() => {
     }
   };
 
-  const handleFocus = () => {checkIdleTimeout();scanVisibleMessages();void resumeDelivery();void recoverRadio(true);};
+  const handleFocus = () => {checkIdleTimeout();scanVisibleMessages();void resumeDelivery();void recoverRadio(true);void notificationController?.tick(true);};
   const handlePageShow = (event: PageTransitionEvent) => { if (event.persisted) {void resumeDelivery();void recoverRadio(true);} };
   window.addEventListener('pageshow', handlePageShow);
   window.addEventListener('online', resumeDelivery);
@@ -1495,6 +1521,7 @@ async function changeOwnAvatar(file: File | null, crop?: AvatarCrop): Promise<vo
 }
 
 function applyChatData(saved: LocalChatData): void {
+  notificationState = normalizeNotifications(saved.notifications);
   meshtastic=normalizeNativeChannels(saved.meshtastic);
   radioState = normalizeRadioState(saved.radioState);
   deviceSettings = normalizeDeviceSettings(saved.deviceSettings);
@@ -1530,6 +1557,7 @@ async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<vo
   await historyWrites.settled();
   if (generation !== authGeneration || address !== accountId) return;
   sessionChats = emptySessionChats();
+  notificationState = emptyNotifications(); notificationStatus = '';
   mediaLibrary = emptyMediaLibrary(); mediaOpen = false; receivedPack = null;
   selfNickname = ''; selfLinks = []; peerLinks = {}; seedNoticeDismissed = false; deviceOffer = false;
   selfAvatar = ''; peerAvatars = {}; avatarBusy = false; avatarError = '';
@@ -2688,6 +2716,7 @@ async function sendTextOnly() {
     const nextReplies = { ...replyDrafts }; delete nextReplies[peer]; replyDrafts = nextReplies;
     if (peer === address) return;
     if (useRadio && activeRadio) { await activeRadio.send(peer,messageId); return; }
+    void notificationController?.tick(true);
     // Primary-to-primary delivery never enters the delegated-device protocol.
     // Existing device journals remain separate; synchronization is not a gate.
     if (sessionChats.byPeer[peer]?.connection !== 'connected') outgoingIssue(peer,messageId,
@@ -4229,6 +4258,7 @@ async function initializeChat() {
     offlineDelivery = worker;
     nextChat.onOfflineBundle((peer, value) => worker.accept(peer, value));
     const courier = new CourierController({ address, identity, lanOnly: () => networkSettings.internetEnabled === false,
+      notification: (peer,id,providers) => notificationController?.nodeWake(peer,id,providers) ?? Promise.resolve(undefined),
       activity:(peer,id,stage)=>{
         if(chat!==nextChat)return;
         sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.map(m=>m.id===id?nodeTransferUpdate(m,stage):m)}));
@@ -4333,6 +4363,7 @@ async function initializeChat() {
       throw new Error('incoming_message_not_saved');
     }
     if (handshake.confirm) void nextChat.sendContactAccepted(msg.from).catch(() => {});
+    if (!existing && chat === nextChat) incomingNotification(msg.from);
     void deviceRuntime?.wake().catch(() => {});
     if (handshake.keys) publishDeliveryKeys(msg.from,true);
     if (reciprocalRequest) void nextChat.sendReadPreference(readReceiptsEnabled, msg.from).catch(() => {});
@@ -4343,6 +4374,7 @@ async function initializeChat() {
     const message = sessionChats.byPeer[peer]?.messages.find((entry) => entry.id === messageId && entry.direction === 'outgoing');
     if (!message?.delivery || message.file) return;
     sessionChats = setDeliveryStatus(sessionChats, peer, messageId, 'delivered');
+    void notificationController?.delivered(peer);
     outbox.acknowledge(peer, messageId);
     radioRuntime?.acknowledge(peer, messageId);
     void persistLocalChats();
@@ -4436,6 +4468,7 @@ async function initializeChat() {
       if (chat === nextChat) sessionChats = previousChats;
       throw new Error('incoming_file_offer_not_saved');
     }
+    if (chat === nextChat) incomingNotification(peer);
   });
   nextChat.onFileControl(async (peer, id, action) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
@@ -4530,6 +4563,7 @@ async function initializeChat() {
       },
       keys: async (peer,kind,bundle) => {
         if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') throw Error('blocked_contact');
+        if (kind === 'notification') { await acceptNotificationRoute(peer, bundle); return; }
         if (kind === 'courier') await courierDelivery?.accept(peer,bundle);
         else await offlineDelivery?.accept(peer,bundle);
         courierDelivery?.wake();
@@ -4540,6 +4574,39 @@ async function initializeChat() {
     nextChat.setIntroduction(introduction);
   }
   chat = nextChat;
+  const acceptNotificationRoute = async (peer: string, value: unknown) => {
+    if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
+    const previous = notificationState, next = rememberNotificationRoute(previous, peer, value);
+    if (next === previous) return;
+    notificationState = next;
+    if (!await persistLocalChats() && chat === nextChat) notificationState = previous;
+  };
+  nextChat.onNotificationRoute(acceptNotificationRoute);
+  notificationController?.close(); notificationController = null;
+  if (browser && trustedSession && profileNetwork && identity) try {
+    const controller = new NotificationController({
+      account: address, device: notificationDevice(localStorage), identity, defaultProvider: defaultNotificationProvider,
+      current: () => chat === nextChat && generation === authGeneration && screen === 'account' && trustedSession && !endingSession && !memoryBusy && !profileSwitchBusy,
+      internet: () => networkSettings.internetEnabled !== false,
+      hasNode: () => !!(courierState.enabled && courierState.node || offlineDeliveryState.enabled && offlineDeliveryState.node),
+      state: () => notificationState, chats: () => sessionChats,
+      locale: () => $uiLocale.startsWith('ru') ? 'ru' : 'en',
+      save: async state => {
+        if (chat !== nextChat) return false;
+        const old = notificationState; notificationState = state;
+        const saved = await persistLocalChats();
+        if (!saved && chat === nextChat) notificationState = old;
+        return saved && chat === nextChat;
+      },
+      sendRoute: (peer, route) => nextChat.sendNotificationRoute(peer, route),
+      connected: peer => nextChat.isDirectReady(peer) || nextChat.isIntroductionReady(peer),
+      subscription: browserSubscription,
+      status: value => { if (chat === nextChat) notificationStatus = value; },
+    });
+    notificationController = controller;
+    nextChat.onDisconnect(() => { controller.close(); if (notificationController === controller) notificationController = null; });
+    void controller.tick();
+  } catch { notificationStatus = 'notification_unavailable'; }
   offlineDelivery?.start();
   courierDelivery?.start();
   const startingDevices = initializeDevices(nextChat, generation);
@@ -4554,6 +4621,7 @@ async function initializeChat() {
 
 function chatSnapshot(): LocalChatData {
   return snapshotLocalChatData({
+    notifications: normalizeNotifications(notificationState),
     meshtastic,
     radioState,
     deviceSettings: normalizeDeviceSettings(deviceSettings),
@@ -5278,6 +5346,9 @@ async function changePassword(): Promise<void> {
   {#if settingsSection === 'about'}<AboutProject />{/if}
   {#if settingsSection === 'application'}
   <section class="settings-section"><LanguageSettings /></section>
+  <NotificationSettings configuration={notificationState} defaultProvider={defaultNotificationProvider}
+    available={trustedSession && profileNetwork && !!notificationController} status={notificationStatus}
+    onEnable={enableNotifications} onDisable={disableNotifications} onTest={testNotification} />
   <section class="settings-section"><h4>{$i18n.text("Внешний вид")}</h4><ThemeSelector /></section>
   <div class="settings-section">
     <h4>{$i18n.text("Запуск без сайта")}</h4>

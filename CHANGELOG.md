@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.9 — browser notifications (2026-11-16)
+
+Optional generic Web Push with the built-in app provider, replaceable provider,
+signed accepted-contact permissions, and bounded reverse reminders without nodes.
+Server Node 0.4.19 can retain a signed wake after courier storage. Existing message
+delivery, receipts and status colors remain independent. See docs/RELEASE_0_5_9.md.
+
 ## 0.5.3 — public release sources (2026-11-09)
 
 Public node downloads, About project, pinned source compatibility and verifiable release/deployment pipeline. See docs/RELEASE_0_5_3.md. No delivery protocol changes.

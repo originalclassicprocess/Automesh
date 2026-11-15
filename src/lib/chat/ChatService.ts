@@ -64,7 +64,7 @@ export class ChatService {
     start(peer: string): void;
     isReady(peer: string): boolean;
     accept(peer: string): Promise<void>;
-    sendKeys(peer: string, kind: 'courier' | 'offline', bundle: unknown): Promise<void>;
+    sendKeys(peer: string, kind: 'courier' | 'offline' | 'notification', bundle: unknown): Promise<void>;
     close(): void;
   };
   setIntroduction(value: NonNullable<ChatService['introduction']>) { this.introduction = value; }
@@ -87,6 +87,7 @@ export class ChatService {
   private fileChunkHandlers: Array<(peer: string, id: string, index: number, chunk: Uint8Array) => unknown> = [];
   private profileHandlers:      Array<(accountId: string, nickname: string) => void> = [];
   private profileLinksHandlers: Array<(peer: string, links: ProfileLink[]) => void> = [];
+  private notificationHandlers: Array<(peer: string, value: unknown) => unknown> = [];
   private avatarHandlers: Array<(accountId: string, avatar: string) => void> = [];
   private callHandlers: Array<(peer: string, signal: CallSignal) => unknown> = [];
   private disconnectHandlers: Array<() => void> = [];
@@ -262,6 +263,11 @@ export class ChatService {
   }
 
   onProfileLinks(cb: (peer: string, links: ProfileLink[]) => void): void { this.profileLinksHandlers.push(cb); }
+  async sendNotificationRoute(peer: string, route: unknown): Promise<void> {
+    if (this.isDirectReady(peer)) await this.sendPayload(`\u0000automesh-notifications-v1:${JSON.stringify(route)}`, peer);
+    else if (this.isIntroductionReady(peer)) await this.introduction!.sendKeys(peer, 'notification', route);
+  }
+  onNotificationRoute(cb: (peer: string, value: unknown) => unknown): void { this.notificationHandlers.push(cb); }
 
   async sendAvatar(avatar: string, peer: string): Promise<void> {
     if (avatar !== '' && !normalizeAvatar(avatar)) throw new Error('invalid_avatar');
@@ -449,6 +455,12 @@ export class ChatService {
         if (content.length > 12040) throw new Error('offline_bundle_limit');
         const value = JSON.parse(content.slice('\u0000automesh-prekeys-v1:'.length));
         for (const handler of this.offlineBundleHandlers) { this.requireCurrent(generation); await handler(from, value); }
+        return;
+      }
+      if (content.startsWith('\u0000automesh-notifications-v1:')) {
+        if (content.length > 2048) return;
+        const value = JSON.parse(content.slice('\u0000automesh-notifications-v1:'.length));
+        for (const handler of this.notificationHandlers) { this.requireCurrent(generation); await handler(from, value); }
         return;
       }
       if (content.startsWith('\u0000automesh-courier-keys-v1:')) {
