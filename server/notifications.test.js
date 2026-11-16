@@ -27,6 +27,42 @@ async function fixture(options={}){
   return {service,sent,call,register,origin,settle,advance:n=>{t+=n;},time:()=>t};
 }
 describe('isolated Web Push provider',()=>{
+  it('enforces permanent/timed mute on the provider while the receiving browser is closed',async()=>{
+    const f=await fixture(),a=await person(),b=await person();await f.register(b,[a]);
+    expect((await f.call(b,'policy',{muted:{[a.account]:-1},viewing:''})).body.updated).toBe(true);
+    const suppressedEvent=token();await f.call(a,'notify',{to:b.account,kind:'message',event:suppressedEvent,returnRoute:null});await f.settle();expect(f.sent).toHaveLength(0);
+    await f.call(b,'policy',{muted:{[a.account]:f.time()+3600000},viewing:''});f.advance(3600001);
+    await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+    await f.call(b,'policy',{muted:{},viewing:''});f.advance(70000);await f.call(a,'notify',{to:b.account,kind:'message',event:suppressedEvent,returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+  });
+  it('applies mute to one receiving device without changing the account other device',async()=>{
+    const f=await fixture(),a=await person(),b=await person(),second={...b,device:token()};await f.register(b,[a]);await f.register(second,[a]);await f.call(b,'policy',{muted:{[a.account]:-1},viewing:''});
+    await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+  });
+  it('suppresses the viewed chat but not another one, and expires a crashed foreground lease',async()=>{
+    const f=await fixture(),a=await person(),b=await person(),c=await person();await f.register(b,[a,c]);await f.call(b,'policy',{muted:{},viewing:a.account});
+    await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.call(c,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+    f.advance(26000);await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(2);
+    await f.call(b,'policy',{muted:{},viewing:a.account});await f.call(b,'view-close',{});f.advance(70000);await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(3);
+  });
+  it('drops a pending retry when muted and coalesces different messages from the same contact',async()=>{
+    const f=await fixture({fail:true}),a=await person(),b=await person();await f.register(b,[a]);await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+    await f.call(b,'policy',{muted:{[a.account]:-1},viewing:''});f.advance(60000);await f.settle();expect(f.sent).toHaveLength(1);
+    const g=await fixture();await g.register(b,[a]);for(let n=0;n<5;n++)await g.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await g.settle();expect(g.sent).toHaveLength(1);
+  });
+  it('does not let another account change mute rules and keeps malformed policy fail-closed',async()=>{
+    const f=await fixture(),a=await person(),b=await person();await f.register(b,[a]);expect((await f.call(a,'policy',{muted:{},viewing:''})).status).toBe(503);
+    expect((await f.call(b,'policy',{muted:{[a.account]:-2},viewing:''})).status).toBe(400);
+    expect((await f.call(b,'policy',{muted:{},viewing:b.account})).status).toBe(400);
+  });
+  it('cancels a delayed/queued event without canceling unrelated ready messages',async()=>{
+    const f=await fixture({fail:true}),a=await person(),b=await person();await f.register(b,[a]);const event=token();await f.call(a,'notify',{to:b.account,kind:'message',event,returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+    await f.call(a,'cancel',{to:b.account,event});f.advance(70000);await f.settle();expect(f.sent).toHaveLength(1);
+    const future=token();await f.call(a,'cancel',{to:b.account,event:future});await f.call(a,'notify',{to:b.account,kind:'message',event:future,returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+    await f.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await f.settle();expect(f.sent).toHaveLength(2);
+    await f.call(a,'cancel',{to:b.account,event:token()});f.advance(20000);await f.settle();expect(f.sent).toHaveLength(3);
+  });
+  it('preserves the attempt kind for a sender without a node',async()=>{const f=await fixture(),a=await person(),b=await person();await f.register(b,[a]);await f.call(a,'notify',{to:b.account,kind:'attempt',event:token(),returnRoute:null});await f.settle();expect(f.sent[0].payload.kind).toBe('attempt');});
   it('exposes only a public VAPID key, supports cross-origin signed clients and rejects arbitrary outbound URLs',async()=>{
     const f=await fixture();const r=await invoke(f.service,'GET','config');expect(r.status).toBe(200);expect(r.body).toEqual({protocol:NOTIFICATION_PROTOCOL,publicKey:expect.stringMatching(/^[A-Za-z0-9_-]{87}$/)});expect(r.headers['Access-Control-Allow-Origin']).toBe('*');
     const s=subscription();expect(validPushSubscription(s)).toBe(true);
@@ -80,5 +116,11 @@ describe('isolated Web Push provider',()=>{
   });
   it('isolates unavailable notification storage instead of throwing into application startup',async()=>{
     const service=createNotifications({origin:'https://automesh.online',enabled:false});cleanup.push(()=>service.close());expect((await invoke(service,'GET','config')).status).toBe(503);
+  });
+  it('retains per-device mute policy across provider replacement',async()=>{
+    const dir=mkdtempSync(join(tmpdir(),'automesh-notification-policy-'));cleanup.push(()=>rmSync(dir,{recursive:true,force:true}));
+    const f=await fixture({directory:dir}),a=await person(),b=await person();await f.register(b,[a]);await f.call(b,'policy',{muted:{[a.account]:-1},viewing:''});await f.service.close();
+    const g=await fixture({directory:dir});await g.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await g.settle();expect(g.sent).toHaveLength(0);
+    await g.call(b,'policy',{muted:{},viewing:''});await g.call(a,'notify',{to:b.account,kind:'message',event:token(),returnRoute:null});await g.settle();expect(g.sent).toHaveLength(1);
   });
 });

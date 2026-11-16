@@ -73,6 +73,8 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
           CREATE TABLE IF NOT EXISTS devices(account TEXT NOT NULL,device TEXT NOT NULL,subscription TEXT NOT NULL,allowed TEXT NOT NULL,locale TEXT NOT NULL,node INTEGER NOT NULL,active INTEGER NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(account,device));
           CREATE TABLE IF NOT EXISTS replay(nonce TEXT PRIMARY KEY,expires INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,expires INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS job_events(id TEXT PRIMARY KEY,event TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS policies(account TEXT NOT NULL,device TEXT NOT NULL,muted TEXT NOT NULL,viewing TEXT NOT NULL,visible_until INTEGER NOT NULL,PRIMARY KEY(account,device));
           CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,account TEXT NOT NULL,device TEXT NOT NULL,peer TEXT NOT NULL,kind TEXT NOT NULL,due INTEGER NOT NULL,expires INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,lease INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS waiting(account TEXT NOT NULL,device TEXT NOT NULL,peer TEXT NOT NULL,token TEXT NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(account,device,peer));
           CREATE TABLE IF NOT EXISTS returns(account TEXT NOT NULL,device TEXT NOT NULL,peer TEXT NOT NULL,route TEXT NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(account,device,peer));
@@ -93,6 +95,8 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
   function clean() {
     const t = now();
     for (const table of ['devices','replay','jobs','waiting','returns','events']) db.prepare(`DELETE FROM ${table} WHERE expires<=?`).run(t);
+    db.exec('DELETE FROM policies WHERE NOT EXISTS(SELECT 1 FROM devices WHERE devices.account=policies.account AND devices.device=policies.device)');
+    db.exec('DELETE FROM job_events WHERE NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.id=job_events.id)');
     for (const [key, b] of budgets) if (b.until <= t) budgets.delete(key);
   }
   function budget(key, limit) {
@@ -101,7 +105,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
     if (++b.n > limit) throw Error('notifications_rate');
   }
   function removeDevice(account, device) {
-    for (const table of ['devices','jobs','waiting','returns']) db.prepare(`DELETE FROM ${table} WHERE account=? AND device=?`).run(account, device);
+    for (const table of ['devices','jobs','waiting','returns','policies']) db.prepare(`DELETE FROM ${table} WHERE account=? AND device=?`).run(account, device);
   }
   function cancelWaiting(account, device, peer) {
     db.prepare('DELETE FROM waiting WHERE account=? AND device=? AND peer=?').run(account, device, peer);
@@ -123,8 +127,43 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
   const deviceFor = input => db.prepare('SELECT * FROM devices WHERE account=? AND device=? AND expires>?').get(input.account,input.device,now());
   function requireDevice(input) { const d=deviceFor(input); if (!d) throw Error('notifications_device'); return d; }
   function allowed(d, peer) { return JSON.parse(d.allowed).includes(peer); }
+  function suppressed(account,device,peer){
+    const p=db.prepare('SELECT * FROM policies WHERE account=? AND device=?').get(account,device);if(!p)return false;
+    const until=JSON.parse(p.muted)[peer];return until===-1||until>now()||p.viewing===peer&&p.visible_until>now();
+  }
   async function execute(action, input) {
     const b = input.body;
+    if(action==='cancel'){
+      if(!exact(b,['to','event'])||typeof b.to!=='string'||!token(b.event))throw Error('notifications_input');
+      budget(`send:${input.account}`,60);
+      for(const d of db.prepare('SELECT * FROM devices WHERE account=? AND expires>? LIMIT 16').all(b.to,now())){
+        if(!allowed(d,input.account))continue;
+        for(const kind of ['message','attempt']){
+          const id=hash(`${b.to}:${d.device}:${input.account}:${kind}`),eventId=hash(`${id}:${b.event}`);
+          if(db.prepare('SELECT count(*) n FROM events').get().n<50000)db.prepare('INSERT OR IGNORE INTO events VALUES(?,?)').run(eventId,now()+DAY);
+          const queued=db.prepare('SELECT event FROM job_events WHERE id=?').get(id);
+          if(queued?.event===b.event){db.prepare('DELETE FROM jobs WHERE id=?').run(id);db.prepare('DELETE FROM job_events WHERE id=?').run(id);}
+        }
+      }
+      return {accepted:true};
+    }
+    if(action==='view-close'){
+      requireDevice(input);if(!exact(b,[]))throw Error('notifications_input');
+      db.prepare("UPDATE policies SET viewing='',visible_until=0 WHERE account=? AND device=?").run(input.account,input.device);
+      return {updated:true};
+    }
+    if(action==='policy'){
+      const d=requireDevice(input);
+      if(!exact(b,['muted','viewing'])||!b.muted||typeof b.muted!=='object'||Array.isArray(b.muted)||Object.keys(b.muted).length>500||typeof b.viewing!=='string'||b.viewing!==''&&!allowed(d,b.viewing))throw Error('notifications_input');
+      const muted={};for(const [peer,until]of Object.entries(b.muted)){
+        if(!/^mesh1[a-z0-9]{30,64}$/.test(peer)||!Number.isSafeInteger(until)||until!==-1&&(until<0||until>now()+31*DAY))throw Error('notifications_input');
+        if(allowed(d,peer)&&(until===-1||until>now()))muted[peer]=until;
+      }
+      db.prepare('INSERT INTO policies VALUES(?,?,?,?,?) ON CONFLICT(account,device) DO UPDATE SET muted=excluded.muted,viewing=excluded.viewing,visible_until=excluded.visible_until').run(input.account,input.device,JSON.stringify(muted),b.viewing,b.viewing?now()+25000:0);
+      for(const r of db.prepare('SELECT id,peer FROM jobs WHERE account=? AND device=?').all(input.account,input.device))if(suppressed(input.account,input.device,r.peer))db.prepare('DELETE FROM jobs WHERE id=?').run(r.id);
+      for(const r of db.prepare('SELECT peer FROM returns WHERE account=? AND device=?').all(input.account,input.device))if(suppressed(input.account,input.device,r.peer))db.prepare('DELETE FROM returns WHERE account=? AND device=? AND peer=?').run(input.account,input.device,r.peer);
+      return {updated:true};
+    }
     if (action === 'register') {
       if (!exact(b,['subscription','allowed','locale','node']) || !validPushSubscription(b.subscription) || !Array.isArray(b.allowed) || b.allowed.length > 500 ||
         b.allowed.some(p => typeof p !== 'string' || !/^mesh1[a-z0-9]{30,64}$/.test(p)) || !['ru','en'].includes(b.locale) || typeof b.node !== 'boolean') throw Error('notifications_input');
@@ -160,7 +199,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
       return { accepted:true };
     }
     if (action === 'notify') {
-      if (!exact(b,['to','kind','event','returnRoute']) || typeof b.to !== 'string' || !['message','return'].includes(b.kind) || !token(b.event)) throw Error('notifications_input');
+      if (!exact(b,['to','kind','event','returnRoute']) || typeof b.to !== 'string' || !['message','attempt','return'].includes(b.kind) || !token(b.event)) throw Error('notifications_input');
       budget(`send:${input.account}`,60);
       // Reply is deliberately identical for unknown, blocked and known accounts.
       const devices=db.prepare('SELECT * FROM devices WHERE account=? AND expires>? LIMIT 16').all(b.to,now());
@@ -169,6 +208,10 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
         const id=hash(`${b.to}:${d.device}:${input.account}:${b.kind}`);
         const eventId=hash(`${id}:${b.event}`);
         if (db.prepare('SELECT id FROM events WHERE id=?').get(eventId)) continue;
+        if(suppressed(b.to,d.device,input.account)){
+          if(db.prepare('SELECT count(*) n FROM events').get().n<50000)db.prepare('INSERT INTO events VALUES(?,?)').run(eventId,now()+DAY);
+          continue;
+        }
         const prior=db.prepare('SELECT * FROM jobs WHERE id=?').get(id);
         if (b.kind === 'return') {
           const w=db.prepare('SELECT * FROM waiting WHERE account=? AND device=? AND peer=? AND token=? AND expires>?').get(b.to,d.device,input.account,b.event,now());
@@ -183,6 +226,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
         if (db.prepare('SELECT count(*) n FROM jobs').get().n >= 10000 || db.prepare('SELECT count(*) n FROM events').get().n >= 50000) throw Error('notifications_capacity');
         db.prepare('INSERT INTO events VALUES(?,?)').run(eventId,now()+DAY);
         db.prepare('INSERT OR REPLACE INTO jobs VALUES(?,?,?,?,?,?,?,?,?)').run(id,b.to,d.device,input.account,b.kind,Math.max(now(),b.kind==='return'?d.active:0),now()+HOUR,0,0);
+        db.prepare('INSERT OR REPLACE INTO job_events VALUES(?,?)').run(id,b.event);
       }
       void drain().catch(() => {});
       return { accepted:true };
@@ -212,7 +256,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
         if (!db.prepare('UPDATE jobs SET lease=? WHERE id=? AND lease<=?').run(now()+30000,job.id,now()).changes) continue;
         const d=db.prepare('SELECT * FROM devices WHERE account=? AND device=? AND expires>?').get(job.account,job.device,now());
         const waiting=job.kind==='return' && db.prepare('SELECT * FROM waiting WHERE account=? AND device=? AND peer=? AND expires>?').get(job.account,job.device,job.peer,now());
-        if (!d || !allowed(d,job.peer) || job.kind==='return' && (!waiting || d.node)) { db.prepare('DELETE FROM jobs WHERE id=?').run(job.id); continue; }
+        if (!d || !allowed(d,job.peer) || suppressed(job.account,job.device,job.peer) || job.kind==='return' && (!waiting || d.node)) { db.prepare('DELETE FROM jobs WHERE id=?').run(job.id); continue; }
         if (job.kind==='return' && d.active>now()) { db.prepare('UPDATE jobs SET due=?,lease=0 WHERE id=?').run(d.active,job.id); continue; }
         try {
           await send(JSON.parse(d.subscription),JSON.stringify({protocol:NOTIFICATION_PROTOCOL,kind:job.kind,locale:d.locale}),pushOptions(job.id,Math.max(1,Math.floor((job.expires-now())/1000))));

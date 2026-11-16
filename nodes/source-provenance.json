@@ -1,7 +1,7 @@
 {
   "repository": "originalclassicprocess/automesh-nodes",
-  "commit": "63f26e94c14f369c1774d816729b5703cff68b5f",
-  "version": "0.4.19",
+  "commit": "43ca3bb3e4c78038a56d76cfe49b130e67327f20",
+  "version": "0.4.20",
   "files": [
     {
       "path": ".github/CODEOWNERS",
@@ -37,7 +37,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "1289346727f49d5a7a68440b0d34e4791ba77af1d4678d45b1ca324a6825ef1c"
+      "sha256": "efb9a0ea76839c2ed1a28c6b7654ca335f7d5164c3722f332c57033b5e8f8a0b"
     },
     {
       "path": "CONTRIBUTING.md",
@@ -240,6 +240,10 @@
       "sha256": "f729bf667b303515ac561dd2cfa6c77e77e65cd7e99874b765e0b81ba0fffe24"
     },
     {
+      "path": "docs/NOTIFICATION_UPLOAD_READY.md",
+      "sha256": "d003d6f880a9a07a7e0dde5fe896f80c5b768840e0b598a7b4d689329a411b1d"
+    },
+    {
       "path": "docs/ORIGIN.md",
       "sha256": "c1b971a812a295868108a1f838a2760c72248cdd572ff46f2a797d4276fd8bab"
     },
@@ -272,6 +276,10 @@
       "sha256": "b3c20f02348220dae78e67687715f777d539de6bda1a50ee61e2d5eb39561011"
     },
     {
+      "path": "docs/RELEASE_0_4_20.md",
+      "sha256": "2ec1bfb279f8c516d2934266c5886551ca290affc1edf18502950868bebdf4bf"
+    },
+    {
       "path": "docs/SERVER_NODE.md",
       "sha256": "a674fabcb38051e240bd998b39efd65283a3a6fe1d9703fe2a903d67eeaeac85"
     },
@@ -289,11 +297,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "99de2738262f421b845fa896bfce0eb13aecbd673163d55d657c526746c4e882"
+      "sha256": "2852c0abc89edb17445caa0492266b4026bd42a15559227a38754f3a15c882b8"
     },
     {
       "path": "package.json",
-      "sha256": "42758e7c9236bdc58c5f832ad1553876590ba91dbe3f3144a4cc2a134223e08c"
+      "sha256": "fb7429c9360d624c0b23f75d8684d848028c6fc8c9421b0fa8ab686bd3995910"
     },
     {
       "path": "packages/deployment/src/defaults.js",
@@ -357,7 +365,7 @@
     },
     {
       "path": "packages/runtime/src/application.js",
-      "sha256": "8e71f16fc883c11a4f2ffc61d3126083b9975af437dd2ffbc2d0974b53626eda"
+      "sha256": "56e5b8d41e6c7a47efafcbfd952e397efacbe704821486c5046528fd904348cb"
     },
     {
       "path": "packages/runtime/src/attachments.js",
@@ -397,7 +405,7 @@
     },
     {
       "path": "packages/runtime/src/notification-wakes.js",
-      "sha256": "38d0fa53158a90b8df4524bd5d339a3cb2ae6f121ff10877e4ce44db3eb0466e"
+      "sha256": "a15b3ed16e2c8d0edc9f8b53b4ce2f6f6cc740fc801c007d455a037c37c30d6d"
     },
     {
       "path": "packages/runtime/src/panel.js",
@@ -529,7 +537,7 @@
     },
     {
       "path": "test/notification-wakes.test.mjs",
-      "sha256": "566635577967ddb8ad5ab2f75dec9905543209ea7a1e128ee5b4b329013a1c91"
+      "sha256": "c9c958416e576ce1a823e443750099e6d07374f67d98ac12613ce1a443fbfb07"
     },
     {
       "path": "test/panel-ui.test.mjs",

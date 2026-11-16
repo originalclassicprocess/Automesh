@@ -1,7 +1,7 @@
 import type { IdentityProvider } from '../identity/identity';
-import type { SessionChats } from '../chat/session-chats';
+import type { ChatEntry, SessionChats } from '../chat/session-chats';
 import { localOutgoing } from '../application/delivery-work';
-import { NOTIFICATION_PROTOCOL, providerUrl, type NotificationRoute, type NotificationState } from './state';
+import { NOTIFICATION_PROTOCOL, providerUrl, muteChatNotifications, type NotificationRoute, type NotificationState } from './state';
 
 const encode=(bytes:Uint8Array)=>btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
 const decode=(s:string)=>Uint8Array.from(atob(s.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0));
@@ -24,10 +24,12 @@ export async function signedNotification(provider:string,action:string,account:s
   return input;
 }
 export function pendingNotificationPeers(chats:SessionChats,self:string,now=Date.now()):string[] {
-  return chats.order.filter(peer=>peer!==self && chats.byPeer[peer]?.contact==='accepted' && chats.byPeer[peer].messages.some(m=>
-    localOutgoing(m) && ['queued','sending','sent','stored'].includes(m.delivery??'') &&
+  return chats.order.filter(peer=>peer!==self && chats.byPeer[peer]?.contact==='accepted' && chats.byPeer[peer].messages.some(m=>notificationCandidate(m,now)));
+}
+function notificationCandidate(m:ChatEntry,now:number,storedOnly=false):boolean {
+  return localOutgoing(m) && ['queued','sending','sent','stored'].includes(m.delivery??'') && (!storedOnly || m.delivery==='stored') &&
     !m.details?.ephemeral && !m.details?.ephemeralOpened && !m.details?.pin && !m.fileDeleted && !['ready','rejected','canceled'].includes(m.fileStatus??'') &&
-    now-m.timestamp>=0 && now-m.timestamp<24*3600000));
+    now-m.timestamp>=0 && now-m.timestamp<24*3600000;
 }
 type Ticket={peer:string;provider:string;device:string;token:string;expires:number};
 export interface NotificationPort {
@@ -37,6 +39,8 @@ export interface NotificationPort {
   sendRoute(peer:string,route:NotificationRoute):Promise<void>;
   connected(peer:string):boolean;
   subscription(provider:string,key?:string):Promise<PushSubscription | null>;
+  viewing?():string;
+  permission?():NotificationPermission|'unsupported';
   request?:typeof fetch;
   status?(value:string):void;
 }
@@ -45,6 +49,7 @@ export interface NotificationPort {
 export class NotificationController {
   private abort=new AbortController();
   private busy=false;
+  private rerun=false;
   private registered='';
   private registeredAt=0;
   private cycleAt=0;
@@ -52,8 +57,15 @@ export class NotificationController {
   private announced=new Map<string,{value:string;at:number}>();
   private notified=new Map<string,{at:number;id:string}>();
   private ownRoute:NotificationRoute | null=null;
+  private policyValue='';
+  private policyAt=0;
+  private policyProvider='';
+  private policyChain:Promise<void>=Promise.resolve();
   constructor(private o:NotificationPort) {}
-  close(){this.abort.abort();this.tokens.clear();this.announced.clear();}
+  close(){
+    if(!this.abort.signal.aborted&&this.policyProvider)void notificationRequest(this.policyProvider,'view-close',this.o.account,this.o.device,this.o.identity,{},this.o.request).catch(()=>{});
+    this.abort.abort();this.tokens.clear();this.announced.clear();
+  }
   private current(){return !this.abort.signal.aborted && this.o.current() && this.o.internet();}
   private provider(){return this.o.state().provider || this.o.defaultProvider;}
   private call(provider:string,action:string,body:unknown){
@@ -76,6 +88,7 @@ export class NotificationController {
     await this.call(provider,'register',{subscription:{endpoint:serialized.endpoint,keys:serialized.keys},allowed,locale:this.o.locale(),node});
     if (!this.current()) return;
     this.registered=value;this.registeredAt=Date.now();
+    this.policyValue='';
     const last=this.ownRoute;
     if(!last || last.provider!==provider || !last.enabled || last.hasNode!==node)this.ownRoute={provider,device:this.o.device,updatedAt:Date.now(),enabled:true,hasNode:node};
     this.o.status?.('notification_enabled');
@@ -112,6 +125,28 @@ export class NotificationController {
     await this.publish();
   }
   async test(){await this.call(this.provider(),'test',{});}
+  async mute(peer:string,duration:number):Promise<boolean>{
+    if(this.abort.signal.aborted||!this.o.current())throw Error('notification_closed');
+    if(!await this.o.save(muteChatNotifications(this.o.state(),peer,duration)))throw Error('notification_storage');
+    if(!this.o.state().enabled)return true;
+    try{await this.syncPolicy(true);return true;}catch{this.o.status?.('notification_policy_pending');return false;}
+  }
+  private syncPolicy(force=false):Promise<void>{
+    const work=this.policyChain.then(()=>this.sendPolicy(force));
+    this.policyChain=work.catch(()=>{});return work;
+  }
+  private async sendPolicy(force=false){
+    const muted=Object.fromEntries(Object.entries(this.o.state().muted??{}).filter(([peer,t])=>this.allowed().includes(peer)&&(t===-1||t>Date.now())));
+    const viewing=this.o.viewing?.()??'';
+    const body={muted,viewing:this.allowed().includes(viewing)?viewing:''},value=JSON.stringify(body);
+    if(!force&&value===this.policyValue&&(!body.viewing||Date.now()-this.policyAt<10000))return;
+    const response=await this.call(this.provider(),'policy',body);
+    if(response.updated!==true)throw Error('notification_policy_pending');
+    if(!this.current())return;
+    this.policyValue=value;this.policyAt=Date.now();
+    this.policyProvider=this.provider();
+    this.o.status?.('notification_enabled');
+  }
   nodeChanged() {
     if(this.current() && this.o.state().enabled && this.o.hasNode())void this.call(this.provider(),'ready',{node:true}).catch(()=>{});
   }
@@ -135,6 +170,13 @@ export class NotificationController {
     const t=this.tokens.get(peer);if(!t)return;
     try{await this.call(this.provider(),'waiting',{peer,token:t,pending:false});this.tokens.delete(peer);}catch{/* Reconciled by ready() after reconnect. */}
   }
+  async cancelMessage(peer:string,messageId:string){
+    if(!this.current()||this.o.chats().byPeer[peer]?.contact!=='accepted')return;
+    const event=encode(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${NOTIFICATION_PROTOCOL}:${this.o.account}:${peer}:${messageId}`))));
+    const providers=[...new Set([...(this.o.state().peers[peer]??[]).filter(r=>r.enabled).map(r=>r.provider),this.o.defaultProvider])].slice(0,4);
+    for(const provider of providers){if(!this.current())return;try{await this.call(provider,'cancel',{to:peer,event});}catch{/* Notification cancellation cannot gate primary cancellation. */}}
+    await this.delivered(peer);
+  }
   async publish(peer?:string) {
     if(!this.current() || !this.ownRoute)return;
     const route=this.ownRoute,value=JSON.stringify(route);
@@ -147,19 +189,22 @@ export class NotificationController {
     }
   }
   async tick(force=false) {
-    if(this.busy || !this.current() || !force && Date.now()-this.cycleAt<10000)return;
+    if(!this.current())return;
+    if(this.busy){if(force)this.rerun=true;return;}
+    if(!force && Date.now()-this.cycleAt<10000)return;
     this.busy=true;this.cycleAt=Date.now();
     try {
       const state=this.o.state();
       if(state.enabled) try {
-        const subscription=await this.o.subscription(this.provider());
+        const denied=this.o.permission?.()==='denied';
+        const subscription=denied?null:await this.o.subscription(this.provider());
         if(!this.current())return;
-        if(!subscription)this.o.status?.('notification_reconnect');
-        else {await this.register(subscription);await this.publish();await this.ready();}
+        if(!subscription)this.o.status?.(denied?'notification_denied':'notification_reconnect');
+        else {await this.register(subscription);try{await this.syncPolicy();}catch{this.o.status?.('notification_policy_pending');}await this.publish();await this.ready();}
       } catch {if(this.current())this.o.status?.('notification_unavailable');}
       await this.wakePeers();
     } catch {if(this.current())this.o.status?.('notification_unavailable');}
-    finally {this.busy=false;}
+    finally {this.busy=false;if(this.rerun){this.rerun=false;if(this.current())void this.tick(true);}}
   }
   private async ready() {
     const data=await this.call(this.provider(),'ready',{node:this.o.hasNode()});
@@ -186,9 +231,13 @@ export class NotificationController {
     }
     for(const peer of [...pending].slice(0,32)) {
       if(!this.current())return;
-      const c=this.o.chats().byPeer[peer];if(c.connection==='connected')continue;
-      const latest=c.messages.filter(m=>localOutgoing(m) && !['delivered','read'].includes(m.delivery??'')).at(-1)?.id??'';
-      const prior=this.notified.get(peer);if(prior && (prior.id===latest || Date.now()-prior.at<60000))continue;
+      const hasNode=this.o.hasNode(),c=this.o.chats().byPeer[peer];if(!hasNode && c.connection==='connected')continue;
+      // Node handoff is authoritative only after all attachment parts and the
+      // final envelope commit. A newer queued upload must not hide older work.
+      const latest=c.messages.filter(m=>notificationCandidate(m,Date.now(),hasNode)).at(-1)?.id;
+      if(!latest)continue;
+      const notificationId=`${hasNode?'ready':'attempt'}:${latest}`;
+      const prior=this.notified.get(peer);if(prior && (prior.id===notificationId || Date.now()-prior.at<60000))continue;
       const known=this.o.state().peers[peer]??[];
       const providers=[...new Set([...known.filter(r=>r.enabled).map(r=>r.provider),this.o.defaultProvider])].slice(0,4);
       let returnRoute: {provider:string;device:string;token:string;expires:number}|null=null;
@@ -196,14 +245,15 @@ export class NotificationController {
       // can handle the message; notifications never override node delivery.
       if(enabled && !this.o.hasNode() && !known.some(r=>r.enabled && r.hasNode)) {
         let t=this.tokens.get(peer);if(!t){t=encode(crypto.getRandomValues(new Uint8Array(32)));this.tokens.set(peer,t);}
-        const w=await this.call(this.provider(),'waiting',{peer,token:t,pending:true});
-        if(w.waiting)returnRoute={provider:this.provider(),device:this.o.device,token:t,expires:Date.now()+23*3600000};
+        try{const w=await this.call(this.provider(),'waiting',{peer,token:t,pending:true});
+          if(w.waiting)returnRoute={provider:this.provider(),device:this.o.device,token:t,expires:Date.now()+23*3600000};
+        }catch{/* An unavailable return channel must not stop the recipient's wake. */}
       }
-      this.notified.set(peer,{at:Date.now(),id:latest});
+      this.notified.set(peer,{at:Date.now(),id:notificationId});
       const event=encode(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${NOTIFICATION_PROTOCOL}:${this.o.account}:${peer}:${latest}`))));
       for(const provider of providers) {
         if(!providerUrl(provider,new URL(this.o.defaultProvider).origin))continue;
-        try {await this.call(provider,'notify',{to:peer,kind:'message',event,returnRoute});}catch{/* Independent providers and delivery continue. */}
+        try {await this.call(provider,'notify',{to:peer,kind:hasNode?'message':'attempt',event,returnRoute});}catch{/* Independent providers and delivery continue. */}
         if(!this.current())return;
       }
     }

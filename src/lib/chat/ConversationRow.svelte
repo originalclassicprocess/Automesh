@@ -7,8 +7,8 @@
   import type {ChannelEncryption} from '$lib/radio/native-channels';
   import { conversationPreview } from './conversation-list';
   import type { Conversation } from './session-chats';
-  let { accountId, name, photo = '', conversation, self = false, active = false, onOpen, radio, introduction }: {
-    accountId: string; name: string; photo?: string; conversation: Conversation; self?: boolean; active?: boolean; onOpen(): void;introduction?:string;radio?:{encryption?:ChannelEncryption;preview:string;status?:string};
+  let { accountId, name, photo = '', conversation, self = false, active = false, onOpen, radio, introduction, muted=false }: {
+    accountId: string; name: string; photo?: string; conversation: Conversation; self?: boolean; active?: boolean; onOpen(): void;introduction?:string;radio?:{encryption?:ChannelEncryption;preview:string;status?:string};muted?:boolean;
   } = $props();
   const contactLabel = $derived(conversation.contact === 'pending' ? 'Запрос' : conversation.contact === 'outgoing' ? introduction || (conversation.messages.some(m=>m.direction==='outgoing'&&['delivered','read'].includes(m.delivery??'')) ? 'Ждём принятия' : 'Устанавливаем защищённую связь') : conversation.contact === 'blocked' ? 'Заблокирован' : '');
 </script>
@@ -18,6 +18,7 @@
   </span>
   <span class="row-content">
     <span class="row-heading"><span class="row-name">{name}</span>{#if radio}<span class="radio-badge">LoRa</span><ChannelSecurity value={radio.encryption} compact/>{/if}
+      {#if muted}<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" role="img" aria-label={$i18n.text('Уведомления чата отключены')}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4M3 3l18 18"/></svg>{/if}
       {#if self}<span class="saved" aria-label={$i18n.text("Сохранённые")}>🔖</span>{/if}
       {#if conversation.unread > 0}<span class="row-unread" aria-label={$i18n("m_fe510dbd63e0", {v0: (conversation.unread)})}>{conversation.unread > 99 ? '99+' : conversation.unread}</span>{/if}
     </span>

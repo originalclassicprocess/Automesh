@@ -28,7 +28,7 @@
   {#if !available}<p>{$i18n.text('Откройте сетевой профиль в доверенном режиме, чтобы настроить уведомления.')}</p>
   {:else if !supported}<p>{$i18n.text('Браузер не поддерживает Web Push. На iPhone и iPad добавьте Automesh на главный экран и откройте оттуда.')}</p>
   {:else}
-    <p role="status">{$i18n.text(configuration.enabled ? status==='notification_unavailable'?'Служба уведомлений временно недоступна.':status==='notification_reconnect'?'Переподключите уведомления на этом устройстве.':'Уведомления включены для этого профиля.':'Уведомления выключены.')}</p>
+    <p role="status">{$i18n.text(configuration.enabled ? status==='notification_denied'?'Браузер запретил уведомления. Разрешите их в настройках сайта.':status==='notification_policy_pending'?'Правила чатов сохранены локально, но пока не подтверждены провайдером.':status==='notification_unavailable'?'Служба уведомлений временно недоступна.':status==='notification_reconnect'?'Переподключите уведомления на этом устройстве.':'Уведомления включены для этого профиля.':'Уведомления выключены.')}</p>
     <div class="actions">
       {#if !configuration.enabled || status==='notification_reconnect'}<button type="button" disabled={busy} onclick={()=>void enable(configuration.provider||defaultProvider)}>{$i18n.text('Включить уведомления')}</button>
       {:else}<button type="button" disabled={busy} onclick={()=>void test()}>{$i18n.text('Проверить уведомление')}</button><button type="button" disabled={busy} onclick={()=>void disable()}>{$i18n.text('Выключить уведомления')}</button>{/if}
