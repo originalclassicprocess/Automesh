@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.10 — notification timing and selection actions (2026-11-16)
+
+Notify after durable node upload; keep immediate attempt alerts without a node.
+Per-device chat mute and foreground suppression work through the optional push
+provider. Cancel obsolete queued wakes. Mixed selections support ZIP download,
+retry and cancellation; failed LoRa sends support a confirmed bulk retry.
+See docs/RELEASE_0_5_10.md.
+
 ## 0.5.9 — browser notifications (2026-11-16)
 
 Optional generic Web Push with the built-in app provider, replaceable provider,

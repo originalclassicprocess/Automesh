@@ -12,8 +12,9 @@ self.addEventListener('message',event=>{
 self.addEventListener('push',event=>{
   event.waitUntil((async()=>{
     let data;try{data=event.data?.json();}catch{}
-    const ru=data?.locale==='ru',kind=data?.protocol==='automesh-notifications-v1'&&['message','return','test'].includes(data.kind)?data.kind:'message';
+    const ru=data?.locale==='ru',kind=data?.protocol==='automesh-notifications-v1'&&['message','attempt','return','test'].includes(data.kind)?data.kind:'message';
     const body=kind==='return'?(ru?'Собеседник готов получить сообщение. Откройте Automesh для отправки.':'Your contact is ready to receive a message. Open Automesh to send it.'):
+      kind==='attempt'?(ru?'Собеседник пытается отправить сообщение. Откройте Automesh.':'Your contact is trying to send a message. Open Automesh.'):
       kind==='test'?(ru?'Уведомления на этом устройстве работают.':'Notifications are working on this device.'):
       (ru?'В Automesh есть новые сообщения.':'You have new messages in Automesh.');
     await self.registration.showNotification('Automesh',{body,icon:'/icon-192.png',badge:'/icon-192.png',tag:`automesh-${kind}`,renotify:false});

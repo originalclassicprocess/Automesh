@@ -4,7 +4,7 @@ import { getAccountId } from '../addressing/address';
 import { bytesToHex } from '../message/encoding';
 import { emptySessionChats, ensureConversation, recordSentMessage, setContactState, setDeliveryStatus } from '../chat/session-chats';
 import { NotificationController, notificationRequest, pendingNotificationPeers, type NotificationPort } from './client';
-import { emptyNotifications, normalizeNotifications, rememberNotificationRoute } from './state';
+import { emptyNotifications, normalizeNotifications, rememberNotificationRoute, muteChatNotifications, chatNotificationsMuted } from './state';
 import { normalizeLocalChatData } from '../chat/local-store';
 import { portableChatData } from '../backup/full-backup';
 const clean:Array<()=>void>=[];
@@ -17,13 +17,37 @@ async function fixture(overrides:Partial<NotificationPort>={}) {
   const subscription={endpoint:'https://fcm.googleapis.com/fcm/send/example',toJSON:()=>({endpoint:'https://fcm.googleapis.com/fcm/send/example',keys:{p256dh:'b'.repeat(87),auth:'a'.repeat(22)}})} as unknown as PushSubscription;
   const request=vi.fn(async(url:any,options:any)=>{
     if(String(url).endsWith('/config'))return new Response(JSON.stringify({protocol:'automesh-notifications-v1',publicKey:'a'.repeat(87)}));
-    const input=JSON.parse(options.body);calls.push({url:String(url),input});return new Response(JSON.stringify(String(url).endsWith('/ready')?{tickets:[],waiting:[]}:String(url).endsWith('/waiting')?{waiting:input.body.pending}:{accepted:true}));
+    const input=JSON.parse(options.body);calls.push({url:String(url),input});return new Response(JSON.stringify(String(url).endsWith('/policy')?{updated:true}:String(url).endsWith('/ready')?{tickets:[],waiting:[]}:String(url).endsWith('/waiting')?{waiting:input.body.pending}:{accepted:true}));
   }) as unknown as typeof fetch;
   const port:NotificationPort={...a,device:'d'.repeat(43),defaultProvider:'https://automesh.online/api/notifications',current:()=>true,internet:()=>true,hasNode:()=>false,state:()=>state,chats:()=>chats,locale:()=> 'ru',save:async value=>{state=value;return true;},sendRoute:async(peer,route)=>{announced.push({peer,route});},connected:()=>false,subscription:async()=>subscription,request,status:value=>{statuses.push(value);},...overrides};
   const controller=new NotificationController(port);clean.push(()=>controller.close());
   return {a,b,controller,port,calls,announced,statuses,request,get chats(){return chats;},set chats(value){chats=value;},get state(){return state;},set state(value){state=value;}};
 }
 describe('notification side channel',()=>{
+  it('keeps per-chat mute settings local, normalizes them and expires them automatically',async()=>{
+    const f=await fixture(),now=Date.now(),temporary=muteChatNotifications(f.state,f.b.account,3600000,now);
+    expect(chatNotificationsMuted(temporary,f.b.account,now+3599999)).toBe(true);expect(chatNotificationsMuted(temporary,f.b.account,now+3600000)).toBe(false);
+    const forever=muteChatNotifications(f.state,f.b.account,-1);expect(chatNotificationsMuted(normalizeNotifications(JSON.parse(JSON.stringify(forever))),f.b.account,now+365*86400000)).toBe(true);
+    expect(chatNotificationsMuted(muteChatNotifications(forever,f.b.account,0),f.b.account)).toBe(false);expect(f.state.muted).toBeUndefined();
+  });
+  it('syncs mute and the focused peer without publishing either preference to contacts',async()=>{
+    const f=await fixture({viewing:()=>''});f.state={...f.state,enabled:true};
+    expect(await f.controller.mute(f.b.account,-1)).toBe(true);
+    expect(f.calls.find(c=>c.url.endsWith('/policy')).input.body.muted[f.b.account]).toBe(-1);expect(f.announced).toEqual([]);
+    f.port.viewing=()=>f.b.account;await f.controller.tick(true);expect(f.calls.filter(c=>c.url.endsWith('/policy')).at(-1).input.body.viewing).toBe(f.b.account);
+    f.port.viewing=()=>'';await f.controller.tick(true);expect(f.calls.filter(c=>c.url.endsWith('/policy')).at(-1).input.body.viewing).toBe('');
+  });
+  it('retains an offline mute locally and reports that closed-browser enforcement is pending',async()=>{
+    const f=await fixture({internet:()=>false});f.state={...f.state,enabled:true};expect(await f.controller.mute(f.b.account,86400000)).toBe(false);
+    expect(chatNotificationsMuted(f.state,f.b.account)).toBe(true);expect(f.statuses).toContain('notification_policy_pending');expect(f.calls).toEqual([]);
+  });
+  it('distinguishes browser denial from provider failure without stopping outgoing notifications',async()=>{
+    const f=await fixture({permission:()=> 'denied'});f.state={...f.state,enabled:true};await f.controller.tick(true);expect(f.statuses).toContain('notification_denied');expect(f.calls.some(c=>c.url.endsWith('/notify'))).toBe(true);
+  });
+  it('cancels the same opaque event used by an earlier send without changing message delivery',async()=>{
+    const f=await fixture();await f.controller.tick(true);const event=f.calls.find(c=>c.url.endsWith('/notify')).input.body.event;const before=JSON.stringify(f.chats);
+    await f.controller.cancelMessage(f.b.account,f.chats.byPeer[f.b.account].messages[0].id);expect(f.calls.find(c=>c.url.endsWith('/cancel')).input.body.event).toBe(event);expect(JSON.stringify(f.chats)).toBe(before);
+  });
   it('sends only an opaque wake signal without requiring a subscription or changing delivery',async()=>{
     const f=await fixture();const before=JSON.stringify(f.chats);await f.controller.tick(true);
     const notify=f.calls.find(c=>c.url.endsWith('/notify'));expect(notify.input.body.returnRoute).toBeNull();expect(JSON.stringify(notify)).not.toContain('private content');expect(JSON.stringify(f.chats)).toBe(before);
@@ -33,6 +57,24 @@ describe('notification side channel',()=>{
     const f=await fixture({hasNode:()=>true});f.state={...f.state,enabled:true};const m=f.chats.byPeer[f.b.account].messages[0];f.chats=setDeliveryStatus(f.chats,f.b.account,m.id,'stored');await f.controller.tick(true);
     expect(f.calls.find(c=>c.url.endsWith('/register')).input.body.node).toBe(true);
     expect(f.calls.filter(c=>c.url.endsWith('/waiting'))).toHaveLength(0);expect(f.calls.find(c=>c.url.endsWith('/notify')).input.body.returnRoute).toBeNull();
+  });
+  it('waits through a two-minute attachment upload to an older home node, then notifies after commit even with stale direct presence',async()=>{
+    const f=await fixture({hasNode:()=>true});
+    const c=f.chats.byPeer[f.b.account],m=c.messages[0];c.connection='connected';
+    m.file={id:m.id,name:'sticker.webp',mime:'image/webp',size:1000,sha256:'a'.repeat(64)};m.fileStatus='sending';m.fileProgress=50;
+    await f.controller.tick(true);expect(f.calls.filter(c=>c.url.endsWith('/notify'))).toHaveLength(0);
+    m.timestamp-=120000;m.fileProgress=900;await f.controller.tick(true);expect(f.calls.filter(c=>c.url.endsWith('/notify'))).toHaveLength(0);
+    f.chats=setDeliveryStatus(f.chats,f.b.account,m.id,'stored');await f.controller.tick(true);
+    const n=f.calls.filter(c=>c.url.endsWith('/notify'));expect(n).toHaveLength(1);expect(n[0].input.body.kind).toBe('message');expect(n[0].input.body.returnRoute).toBeNull();
+  });
+  it('notifies immediately about an attempt without a node while an attachment is still pending',async()=>{
+    const f=await fixture(),m=f.chats.byPeer[f.b.account].messages[0];m.file={id:m.id,name:'sticker.webp',mime:'image/webp',size:1000,sha256:'a'.repeat(64)};m.fileStatus='queued';
+    await f.controller.tick(true);expect(f.calls.find(c=>c.url.endsWith('/notify')).input.body.kind).toBe('attempt');
+  });
+  it('a newer incomplete upload does not hide an older committed message',async()=>{
+    const f=await fixture({hasNode:()=>true}),m=f.chats.byPeer[f.b.account].messages[0];m.delivery='stored';
+    f.chats=recordSentMessage(f.chats,f.b.account,{...m,id:crypto.randomUUID(),delivery:'queued',timestamp:Date.now()});
+    await f.controller.tick(true);expect(f.calls.filter(c=>c.url.endsWith('/notify'))).toHaveLength(1);
   });
   it('creates an authenticated reverse ticket without a node and cancels it immediately after receipt',async()=>{
     const f=await fixture();f.state={...f.state,enabled:true};await f.controller.tick(true);

@@ -18,6 +18,7 @@ import { navigationLevel } from '$lib/application/navigation-level';
 import { toggleSelection, selectEveryMessage } from '$lib/chat/message-selection';
 import { selectionSummary } from '$lib/chat/message-selection';
 import MessageSelectionBar from '$lib/chat/MessageSelectionBar.svelte';
+import { bulkTasks, downloadableSelection, archiveFileName, type BulkAction } from '$lib/chat/bulk-actions';
 import ChatIcon from '$lib/chat/ChatIcon.svelte';
 import CallPanel from '$lib/calls/CallPanel.svelte';
 import CallHistoryCard from '$lib/calls/CallHistoryCard.svelte';
@@ -57,7 +58,8 @@ import { onMount, tick, untrack, type Snippet } from 'svelte';
 import NotificationToast from '$lib/application/NotificationToast.svelte';
 import NotificationSettings from '$lib/notifications/NotificationSettings.svelte';
 import { NotificationController, browserSubscription, notificationDevice, showIncomingNotification } from '$lib/notifications/client';
-import { emptyNotifications, normalizeNotifications, rememberNotificationRoute } from '$lib/notifications/state';
+import { emptyNotifications, normalizeNotifications, rememberNotificationRoute, chatNotificationsMuted, muteChatNotifications } from '$lib/notifications/state';
+import ChatNotificationMenu from '$lib/notifications/ChatNotificationMenu.svelte';
 import { accountNotice, type AppNotice } from '$lib/application/notices';
 import { browser, dev } from '$app/environment';
 import { afterNavigate, pushState, replaceState } from '$app/navigation';
@@ -619,9 +621,20 @@ async function testNotification() {
   await notificationController.test();
 }
 function incomingNotification(peer: string): void {
-  if (!browser || !document.hidden || !notificationState.enabled || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
+  if (!browser || !notificationState.enabled || chatNotificationsMuted(notificationState,peer) || viewedNotificationChat()===peer || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
   void showIncomingNotification(notificationState.provider || defaultNotificationProvider, $uiLocale.startsWith('ru') ? 'ru' : 'en').catch(() => {});
 }
+function viewedNotificationChat():string {
+  return browser && screen==='account' && accountView==='chats' && !document.hidden && document.hasFocus() && !allProfileChats && (!narrowScreen || mobilePane==='chat') ? sessionChats.activePeer : '';
+}
+async function changeChatNotificationMute(peer:string,duration:number):Promise<boolean>{
+  if(notificationController)return notificationController.mute(peer,duration);
+  const before=notificationState;notificationState=muteChatNotifications(before,peer,duration);
+  if(!await persistLocalChats()){notificationState=before;throw Error('notification_storage');}
+  return !notificationState.enabled;
+}
+const notificationViewRoute=$derived([screen,accountView,sessionChats.activePeer,mobilePane,allProfileChats,narrowScreen].join('|'));
+$effect(()=>{const controller=notificationController;void notificationViewRoute;if(controller)untrack(()=>{void controller.tick(true);});});
 let directConnections = $derived(Object.fromEntries(sessionChats.order.filter(peer => peer !== address).map((peer) => [peer, sessionChats.byPeer[peer].connection])));
 let chatOpenToken = $state(0);
 let signalingStatus = $state<TransportStatus>('idle');
@@ -657,6 +670,10 @@ let mediaTab = $state<'gifs' | 'stickers'>('stickers');
 let mediaBusy = $state(false);
 let receivedPack = $state.raw<PreparedPack | null>(null);
 let actionMode = $state<'forward' | 'contact' | 'delete' | null>(null);
+let bulkConfirmation=$state<{action:BulkAction;peer:string;ids:string[]}|null>(null);
+const retrySelection=$derived(bulkTasks(activeMessages,selectedMessages,'retry',address,new Set(courierState.pending.map(j=>j.body.id))));
+const cancelSelection=$derived(bulkTasks(activeMessages,selectedMessages,'cancel',address,new Set(courierState.pending.map(j=>j.body.id))));
+const downloadSelectionEntries=$derived(downloadableSelection(activeMessages,selectedMessages));
 let messageTools = $state<{ id: string; view: 'menu' | 'status' | 'route' | 'share' } | null>(null);
 let copiedMessageId = $state(''); let pinBusy = $state(false);
 let actionBusy = $state(false); let actionError = $state('');
@@ -731,7 +748,7 @@ function rootRoute(screen: Screen): PageRoute {
   return { screen, layer: '', view: 'chats', peer: '', card: '', pane: 'list', settings: 'account', connection: 'direct', gallery: '' };
 }
 function currentPageRoute(): PageRoute {
-  const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : mediaOpen || receivedPack ? 'media-library' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
+  const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
     backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
@@ -1302,6 +1319,7 @@ onMount(() => {
   };
 
   const handleVisibility = () => {
+    void notificationController?.tick(true);
 
     if (document.hidden) {
 
@@ -1317,6 +1335,8 @@ onMount(() => {
   const handleFocus = () => {checkIdleTimeout();scanVisibleMessages();void resumeDelivery();void recoverRadio(true);void notificationController?.tick(true);};
   const handlePageShow = (event: PageTransitionEvent) => { if (event.persisted) {void resumeDelivery();void recoverRadio(true);} };
   window.addEventListener('pageshow', handlePageShow);
+  const notificationBlur=()=>{void notificationController?.tick(true);};
+  window.addEventListener('blur',notificationBlur);
   window.addEventListener('online', resumeDelivery);
   const connection = (navigator as Navigator & {connection?: EventTarget}).connection;
   connection?.addEventListener('change', resumeDelivery);
@@ -1377,6 +1397,7 @@ onMount(() => {
     );
     window.removeEventListener('focus', handleFocus);
     window.removeEventListener('pageshow', handlePageShow);
+    window.removeEventListener('blur',notificationBlur);
     window.removeEventListener('online', resumeDelivery);
     connection?.removeEventListener('change', resumeDelivery);
     window.clearInterval(idleTimer);
@@ -1837,6 +1858,7 @@ function restorePageRoute(route: PageRoute): void {
   if (screen !== 'account' || !address) return;
   const reopenChat = route.peer !== sessionChats.activePeer || route.pane !== mobilePane || route.view !== accountView;
   actionMode = null; selecting = false; selectedMessages = []; attachmentMenu = false;
+  bulkConfirmation=null;
   messageTools = null;
   if (route.layer !== 'media-library') { mediaOpen = false; receivedPack = null; }
   if (accountView !== route.view || peerCardAddress !== route.card) changeAccountView(route.view);
@@ -1856,6 +1878,7 @@ function restorePageRoute(route: PageRoute): void {
 function backWithinApp(): void {
   if(radioOverviewOpen){radioOverviewOpen=false;return;}
   if (navigationBusy()) return;
+  if(bulkConfirmation){bulkConfirmation=null;return;}
   if (ephemeralView) { closeEphemeral(); return; }
   if (galleryId) { closeGallery(); return; }
   if (sendOptionsOpen) { sendOptionsOpen = false; return; }
@@ -3231,7 +3254,7 @@ async function acceptFile(peer: string, id: string): Promise<void> {
       await storeFileBytes(peer, id, new Uint8Array());
       incomingFiles.delete(key);
       updateFileEntry(peer, id, { fileStatus: 'ready' });
-      if (await persistLocalChats()) await activeChat.sendFileControl('received', id, peer);
+      if (await persistLocalChats()) { incomingNotification(peer); await activeChat.sendFileControl('received', id, peer); }
       else updateFileEntry(peer, id, { fileStatus: 'failed' });
     } else await activeChat.sendFileControl('accept', id, peer);
   } catch (e) {
@@ -3268,13 +3291,14 @@ function recordNodeOutcome(peer:string,id:string,value:'canceling'|'canceled'|'e
   if(!m||['delivered','read'].includes(m.delivery??''))return;
   sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.map(m=>m.id===id?applyNodeOutcome(m,value):m)}));
   clearFileRetry(peer,id);outbox.acknowledge(peer,id);
+  if(value==='canceled'||value==='expired')void notificationController?.cancelMessage(peer,id);
 }
-async function cancelNodeMessage(peer:string,id:string) {
-  if(navigationBusy())return;
+async function cancelNodeMessage(peer:string,id:string,bulk=false):Promise<boolean> {
+  if(!bulk&&navigationBusy())return false;
   recordNodeOutcome(peer,id,'canceling');
-  if(!await persistLocalChats()){status='Не удалось сохранить отмену. Не закрывайте приложение.';return;}
-  try { await courierDelivery?.cancel(id); }
-  catch { status='Отмена сохранена. Нода подтвердит удаление при восстановлении связи.';courierDelivery?.wake(); }
+  if(!await persistLocalChats()){status='Не удалось сохранить отмену. Не закрывайте приложение.';return false;}
+  try { if(!courierDelivery)return false;await courierDelivery.cancel(id);return ['canceled','expired'].includes(sessionChats.byPeer[peer]?.messages.find(m=>m.id===id)?.nodeQueue??''); }
+  catch { status='Отмена сохранена. Нода подтвердит удаление при восстановлении связи.';courierDelivery?.wake();return false; }
 }
 async function clearQueueCounters(peer?:string) {
   if(navigationBusy())return;const generation=authGeneration;
@@ -3286,33 +3310,82 @@ async function retryNodeMessage(peer:string,id:string) {
   if(!m||!['canceled','expired'].includes(m.nodeQueue??'')||actionBusy||!activeChat||navigationBusy())return;
   actionBusy=true;
   try {
-    // New message, envelope and one-time key. Never reuse a canceled reservation.
-    if(m.file){
-      const bytes=(await getFileBytes(peer,id))?.slice();
-      if(!bytes)throw Error('Локальный файл отсутствует. Выберите его снова.');
-      try { if(bytes.length!==m.file.size||await sha256Hex(bytes)!==m.file.sha256)throw Error('Локальный файл повреждён. Выберите его снова.');
-        if(generation!==authGeneration) return;
-        if(!await enqueueAttachment(new File([bytes as BlobPart],m.file.name,{type:m.file.mime}),peer,activeChat,m.details))throw Error('Не удалось повторить отправку.');
-      }finally{bytes.fill(0);}
-    } else await queueRichMessage(peer,m.text,m.details??{});
+    await resendMessageCopy(peer,id,activeChat,generation);
     if(generation!==authGeneration)return;
     sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.map(m=>m.id===id?{...m,nodeQueueDismissed:true}:m)}));await persistLocalChats();
   }catch(error){if(generation===authGeneration)status=error instanceof Error?error.message:'Не удалось повторить отправку.';}
   finally{if(generation===authGeneration)actionBusy=false;}
 }
+async function resendMessageCopy(peer:string,id:string,activeChat:ChatService,generation:number):Promise<void>{
+  const entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id);
+  if(!entry||generation!==authGeneration||chat!==activeChat)throw new Error('Сеанс или чат изменился.');
+  if(entry.file){
+    const file=await prepareMessageFile(peer,id);
+    if(generation!==authGeneration||chat!==activeChat||!await enqueueAttachment(file,peer,activeChat,entry.details))throw new Error('Не удалось повторить отправку.');
+  }else await queueRichMessage(peer,entry.text,entry.details??{});
+}
+function openBulkAction(action:BulkAction):void{
+  if(navigationBusy())return;
+  const peer=sessionChats.activePeer;
+  if(action==='retry'&&!['new','accepted'].includes(sessionChats.byPeer[peer]?.contact??''))return;
+  const ids=bulkTasks(sessionChats.byPeer[peer]?.messages??[],selectedMessages,action,address,new Set(courierState.pending.map(j=>j.body.id))).map(task=>task.id);
+  if(ids.length)bulkConfirmation={action,peer,ids};
+}
+async function confirmBulkAction():Promise<void>{
+  const request=bulkConfirmation,activeChat=chat,generation=authGeneration;
+  if(!request||!activeChat||navigationBusy()||request.peer!==sessionChats.activePeer)return;
+  if(request.action==='retry'&&!['new','accepted'].includes(sessionChats.byPeer[request.peer]?.contact??''))return;
+  actionBusy=true;const completed=new Set<string>();
+  try{
+    for(const id of request.ids){
+      if(generation!==authGeneration||chat!==activeChat||sessionChats.activePeer!==request.peer)break;
+      // Recheck receipts and cancellation state after every asynchronous operation.
+      const task=bulkTasks(sessionChats.byPeer[request.peer]?.messages??[],[id],request.action,address,new Set(courierState.pending.map(j=>j.body.id)))[0];
+      if(!task)continue;
+      try{
+        if(request.action==='cancel'){
+          if(await (task.kind==='node'?cancelNodeMessage(request.peer,id,true):cancelFile(request.peer,id,true)))completed.add(id);
+        }else if(task.kind==='new'){
+          await resendMessageCopy(request.peer,id,activeChat,generation);completed.add(id);
+        }else{
+          const entry=sessionChats.byPeer[request.peer]?.messages.find(m=>m.id===id);
+          if(!entry)continue;
+          if(entry.file){await prepareMessageFile(request.peer,id);if(generation!==authGeneration||chat!==activeChat)break;}
+          // A receipt may arrive during attachment validation; never reset it.
+          if(bulkTasks(sessionChats.byPeer[request.peer]?.messages??[],[id],'retry',address,new Set(courierState.pending.map(j=>j.body.id)))[0]?.kind!=='resume')continue;
+          clearFileRetry(request.peer,id);outbox.acknowledge(request.peer,id);
+          sessionChats=setDeliveryStatus(sessionChats,request.peer,id,'queued');outgoingIssue(request.peer,id,undefined);
+          if(entry.file)updateFileEntry(request.peer,id,{fileStatus:'queued',fileProgress:0});
+          if(!await persistLocalChats())continue;
+          courierDelivery?.wake();
+          if(sessionChats.byPeer[request.peer]?.connection==='connected'){
+            if(entry.file)void offerFile(request.peer,id,activeChat);else void flushOutbox(request.peer,activeChat);
+          }else void activeChat.connect(request.peer).catch(()=>{});
+          completed.add(id);
+        }
+      }catch{/* Keep failed entries selected so the user can inspect them. */}
+    }
+    if(generation===authGeneration){
+      selectedMessages=selectedMessages.filter(id=>!completed.has(id));selecting=selectedMessages.length>0;bulkConfirmation=null;
+      status='Подходящие сообщения обработаны. Остальные остались выделенными.';
+    }
+  }finally{if(generation===authGeneration)actionBusy=false;}
+}
 async function openQueueMessage(peer:string,id:string) {
   const generation=authGeneration;queueOverviewOpen=false;changeAccountView('chats');void openConversation(peer);await tick();
   requestAnimationFrame(()=>{if(generation===authGeneration&&sessionChats.activePeer===peer)jumpToMessage(id);});
 }
-async function cancelFile(peer: string, id: string): Promise<void> {
+async function cancelFile(peer: string, id: string,bulk=false): Promise<boolean> {
   const entry = sessionChats.byPeer[peer]?.messages.find(message => message.id === id);
-  if (!entry?.file || entry.nodeQueue || entry.fileStatus === 'ready' || ['delivered', 'read'].includes(entry.delivery ?? '')) return;
+  if (!entry?.file || entry.nodeQueue || entry.fileStatus === 'ready' || ['delivered', 'read'].includes(entry.delivery ?? '')) return false;
   clearFileRetry(peer, id);
   incomingFiles.delete(fileTransferKey(peer, id));
   updateFileEntry(peer, id, { fileStatus: 'canceled', fileProgress: 0, fileAccepted: false });
-  await persistLocalChats();
-  if (entry.direction === 'outgoing' && courierState.pending.some(j=>j.body.id===id)) await cancelNodeMessage(peer,id);
+  if(entry.direction==='outgoing')void notificationController?.cancelMessage(peer,id);
+  const saved=await persistLocalChats();
+  if (entry.direction === 'outgoing' && courierState.pending.some(j=>j.body.id===id)) return cancelNodeMessage(peer,id,bulk);
   if (chat) void chat.sendFileControl('cancel', id, peer).catch(() => {});
+  return saved;
 }
 
 async function sendFileData(peer: string, id: string, activeChat: ChatService): Promise<void> {
@@ -3382,7 +3455,7 @@ async function receiveFileChunk(peer: string, id: string, index: number, chunk: 
     await storeFileBytes(peer, id, transfer.bytes);
     if (!stillReceiving()) return;
     updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: transfer.received });
-    if (await persistLocalChats()) await activeChat.sendFileControl('received', id, peer);
+    if (await persistLocalChats()) { incomingNotification(peer); await activeChat.sendFileControl('received', id, peer); }
     else updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0 });
   } catch (e) {
 
@@ -3608,17 +3681,23 @@ async function copySelection():Promise<void>{
 }
 async function downloadSelection(): Promise<void> {
   const peer = sessionChats.activePeer; const generation = authGeneration;
-  const messages = sessionChats.byPeer[peer]?.messages.filter(message => selectedMessages.includes(message.id)) ?? [];
+  const messages = downloadableSelection(sessionChats.byPeer[peer]?.messages??[],selectedMessages);
   if (!messages.length || actionBusy) return;
-  if (messages.some(message => message.details?.ephemeral)) { status = 'Исчезающие сообщения скачиваются только из окна просмотра, если это разрешил автор. Уберите их из выбора.'; return; }
   actionBusy = true;
   try {
-    // Validate the ENTIRE selection before starting any browser downloads.
-    for (const message of messages) if (message.file) await prepareMessageFile(peer, message.id);
-    if (generation !== authGeneration || peer !== sessionChats.activePeer) return;
-    saveDownload(transcript(messages), `Automesh-messages-${new Date().toISOString().slice(0, 10)}.txt`);
-    for (const message of messages) if (message.file && !await downloadFile(peer,message.id)) throw new Error('Не все файлы удалось подготовить к скачиванию. Выбор сохранён.');
-    selectedMessages = []; selecting = false;
+    const size=messages.reduce((sum,m)=>sum+(m.file?.size??0)+m.text.length*4,0);
+    if(size>64*1024*1024)throw new Error('Для одного архива выберите не больше 64 МБ. Скачайте остальные файлы отдельно.');
+    const files:Record<string,Uint8Array>={'messages.txt':new TextEncoder().encode(transcript(messages))};
+    let index=0;
+    for(const message of messages)if(message.file){
+      const file=await prepareMessageFile(peer,message.id);
+      files[archiveFileName(file.name,index++)]=new Uint8Array(await file.arrayBuffer());
+    }
+    const hasFiles=index>0;
+    const bytes=hasFiles?(await import('fflate')).zipSync(files,{level:0}):files['messages.txt'];
+    if (generation !== authGeneration || peer !== sessionChats.activePeer||downloadableSelection(sessionChats.byPeer[peer]?.messages??[],messages.map(m=>m.id)).length!==messages.length) return;
+    saveDownload(bytes as BlobPart, `Automesh-messages-${new Date().toISOString().slice(0, 10)}.${hasFiles?'zip':'txt'}`);
+    const done=new Set(messages.map(m=>m.id));selectedMessages=selectedMessages.filter(id=>!done.has(id));selecting=selectedMessages.length>0;
     status = 'Файлы переданы браузеру для скачивания. Сохранение на диск управляется браузером.';
   } catch (error) { if (generation === authGeneration) status = error instanceof Error ? error.message : 'Не удалось подготовить скачивание. Выбор сохранён.'; }
   finally { if (generation === authGeneration) actionBusy = false; }
@@ -4248,6 +4327,7 @@ async function initializeChat() {
         const message = sessionChats.byPeer[peer]?.messages.find(msg => msg.id === id);
         if (!message || message.delivery === 'delivered' || message.delivery === 'read') return;
         sessionChats = setDeliveryStatus(sessionChats, peer, id, value);
+        if (value === 'stored') void notificationController?.tick(true);
         if (message.file && value === 'delivered') updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: message.file.size });
         if (value === 'delivered') outbox.acknowledge(peer, id);
       },
@@ -4295,6 +4375,7 @@ async function initializeChat() {
           if (chat !== nextChat) throw new Error('courier_session_closed');
           if (canceled()) throw new Error('attachment_canceled');
           updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: bytes.length });
+          incomingNotification(peer);
         },
         savePart: (peer, id, index, bytes) => storeFileBytes(peer, `${id}:courier:${index}`, bytes),
         loadPart: async (peer, id, index) => (await getFileBytes(peer, `${id}:courier:${index}`))?.slice() ?? null,
@@ -4310,6 +4391,7 @@ async function initializeChat() {
         const message = sessionChats.byPeer[peer]?.messages.find(msg => msg.id === id);
         if (!message || message.delivery === 'delivered' || message.delivery === 'read') return;
         sessionChats = setDeliveryStatus(sessionChats, peer, id, value);
+        if (value === 'stored') void notificationController?.tick(true);
         if (message.file && value === 'delivered') updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: message.file.size });
         if (value === 'delivered') outbox.acknowledge(peer, id);
       },
@@ -4468,7 +4550,6 @@ async function initializeChat() {
       if (chat === nextChat) sessionChats = previousChats;
       throw new Error('incoming_file_offer_not_saved');
     }
-    if (chat === nextChat) incomingNotification(peer);
   });
   nextChat.onFileControl(async (peer, id, action) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
@@ -4601,6 +4682,8 @@ async function initializeChat() {
       sendRoute: (peer, route) => nextChat.sendNotificationRoute(peer, route),
       connected: peer => nextChat.isDirectReady(peer) || nextChat.isIntroductionReady(peer),
       subscription: browserSubscription,
+      viewing: viewedNotificationChat,
+      permission: () => 'Notification' in window ? Notification.permission : 'unsupported',
       status: value => { if (chat === nextChat) notificationStatus = value; },
     });
     notificationController = controller;
@@ -5718,7 +5801,7 @@ async function changePassword(): Promise<void> {
             radio={{encryption:c.encryption,preview:last?.text||$i18n.text('Пока нет сообщений.'),status:last?.outgoing&&['queued','failed','unknown'].includes(last.status)?nativeMessageStatus(last).label:undefined}}/>
         {:else}
           <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]} introduction={introductionStates[item.id] ? introductionLabels[introductionStates[item.id]] : undefined}
-            self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)} />
+            self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)} muted={chatNotificationsMuted(notificationState,item.id,keyBudgetNow)} />
         {/if}
       {/each}
       {#if meshtastic.enabled&&meshtastic.channels.some(c=>!nativeLive.includes(nativeToken(c))&&c.messages.length)}<label class="native-saved-toggle"><input type="checkbox" checked={meshtastic.showAll} onchange={e=>void setNativePreferences({showAll:e.currentTarget.checked}).catch(error=>status=error.message)}/>{$i18n.text('Все сохранённые радиоканалы')}</label>{/if}
@@ -5742,6 +5825,8 @@ async function changePassword(): Promise<void> {
         </button>
         {#if selecting}
           <MessageSelectionBar messages={activeMessages} selected={selectedMessages} busy={actionBusy} onCopy={()=>void copySelection()}
+            retryCount={retrySelection.length} cancelCount={cancelSelection.length} downloadCount={downloadSelectionEntries.length}
+            onRetry={()=>openBulkAction('retry')} onCancel={()=>openBulkAction('cancel')}
             onToggleAll={toggleAllMessages} onForward={() => openChatAction('forward')}
             onDownload={() => void downloadSelection()} onDelete={() => openChatAction('delete')} />
         {:else}
@@ -5751,6 +5836,10 @@ async function changePassword(): Promise<void> {
         </button>
         {#if isRoutineConnectionNotice(activeConversation.error)}
           <ConnectionNotice text={activeConversation.error} onRetry={() => void openDirectChat(activeConversation.peerAddress)} />
+        {/if}
+        {#if activeConversation.peerAddress !== address && activeConversation.contact === 'accepted'}
+          <ChatNotificationMenu muted={chatNotificationsMuted(notificationState,activeConversation.peerAddress,keyBudgetNow)} until={notificationState.muted?.[activeConversation.peerAddress]}
+            disabled={navigationBusy()} onChange={duration=>changeChatNotificationMute(activeConversation.peerAddress,duration)} />
         {/if}
         {#if activeConversation.peerAddress !== address && activeConversation.contact === 'accepted'}
           <button class="select-messages-button" type="button" onclick={() => void startCall(activeConversation.peerAddress)}
@@ -6042,6 +6131,14 @@ async function changePassword(): Promise<void> {
   {#if actionMode}
     <ChatActionDialog mode={actionMode} rows={actionRows} busy={actionBusy} error={actionError}
       onConfirm={(ids) => void confirmChatAction(ids)} onClose={() => { if (!actionBusy) actionMode = null; }} />
+  {/if}
+  {#if bulkConfirmation}
+    <CompactDialog title={$i18n.text(bulkConfirmation.action==='retry'?'Повторить отправку':'Отменить отправки')} onClose={()=>{if(!actionBusy)bulkConfirmation=null;}}>
+      <p>{$i18n.text('Подходящих сообщений:')} {bulkConfirmation.ids.length}</p>
+      <p>{$i18n.text(bulkConfirmation.action==='retry'?'Завершённые и остановленные сообщения отправятся заново как новые. Ожидающие продолжат текущую отправку.':'Отмена применяется только к незавершённым передачам. Уже доставленные сообщения останутся у собеседника.')}</p>
+      <button disabled={actionBusy} onclick={()=>void confirmBulkAction()}>{$i18n.text('Продолжить')}</button>
+      <button disabled={actionBusy} onclick={()=>bulkConfirmation=null}>{$i18n.text('Назад')}</button>
+    </CompactDialog>
   {/if}
 {/if}
 </div>
