@@ -172,7 +172,9 @@ describe('home node authenticated API', () => {
   it('can disable LAN signaling without disabling HTTPS mailboxes and reports it correctly', async () => {
     const app = await start(undefined, { signalingEnabled: false, maxMessages: 2 });
     expect((await admin(app)).signaling).toMatchObject({ enabled: false, clients: 0 });
-    expect(await (await fetch(`${app.base}/node/info`)).json()).toMatchObject({ signalingEnabled: false, capabilities: ['opaque-mailbox', 'device-directory-v2'] });
+    const info=await (await fetch(`${app.base}/node/info`)).json();
+    expect(info).toMatchObject({signalingEnabled:false,capabilities:expect.arrayContaining(['opaque-mailbox','device-directory-v2'])});
+    expect(info.capabilities).not.toContain('signaling');
     const socket = new WebSocket(app.base.replace('http:', 'ws:') + '/signal');
     await once(socket, 'error'); socket.terminate();
     await pair(app);
