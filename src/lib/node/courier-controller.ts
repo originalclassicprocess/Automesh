@@ -423,6 +423,8 @@ export class CourierController {
       this.current();
       for (const m of c.messages.filter(m => eligible(m) && routeReady(m))) {
         const s = this.port.state(); if (s.pending.some(j => j.body.id === m.id)) continue;
+        if(m.file&&this.port.files?.beforeUpload?.(peer,m.file))continue;
+        if(!eligible(this.port.chats().byPeer[peer]?.messages.find(value=>value.id===m.id)??m))continue;
         if (m.file && (health.fileQueue?.protocol !== ATTACHMENT_PROTOCOL || bundle.body.attachmentProtocol !== ATTACHMENT_PROTOCOL ||
             m.file.size > Math.min(FILE_POLICY_BYTES, health.fileQueue?.maxFileBytes ?? 0, bundle.body.maxFileBytes ?? 0) || Object.keys(s.outgoingFiles).length >= 16)) { fileWait = true; continue; }
         if (count >= 10 || s.pending.length >= 100 || Object.keys(s.used).length >= 4096) break;
@@ -795,15 +797,18 @@ export class CourierController {
         this.update({ ...this.port.state(), incomingFiles: this.port.state().incomingFiles.filter(v => v !== r) }); await this.persist(); continue;
       }
       const reply = this.fileReplies.get(id);
-      if (!reply?.chunk || !io.accepted(peer, id) || this.port.chats().byPeer[peer]?.contact !== 'accepted') continue;
-      if (downloads++ >= 2) { this.wake(); continue; }
+      if (!reply?.chunk || this.port.chats().byPeer[peer]?.contact !== 'accepted') continue;
       let receiptSent = false, fileCommitted = false;
       try {
       validateCourierJob(job, job.body.courier); validateManifest(m, peer, this.port.address, id);
       if (job.body.to !== this.port.address || r.hop.body.id !== id || r.hop.body.courier !== job.body.courier || r.hop.body.digest !== await cipherDigest(job.body.packet)) throw new Error('invalid_courier_hop');
       if (JSON.stringify(m.attachment) !== JSON.stringify(job.body.attachment)) throw new Error('invalid_attachment_manifest');
       await verifyCourier(job, 'job', peer); await verifyCourier(r.hop, 'hop', job.body.courier); this.current();
-      for (let n = 0; n < 8 && r.nextIndex < m.attachment.chunks; n++) {
+      let cached=await io.cached?.(peer,m.offer)??null;this.current();
+      if(cached&&(cached.length!==m.offer.size||await attachmentHash(cached)!==m.offer.sha256)){cached.fill(0);cached=null;}this.current();
+      if(!cached&&!io.accepted(peer,id))continue;
+      if(downloads++>=2){cached?.fill(0);this.wake();continue;}
+      for (let n = 0; !cached&&n < 8 && r.nextIndex < m.attachment.chunks; n++) {
         if (!io.accepted(peer, id) || this.port.chats().byPeer[peer]?.contact !== 'accepted') break;
         const index = r.nextIndex;
         const request = await signCourier('attachment-request', { protocol: ATTACHMENT_PROTOCOL, from: this.port.address, to: job.body.courier,
@@ -815,10 +820,10 @@ export class CourierController {
         io.progress(peer, id, Math.min(m.offer.size, r.nextIndex * m.attachment.chunkBytes), false);
         await this.persist(); await this.pace(reply.pull ? 250 : 75);
       }
-      if (r.nextIndex < m.attachment.chunks) { if (io.accepted(peer, id)) this.wake(); continue; }
-      const plain = new Uint8Array(m.offer.size); let offset = 0;
+      if (!cached&&r.nextIndex < m.attachment.chunks) { if (io.accepted(peer, id)) this.wake(); continue; }
+      const plain = cached??new Uint8Array(m.offer.size); let offset = 0;
       try {
-        for (let index = 0; index < m.attachment.chunks; index++) {
+        for (let index = 0; !cached&&index < m.attachment.chunks; index++) {
           let bytes: Uint8Array | null = null;
           try { bytes = await io.loadPart(peer, id, index); } catch { this.current(); } this.current();
           if (!bytes || bytes.length !== Math.min(m.attachment.chunkBytes, Math.max(0, m.offer.size - offset))) {

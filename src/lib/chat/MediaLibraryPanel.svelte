@@ -2,7 +2,7 @@
   import { tr as i18n } from '$lib/i18n/language';
   import { untrack } from 'svelte';
   import CompactDialog from '$lib/application/CompactDialog.svelte';
-  import { addMedia, pruneMedia, type MediaAsset, type MediaLibrary, type PreparedMedia, type StickerPack } from './media-library';
+  import { addMedia, pruneMedia, editMediaPack, makePack, type MediaAsset, type MediaLibrary, type PreparedMedia, type StickerPack } from './media-library';
   import { type PreparedPack } from './sticker-pack';
   import { prepareMediaImport } from './media-import';
   import { formatBytes } from '$lib/application/storage-summary';
@@ -19,23 +19,25 @@
   let removeFromPack = $state<StickerPack | null>(null);
   let limit = $state(60);
   let dragging = $state(false);
-  let selecting = $state(false), checked = $state<string[]>([]), packPickerOpen = $state(false);
+  let selecting = $state(false), checked = $state<string[]>([]), editing=$state(false),editName=$state('');
+  let appendInput=$state<HTMLInputElement>(),appendTarget=$state('');
   let bulkRemove = $state<{hashes: string[]; tab: 'gifs' | 'stickers'; packId: string} | null>(null);
-  const selected = $derived(library.packs.find(p => p.id === selectedPack));
-  const hashes = $derived(tab === 'gifs' ? library.gifs : selected ? selected.assets : [...new Set(library.packs.flatMap(p => p.assets))]);
-  const assets = $derived(library.assets.filter(a => hashes.includes(a.hash) && (!favoriteOnly || a.favorite) && a.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a,b) => b.usedAt-a.usedAt));
+  const selected = $derived(library.packs.find(p => p.id === selectedPack)??library.packs[0]);
+  const hashes = $derived(tab === 'gifs' ? library.gifs : selected?.assets??[]);
+  const assets = $derived(hashes.map(hash=>library.assets.find(a=>a.hash===hash)).filter((a):a is MediaAsset=>!!a&&(!favoriteOnly||a.favorite)&&a.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
   $effect(() => { tab; selectedPack; query; favoriteOnly; checked=[]; selecting=false; });
   function toggle(hash: string) { checked = checked.includes(hash) ? checked.filter(value=>value!==hash) : [...checked,hash]; }
   async function confirmBulkRemove() {
     const choice=bulkRemove; if (!choice) return;
     await run(async () => {
-      await commit(await removeMediaSelection(library,choice.hashes,choice.tab,choice.packId));
-      bulkRemove=null; checked=[]; selecting=false; selectedPack=''; notice='Выбранное удалено из библиотеки. Сообщения в чатах сохранены.';
+      const at=library.packs.findIndex(p=>p.id===choice.packId),next=await removeMediaSelection(library,choice.hashes,choice.tab,choice.packId);
+      await commit(next);
+      bulkRemove=null; checked=[]; selecting=false;selectedPack=next.packs[Math.max(0,at)]?.id??'';notice='Выбранное удалено из библиотеки. Сообщения в чатах сохранены.';
     });
   }
   async function run(action: () => Promise<void>) { if (busy) return; busy=true; error=''; notice=''; try { await action(); } catch(e) { error=e instanceof Error ? e.message : 'Не удалось выполнить действие.'; } finally { busy=false; } }
   $effect(() => {
-    const shown = assets.slice(0,limit); let alive=true; const created: string[]=[];
+    const shown = [...new Map([...assets.slice(0,limit),...library.packs.map(p=>library.assets.find(a=>a.hash===p.assets[0])).filter((a):a is MediaAsset=>!!a)].map(a=>[a.hash,a])).values()]; let alive=true; const created: string[]=[];
     urls={};
     void (async () => { for (const asset of shown) {
       try { const bytes=await load(asset.hash); if (!alive) return; if (!bytes) continue;
@@ -54,7 +56,7 @@
     await run(async () => {
       const result = await prepareMediaImport(files, destination, name);
       if (result.kind === 'gifs') { await commit(addMedia(library,result.files),result.files); notice=`GIF добавлены: ${result.files.length}.`; }
-      else pending={pack:result.pack,files:result.files};
+      else {pending={pack:result.pack,files:result.files};name=result.pack.name;}
     });
   }
   function fileDrag(event: DragEvent): boolean { return Boolean(event.dataTransfer?.types.includes('Files')); }
@@ -76,12 +78,22 @@
   // Never navigate the browser to a dropped file, even on the dialog header/backdrop.
   function preventFileNavigation(event: DragEvent) { if (fileDrag(event)) event.preventDefault(); }
   async function favorite(asset: MediaAsset) { await run(()=>commit({...library,assets:library.assets.map(a=>a.hash===asset.hash?{...a,favorite:!a.favorite}:a)})); }
+  async function editPack(pack:StickerPack,name:string,hashes:string[],files:PreparedMedia[]=[]){
+    const at=library.packs.findIndex(p=>p.id===pack.id),next=await editMediaPack(library,pack.id,name,hashes,files);
+    await commit(next,files);selectedPack=next.packs[at]?.id??'';editing=false;checked=[];selecting=false;
+  }
+  async function appendFiles(event:Event){
+    const field=event.currentTarget as HTMLInputElement,files=Array.from(field.files??[]);field.value='';
+    const target=library.packs.find(p=>p.id===appendTarget);appendTarget='';if(!files.length||!target)return;
+    await run(async()=>{const result=await prepareMediaImport(files,'stickers',target.name);if(result.kind!=='pack')return;await editPack(target,target.name,[...target.assets,...result.pack.assets],result.files);notice='Набор обновлён.';});
+  }
   async function confirmRemove() { const item=remove; if (!item) return; await run(async()=> {
     let next: MediaLibrary;
     if (!('assets' in item) && removeFromPack) {
       next=await removeMediaSelection(library,[item.hash],'stickers',removeFromPack.id);
     } else next='assets' in item ? {...library,packs:library.packs.filter(p=>p.id!==item.id)} : {...library,gifs:library.gifs.filter(h=>h!==item.hash)};
-    await commit(pruneMedia(next)); remove=null; removeFromPack=null; selectedPack=''; checked=[]; selecting=false; notice='Удалено из библиотеки. Сообщения в чатах сохранены.';
+    const at=library.packs.findIndex(p=>p.id===(removeFromPack?.id??('assets'in item?item.id:'')));
+    await commit(pruneMedia(next)); remove=null; removeFromPack=null; selectedPack=next.packs[Math.max(0,at)]?.id??''; checked=[]; selecting=false; notice='Удалено из библиотеки. Сообщения в чатах сохранены.';
   }); }
 </script>
 <svelte:window ondragover={preventFileNavigation} ondrop={preventFileNavigation} />
@@ -92,13 +104,13 @@
     <button disabled={busy} class:active={tab==='gifs'} onclick={()=>{tab='gifs';limit=60;}}><span aria-hidden="true">🖼️</span> GIF</button>
   </div>
   <p class="storage">{$i18n("m_858ed3453b55", {v0: ($i18n.system(formatBytes(library.assets.reduce((s,a)=>s+a.size,0)))), v1: (persistent?$i18n.text("На этом устройстве"):$i18n.text("Только до выхода"))})}</p>
-  <p class="drop-hint" role="status">{dragging ? $i18n.text("Отпустите файлы для добавления") : tab === 'gifs' ? $i18n.text("Перетащите сюда GIF — можно несколько сразу.") : $i18n.text("Перетащите сюда ZIP-набор или картинки.")}</p>
+  {#if dragging}<p class="drop-hint" role="status">{$i18n.text("Отпустите файлы для добавления")}</p>{/if}
   {#if error}<p role="alert" class="error">{$i18n.text(error)}</p>{/if}
   {#if notice}<p role="status">{$i18n.text(notice)}</p>{/if}
   {#if pending}
     <section class="confirm">
-      <strong>{pending.pack.name}</strong><p>{$i18n("m_d59d87f74b72", {v0: (pending.pack.assets.length), v1: ($i18n.system(formatBytes(pending.files.reduce((s,f)=>s+f.bytes.length,0))))})}</p>
-      <button disabled={busy} onclick={()=>void run(async()=>{const value=pending; if (!value)return; await commit(addMedia(library,value.files,value.pack),value.files); selectedPack=value.pack.id; pending=null; notice='Набор добавлен.';})}>{$i18n.text("Добавить набор")}</button>
+      <input aria-label={$i18n.text('Название нового набора')} bind:value={name} maxlength="64"/><p>{$i18n("m_d59d87f74b72", {v0: (pending.pack.assets.length), v1: ($i18n.system(formatBytes(pending.files.reduce((s,f)=>s+f.bytes.length,0))))})}</p>
+      <button disabled={busy||!name.trim()} onclick={()=>void run(async()=>{const value=pending; if (!value)return;const pack=name===value.pack.name?value.pack:await makePack(name,value.files); await commit(addMedia(library,value.files,pack),value.files); selectedPack=pack.id; pending=null; notice='Набор добавлен.';})}>{$i18n.text("Добавить набор")}</button>
       <button disabled={busy} onclick={()=>pending=null}>{$i18n.text("Отмена")}</button>
     </section>
   {:else if bulkRemove}
@@ -108,15 +120,24 @@
   {:else}
     <input class="hidden" bind:this={input} type="file" accept={tab==='gifs'?'image/gif':'.png,.webp,.gif,image/png,image/webp,image/gif'} multiple onchange={e=>void choose(e)} />
     <input class="hidden" bind:this={zipInput} type="file" accept=".zip,application/zip" onchange={e=>void choose(e)} />
+    <input class="hidden" bind:this={appendInput} type="file" accept=".png,.webp,.gif,image/png,image/webp,image/gif" multiple onchange={e=>void appendFiles(e)}/>
+    <div class="tools add-tools">
+      <button disabled={busy} onclick={()=>input?.click()}>{tab==='gifs'?$i18n.text('Добавить GIF'):$i18n.text('Создать набор')}</button>
+      {#if tab==='stickers'}<button disabled={busy} onclick={()=>zipInput?.click()}>{$i18n.text('Импорт ZIP')}</button>{/if}
+    </div>
     {#if tab==='stickers' && library.packs.length}
-      <button class="pack-picker" disabled={busy} aria-expanded={packPickerOpen} onclick={()=>packPickerOpen=!packPickerOpen}>{selected?`${selected.name} · ${selected.assets.length}`:$i18n.text("Все наборы")}</button>
-      {#if packPickerOpen}<div class="pack-options" role="group" aria-label={$i18n.text("Выбрать набор")}><button disabled={busy} onclick={()=>{selectedPack='';packPickerOpen=false;}}>{$i18n.text("Все наборы")}</button>{#each library.packs as pack}<button disabled={busy} aria-pressed={pack.id===selectedPack} onclick={()=>{selectedPack=pack.id;packPickerOpen=false;}}>{pack.name} · {pack.assets.length}</button>{/each}</div>{/if}
-      {#if selected}<button disabled={busy} class="delete-pack" onclick={()=>{remove=selected;removeFromPack=null;}}>{$i18n.text("Удалить набор целиком")}</button>{/if}
+      <div class="pack-strip" role="group" aria-label={$i18n.text("Выбрать набор")}>{#each library.packs as pack(pack.id)}<button disabled={busy} title={pack.name} class:active={pack.id===selected?.id} aria-pressed={pack.id===selected?.id} onclick={()=>{selectedPack=pack.id;limit=60;editing=false;}}>{#if urls[pack.assets[0]]}<img src={urls[pack.assets[0]]} alt=""/>{/if}<span><strong>{pack.name}</strong><small>{pack.assets.length}</small></span></button>{/each}</div>
+      {#if editing&&selected}<section class="confirm"><input aria-label={$i18n.text('Название набора')} bind:value={editName} maxlength="64"/><div class="tools">
+        <button disabled={busy||!editName.trim()} onclick={()=>void run(()=>editPack(selected!,editName,selected!.assets))}>{$i18n.text('Сохранить название')}</button>
+        <button disabled={busy} onclick={()=>{appendTarget=selected!.id;appendInput?.click();}}>{$i18n.text('Добавить стикеры')}</button>
+        <button disabled={busy||!canSend} onclick={()=>void run(()=>share(selected!))}>{$i18n.text('Отправить набор')}</button>
+        <button disabled={busy} onclick={()=>void run(()=>exportPack(selected!))}>{$i18n.text('Экспорт')}</button>
+        <button disabled={busy} class="delete-pack" onclick={()=>{remove=selected!;removeFromPack=null;}}>{$i18n.text('Удалить набор целиком')}</button>
+      </div><p class="storage">{$i18n.text('Стикер можно удалить из набора или сделать его обложкой. Другие наборы и сообщения сохранятся.')}</p></section>{/if}
     {/if}
-    <div class="search"><input aria-label={$i18n.text("Поиск по библиотеке")} bind:value={query} placeholder={$i18n.text("Поиск")} /><button aria-label={$i18n.text("Только избранное")} title={$i18n.text("Избранное")} aria-pressed={favoriteOnly} onclick={()=>favoriteOnly=!favoriteOnly}>★</button></div>
-    {#if assets.length}<div class="tools selection-tools">
-      <button disabled={busy} aria-pressed={selecting} onclick={()=>{selecting=!selecting;checked=[];}}>{selecting?$i18n.text("Отмена выбора"):$i18n.text("Выбрать несколько")}</button>
-      {#if selecting}<button disabled={busy} onclick={()=>checked=assets.map(asset=>asset.hash)}>{$i18n("m_d5bf7fd246e3", {v0: (assets.length)})}</button><button disabled={busy || !checked.length} onclick={()=>bulkRemove={hashes:[...checked],tab,packId:selectedPack}}>{$i18n("m_325670185bb8", {v0: (checked.length)})}</button>{/if}
+    <div class="search"><input aria-label={$i18n.text("Поиск по библиотеке")} bind:value={query} placeholder={$i18n.text("Поиск")} /><button aria-label={$i18n.text("Только избранное")} title={$i18n.text("Избранное")} aria-pressed={favoriteOnly} onclick={()=>favoriteOnly=!favoriteOnly}>★</button><button disabled={busy||!assets.length} aria-label={selecting?$i18n.text('Отмена выбора'):$i18n.text('Выбрать несколько')} aria-pressed={selecting} onclick={()=>{selecting=!selecting;checked=[];}}>☑</button>{#if tab==='stickers'&&selected}<button disabled={busy} aria-label={$i18n.text('Изменить набор')} title={$i18n.text('Изменить набор')} onclick={()=>{editing=!editing;editName=selected!.name;}}>⋯</button>{/if}</div>
+    {#if assets.length&&selecting}<div class="tools selection-tools">
+      {#if selecting}<button disabled={busy} onclick={()=>checked=assets.map(asset=>asset.hash)}>{$i18n("m_d5bf7fd246e3", {v0: (assets.length)})}</button><button disabled={busy || !checked.length} onclick={()=>bulkRemove={hashes:[...checked],tab,packId:tab==='stickers'?selected?.id??'':''}}>{$i18n("m_325670185bb8", {v0: (checked.length)})}</button>{/if}
     </div>{/if}
     {#if !assets.length}<p class="empty">{tab==='gifs'?$i18n.text("Добавьте GIF с устройства."):$i18n.text("Создайте набор из PNG, WebP или GIF либо импортируйте ZIP Automesh.")}</p>{/if}
     <div class="grid">
@@ -125,23 +146,12 @@
           <button class="tile" disabled={busy || (!selecting && !canSend)} aria-pressed={selecting?checked.includes(asset.hash):undefined} title={selecting?$i18n.text("Выбрать"):canSend?$i18n("m_02e85d29ad00", {v0: (asset.name)}):asset.name} aria-label={`${selecting?$i18n.text("Выбрать"):$i18n.text("Отправить")} ${asset.name}`} onclick={()=>{if(selecting)toggle(asset.hash);else void run(()=>send(asset,tab==='stickers'?(selected??library.packs.find(p=>p.assets.includes(asset.hash))):undefined));}}>
             {#if urls[asset.hash]}<img src={urls[asset.hash]} alt={asset.name} loading="lazy" />{:else}<span>…</span>{/if}
           </button>
-          {#if selecting}<span class="selection-mark" aria-hidden="true">{checked.includes(asset.hash)?'●':'○'}</span>{:else}<div class="item-tools"><button disabled={busy} aria-label={asset.favorite?$i18n.text("Убрать из избранного"):$i18n.text("В избранное")} aria-pressed={asset.favorite} onclick={()=>void favorite(asset)}>{asset.favorite?'★':'☆'}</button>{#if tab==='gifs' || selected}<button disabled={busy} aria-label={$i18n("m_ac211154a076", {v0: (asset.name)})} onclick={()=>{remove=asset;removeFromPack=tab==='stickers'?selected??null:null;}}>×</button>{/if}</div>{/if}
+          {#if selecting}<span class="selection-mark" aria-hidden="true">{checked.includes(asset.hash)?'●':'○'}</span>{:else}<div class="item-tools"><button disabled={busy} aria-label={asset.favorite?$i18n.text("Убрать из избранного"):$i18n.text("В избранное")} aria-pressed={asset.favorite} onclick={()=>void favorite(asset)}>{asset.favorite?'★':'☆'}</button>{#if tab==='gifs' || selected}<button disabled={busy} aria-label={$i18n("m_ac211154a076", {v0: (asset.name)})} onclick={()=>{remove=asset;removeFromPack=tab==='stickers'?selected??null:null;}}>×</button>{/if}{#if editing&&selected&&selected.assets[0]!==asset.hash}<button disabled={busy} aria-label={$i18n.text('Сделать обложкой')} title={$i18n.text('Сделать обложкой')} onclick={()=>void run(()=>editPack(selected!,selected!.name,[asset.hash,...selected!.assets.filter(h=>h!==asset.hash)]))}>▣</button>{/if}</div>{/if}
         </article>
       {/each}
     </div>
     {#if assets.length>limit}<button onclick={()=>limit+=60}>{$i18n.text("Показать ещё")}</button>{/if}
-    <details open={!library.assets.length}>
-      <summary>{$i18n.text("Добавить и управлять")}</summary>
-      <div class="tools">
-        {#if tab==='stickers'}<input aria-label={$i18n.text("Название нового набора")} bind:value={name} maxlength="64" placeholder={$i18n.text("Название набора")} />{/if}
-        <button disabled={busy} onclick={()=>input?.click()}>{tab==='gifs'?$i18n.text("Добавить GIF"):$i18n.text("Создать из картинок")}</button>
-        {#if tab==='stickers'}<button disabled={busy} onclick={()=>zipInput?.click()}>{$i18n.text("Импорт ZIP")}</button>{/if}
-      </div>
-      {#if tab==='stickers' && selected}
-        <div class="tools"><button disabled={busy} onclick={()=>void run(async()=>{await exportPack(selected);notice='ZIP экспортирован.';})}>{$i18n.text("Экспорт")}</button><button disabled={busy || !canSend} onclick={()=>void run(async()=>{await share(selected);notice='Набор добавлен в очередь.';})}>{$i18n.text("Отправить набор")}</button></div>
-        <p class="storage">{$i18n.text("Экспортированный ZIP не зашифрован.")}</p>
-      {/if}
-    </details>
+    {#if library.cached?.length}<details><summary>{$i18n.text('Кэш стикеров')}</summary><p class="storage">{$i18n.text('Одинаковые стикеры хранятся один раз в этом профиле.')}</p><button disabled={busy} onclick={()=>void run(()=>commit(pruneMedia({...library,cached:[]})))}>{$i18n.text('Очистить неиспользуемый кэш')}</button></details>{/if}
     {#if busy}<p role="status">{$i18n.text("Обрабатываем…")}</p>{/if}
   {/if}
   </section>
@@ -153,11 +163,10 @@
   .tabs,.tools,.search,.item-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .tabs button { flex:1; } .active { background:var(--accent-soft,#e4f3ef); border-color:var(--accent,#176b63); }
   button { min-height:40px; padding:8px 10px; font-size:16px; } input { font-size:16px; min-width:0; max-width:100%; box-sizing:border-box; padding:10px; }
-  .tools,.search { margin:12px 0; } .tools input { flex:1 1 100%; width:100%; } .search input { flex:1; width:120px; }
+  .tools,.search { margin:12px 0; } .search input { flex:1; width:120px; }
   .storage,.empty { font-size:13px; color:var(--text-muted,#536b77); } .error { color:var(--danger); }
   .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; } article { min-width:0; }
-  .pack-picker { width:100%; text-align:left; border-radius:14px; } .pack-options { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid var(--line); border-radius:14px; max-height:240px; overflow:auto; }
-  .pack-options button { text-align:left; border-radius:12px; } .delete-pack { margin-top:8px; color:var(--danger); } .checked .tile { border:2px solid var(--accent); background:var(--accent-soft); }
+  .pack-strip{display:flex;gap:8px;overflow-x:auto;padding:6px 0 10px;scroll-snap-type:x proximity}.pack-strip button{display:flex;gap:7px;align-items:center;min-width:125px;max-width:190px;text-align:left;flex-shrink:0;scroll-snap-align:start;border-radius:12px}.pack-strip img{width:42px;height:42px;object-fit:contain}.pack-strip span{min-width:0;overflow-wrap:anywhere;font-size:13px}.pack-strip strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;font-weight:normal;line-height:16px}.pack-strip small{display:block;color:var(--muted)}.delete-pack { color:var(--danger); } .checked .tile { border:2px solid var(--accent); background:var(--accent-soft); }
   .selection-mark { display:block; text-align:center; color:var(--accent); font-size:22px; } .tile { border-radius:14px; }
   .tile { width:100%; height:100px; padding:5px; display:grid; place-items:center; background:var(--surface,#f5f9fa); }
   .tile img { max-width:100%; max-height:88px; object-fit:contain; } .item-tools { justify-content:center; }

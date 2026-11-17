@@ -5,8 +5,8 @@ export const LIBRARY_ITEMS = 1000;
 export const PACK_ITEMS = 100;
 export const HASH = /^[0-9a-f]{64}$/;
 export type MediaAsset = { id: string; hash: string; name: string; mime: string; size: number; favorite: boolean; usedAt: number };
-export type StickerPack = { id: string; name: string; assets: string[] };
-export type MediaLibrary = { assets: MediaAsset[]; gifs: string[]; packs: StickerPack[] };
+export type StickerPack = { id: string; name: string; assets: string[];previousIds?:string[] };
+export type MediaLibrary = { assets: MediaAsset[]; gifs: string[]; packs: StickerPack[]; cached?: string[] };
 export type PreparedMedia = { asset: MediaAsset; bytes: Uint8Array };
 export function emptyMediaLibrary(): MediaLibrary { return { assets: [], gifs: [], packs: [] }; }
 // Random storage names do not expose content fingerprints across profiles.
@@ -27,11 +27,12 @@ export function normalizeMediaLibrary(raw: unknown): MediaLibrary {
       favorite: asset.favorite === true, usedAt: Number.isSafeInteger(asset.usedAt) && asset.usedAt > 0 ? asset.usedAt : 0 }); size += asset.size;
   }
   const exists = (hash: string) => empty.assets.some(a => a.hash === hash);
+  if(Array.isArray(value.cached))empty.cached=[...new Set(value.cached.filter(exists))].slice(0,LIBRARY_ITEMS);
   empty.gifs = Array.isArray(value.gifs) ? [...new Set(value.gifs.filter(hash => exists(hash) && empty.assets.find(a => a.hash === hash)?.mime === 'image/gif'))].slice(0, LIBRARY_ITEMS) : [];
   if (Array.isArray(value.packs)) for (const pack of value.packs.slice(0, 32)) {
     if (!pack || !HASH.test(pack.id) || empty.packs.some(p => p.id === pack.id) || !Array.isArray(pack.assets)) continue;
     const assets = [...new Set(pack.assets.filter(exists))].slice(0, PACK_ITEMS);
-    if (assets.length) empty.packs.push({ id: pack.id, name: mediaName(pack.name), assets });
+    if (assets.length) empty.packs.push({ id: pack.id, name: mediaName(pack.name), assets,...(Array.isArray(pack.previousIds)?{previousIds:[...new Set(pack.previousIds.filter(id=>HASH.test(id)&&id!==pack.id))].slice(0,32)}:{}) });
   }
   return empty;
 }
@@ -65,6 +66,27 @@ export async function makePack(name: string, files: PreparedMedia[]): Promise<St
   const id = await sha256Hex(new TextEncoder().encode(JSON.stringify({ name: packName, assets })));
   return { id, name: packName, assets };
 }
+export async function packFromAssets(name:string,assets:MediaAsset[]):Promise<StickerPack>{
+  const unique=[...new Map(assets.map(a=>[a.hash,a])).values()];
+  if(!unique.length||unique.length>PACK_ITEMS||unique.reduce((sum,a)=>sum+a.size,0)>MAX_FILE_BYTES-128*1024)throw Error('Набор — до 100 стикеров и 20 МБ с учётом архива.');
+  const packName=mediaName(name),hashes=unique.map(a=>a.hash);
+  return {id:await sha256Hex(new TextEncoder().encode(JSON.stringify({name:packName,assets:hashes}))),name:packName,assets:hashes};
+}
+export async function editMediaPack(library:MediaLibrary,id:string,name:string,hashes:string[],files:PreparedMedia[]=[]):Promise<MediaLibrary>{
+  const old=library.packs.find(p=>p.id===id);if(!old)throw Error('Набор не найден.');
+  const assets=[...new Map([...library.assets,...files.map(f=>f.asset)].map(a=>[a.hash,a])).values()];
+  if(hashes.some(h=>!assets.some(a=>a.hash===h)))throw Error('Набор неполный.');
+  const pack=await packFromAssets(name,hashes.map(h=>assets.find(a=>a.hash===h)!));
+  pack.previousIds=[...new Set([old.id,...old.previousIds??[],...library.packs.find(p=>p.id===pack.id)?.previousIds??[]])].filter(id=>id!==pack.id).slice(0,32);
+  const next=addMedia({...library,packs:library.packs.filter(p=>p.id!==id)},files,pack);
+  const at=library.packs.findIndex(p=>p.id===id);next.packs=next.packs.filter(p=>p.id!==pack.id);next.packs.splice(at,0,pack);
+  return pruneMedia(next);
+}
+export function cacheMedia(library:MediaLibrary,file:PreparedMedia):MediaLibrary{
+  const next={...library,assets:library.assets.some(a=>a.hash===file.asset.hash)?library.assets:[...library.assets,file.asset],cached:[...new Set([...(library.cached??[]),file.asset.hash])]};
+  if(next.assets.length>LIBRARY_ITEMS||next.assets.reduce((s,a)=>s+a.size,0)>LIBRARY_BYTES)throw Error('Библиотека заполнена: до 100 МБ, 1000 файлов и 32 наборов. Удалите ненужное.');
+  return next;
+}
 export function addMedia(library: MediaLibrary, files: PreparedMedia[], pack?: StickerPack): MediaLibrary {
   const next: MediaLibrary = JSON.parse(JSON.stringify(library));
   for (const { asset } of files) if (!next.assets.some(a => a.hash === asset.hash)) next.assets.push(asset);
@@ -77,6 +99,6 @@ export function addMedia(library: MediaLibrary, files: PreparedMedia[], pack?: S
   return next;
 }
 export function pruneMedia(library: MediaLibrary): MediaLibrary {
-  const hashes = new Set([...library.gifs, ...library.packs.flatMap(p => p.assets)]);
+  const hashes = new Set([...library.gifs, ...library.packs.flatMap(p => p.assets),...(library.cached??[])]);
   return { ...library, assets: library.assets.filter(a => hashes.has(a.hash)) };
 }

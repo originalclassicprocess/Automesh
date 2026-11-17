@@ -13,7 +13,7 @@ export async function removeMediaSelection(library: MediaLibrary, hashes: string
     if (!assets.length) continue;
     const id = assets.length === pack.assets.length ? pack.id : await sha256Hex(new TextEncoder().encode(JSON.stringify({name:mediaName(pack.name), assets})));
     if (seen.has(id)) continue;
-    seen.add(id); packs.push({...pack,id,assets});
+    seen.add(id); packs.push({...pack,id,assets,...(id!==pack.id?{previousIds:[...new Set([pack.id,...pack.previousIds??[]])].filter(value=>value!==id).slice(0,32)}:{})});
   }
   return pruneMedia({...library,packs});
 }

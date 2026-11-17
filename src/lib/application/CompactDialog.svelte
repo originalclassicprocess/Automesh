@@ -2,7 +2,7 @@
   import { tr as i18n } from '$lib/i18n/language';
   import { onMount, type Snippet } from 'svelte';
   import ChatIcon from '$lib/chat/ChatIcon.svelte';
-  let { title, children, onClose }: { title: string; children: Snippet; onClose(): void } = $props();
+  let { title, children, onClose,literalTitle=false }: { title: string; children: Snippet; onClose(): void;literalTitle?:boolean } = $props();
   let dialog: HTMLDialogElement;
   onMount(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -10,8 +10,8 @@
     return () => { dialog.close(); if (previous?.isConnected && !previous.closest('[inert]')) previous.focus({ preventScroll: true }); };
   });
 </script>
-<dialog bind:this={dialog} aria-label={$i18n.text(title)} oncancel={event => { event.preventDefault(); onClose(); }}>
-  <header><h3>{$i18n.text(title)}</h3><button type="button" onclick={onClose} aria-label={$i18n.text("Закрыть")} title={$i18n.text("Закрыть")}><ChatIcon name="close" /></button></header>
+<dialog bind:this={dialog} aria-label={literalTitle?title:$i18n.text(title)} oncancel={event => { event.preventDefault(); onClose(); }}>
+  <header><h3>{literalTitle?title:$i18n.text(title)}</h3><button type="button" onclick={onClose} aria-label={$i18n.text("Закрыть")} title={$i18n.text("Закрыть")}><ChatIcon name="close" /></button></header>
   {@render children()}
 </dialog>
 <style>

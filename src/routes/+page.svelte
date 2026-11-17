@@ -43,7 +43,11 @@ import MediaViewer from '$lib/chat/MediaViewer.svelte';
 import PersistentAudio from '$lib/chat/PersistentAudio.svelte';
 import { isQueueAudio, type AudioQueueTrack } from '$lib/chat/audio-queue';
 import { contactMediaKind } from '$lib/chat/contact-media';
-import { emptyMediaLibrary, normalizeMediaLibrary, libraryFileId, isLibraryFileId, addMedia, makePack, prepareMedia, type MediaLibrary, type PreparedMedia, type MediaAsset, type StickerPack } from '$lib/chat/media-library';
+import { emptyMediaLibrary, normalizeMediaLibrary, libraryFileId, isLibraryFileId, addMedia, makePack, prepareMedia, cacheMedia, type MediaLibrary, type PreparedMedia, type MediaAsset, type StickerPack } from '$lib/chat/media-library';
+import {reusableMedia,reusableAsset,retainMessageMedia,rebaseMediaLibrary,linkCachedMedia,packRequested,packRequestAnswered}from'$lib/chat/media-cache';
+import StickerPackCard from'$lib/chat/StickerPackCard.svelte';
+import StickerPackPreview from'$lib/chat/StickerPackPreview.svelte';
+import{StickerCacheExchange}from'$lib/chat/sticker-cache-exchange';
 import { importStickerPack, exportStickerPack, type PreparedPack } from '$lib/chat/sticker-pack';
 import MessageTools from '$lib/chat/MessageTools.svelte';
 import { messageStatus } from '$lib/chat/message-presentation';
@@ -669,6 +673,7 @@ let mediaOpen = $state(false);
 let mediaTab = $state<'gifs' | 'stickers'>('stickers');
 let mediaBusy = $state(false);
 let receivedPack = $state.raw<PreparedPack | null>(null);
+let receivedPackPeer=$state('');
 let actionMode = $state<'forward' | 'contact' | 'delete' | null>(null);
 let bulkConfirmation=$state<{action:BulkAction;peer:string;ids:string[]}|null>(null);
 const retrySelection=$derived(bulkTasks(activeMessages,selectedMessages,'retry',address,new Set(courierState.pending.map(j=>j.body.id))));
@@ -1643,7 +1648,15 @@ function persistLocalChats(): Promise<boolean> {
     requireStorageEpoch(epoch);
     // A queued chat snapshot must not overwrite a library transaction that
     // completed ahead of it (nor leak another profile's library into this one).
-    if (address === accountId && generation === authGeneration) snapshot.mediaLibrary = normalizeMediaLibrary(mediaLibrary);
+    if (address === accountId && generation === authGeneration) {
+      snapshot.mediaLibrary = normalizeMediaLibrary(mediaLibrary);
+      // Cache linking can commit ahead of this previously captured snapshot.
+      // Preserve its durable references before old duplicate blobs are removed.
+      for(const peer of snapshot.chats.order)for(const m of snapshot.chats.byPeer[peer].messages){
+        const live=sessionChats.byPeer[peer]?.messages.find(row=>row.id===m.id);
+        if(!m.fileDeleted&&live?.mediaRef&&live.file?.sha256===m.file?.sha256)m.mediaRef=live.mediaRef;
+      }
+    }
     return saveLocalChatData(key, accountId, snapshot);
   });
   return saved.then(() => true, (e) => {
@@ -2960,11 +2973,17 @@ async function loadLibraryAsset(hash: string): Promise<Uint8Array | null> {
   return bytes;
 }
 async function commitMediaLibrary(next: MediaLibrary, files: PreparedMedia[] = [], expectedGeneration = authGeneration): Promise<void> {
+  const baseline=mediaLibrary;
+  const work=stickerStorageChain.catch(()=>{}).then(()=>commitMediaLibraryNow(rebaseMediaLibrary(next,baseline,mediaLibrary,sessionChats),files,expectedGeneration));
+  stickerStorageChain=work;
+  return work;
+}
+async function commitMediaLibraryNow(next: MediaLibrary, files: PreparedMedia[], expectedGeneration: number): Promise<void> {
   if (screen !== 'account' || expectedGeneration !== authGeneration) throw new Error('Профиль изменился.');
   if (navigationBusy()) throw new Error('Дождитесь завершения текущего действия.');
   const accountId = address; const generation = authGeneration; const key = chatStoreKey;
   const previous = mediaLibrary; const epoch = storageEpoch(); const durable = trustedSession;
-  const normalized = normalizeMediaLibrary(next);
+  const normalized = normalizeMediaLibrary(retainMessageMedia(next,previous,sessionChats));
   // Reimport can also repair a missing local asset after a partial backup.
   const additions = new Map(files.filter(f => normalized.assets.some(a=>a.hash===f.asset.hash)).map(f => [libraryFileId(normalized.assets.find(a=>a.hash===f.asset.hash)!.id), f.bytes]));
   const removed = previous.assets.filter(a => !normalized.assets.some(b => b.hash === a.hash)).map(a => libraryFileId(a.id));
@@ -3019,12 +3038,12 @@ async function sendLibraryAsset(asset: MediaAsset, pack?: StickerPack): Promise<
   await commitMediaLibrary({...mediaLibrary,assets:mediaLibrary.assets.map(a=>a.hash===asset.hash?{...a,usedAt:Date.now()}:a)});
   mediaOpen=false;
 }
-async function shareLibraryPack(pack: StickerPack, peer = sessionChats.activePeer): Promise<void> {
+async function shareLibraryPack(pack: StickerPack, peer = sessionChats.activePeer,request?:ChatEntry): Promise<void> {
   const generation = authGeneration;
   const zip = exportStickerPack(pack,await preparedLibraryPack(pack));
   if (generation !== authGeneration || sessionChats.activePeer !== peer) throw new Error('Чат изменился.');
   await sendLibraryFile(new File([zip as BlobPart],`${safeFileName(pack.name)}.automesh-stickers.zip`,{type:'application/zip'}),
-    {allowForwardAttribution,media:{kind:'sticker-pack',packId:pack.id,packName:pack.name}},peer);
+    {allowForwardAttribution,media:{kind:'sticker-pack',packId:pack.id,packName:pack.name},...(request?{reply:{id:request.id,from:peer,preview:request.text.slice(0,280)}}:{})},peer);
   status='Набор добавлен в очередь файлов.';
 }
 async function downloadLibraryPack(pack: StickerPack): Promise<void> {
@@ -3039,7 +3058,7 @@ async function saveMessageMedia(peer: string, message: ChatEntry): Promise<void>
     const bytes=new Uint8Array(await file.arrayBuffer());
     if (message.details?.media?.kind==='sticker-pack') {
       const pack=await importStickerPack(bytes,message.details.media.packId);
-      if (generation===authGeneration && sessionChats.activePeer===peer) receivedPack=pack;
+      if (generation===authGeneration && sessionChats.activePeer===peer){receivedPack=pack;receivedPackPeer=peer;}
       return;
     }
     const media=await prepareMedia(bytes,file.name);
@@ -3054,21 +3073,129 @@ async function saveMessageMedia(peer: string, message: ChatEntry): Promise<void>
 }
 async function acceptReceivedPack(): Promise<void> {
   const pack=receivedPack; if (!pack) return;
-  try { await commitMediaLibrary(addMedia(mediaLibrary,pack.files,pack.pack),pack.files); receivedPack=null; status='Стикерпак добавлен.'; }
-  catch(e) { status=e instanceof Error?e.message:'Не удалось добавить набор.'; }
+  try { await commitMediaLibrary(addMedia(mediaLibrary,pack.files,pack.pack),pack.files); status='Стикерпак добавлен.'; }
+  catch(e) { status=e instanceof Error?e.message:'Не удалось добавить набор.';throw e; }
 }
 async function requestStickerPack(peer: string, details: NonNullable<MessageDetails['media']>): Promise<void> {
+  if(!details.packId||mediaLibrary.packs.some(p=>p.id===details.packId)||packRequested(sessionChats.byPeer[peer]?.messages??[],details.packId))return;
   try { await queueRichMessage(peer,`Можно прислать набор «${details.packName}»?`,{allowForwardAttribution,media:{...details,kind:'pack-request'}}); status='Запрос отправлен. Собеседник решает, присылать ли набор.'; }
   catch(e) { status=e instanceof Error?e.message:'Не удалось отправить запрос.'; }
 }
-async function answerPackRequest(pack: StickerPack, peer: string): Promise<void> {
-  try { await shareLibraryPack(pack,peer); }
+async function answerPackRequest(pack: StickerPack, peer: string,request?:ChatEntry): Promise<void> {
+  try { await shareLibraryPack(pack,peer,request); }
   catch(e) { status=e instanceof Error?e.message:'Не удалось отправить набор.'; }
 }
+async function previewMessagePack(peer:string,message:ChatEntry):Promise<PreparedPack>{
+  const generation=authGeneration,file=await prepareMessageFile(peer,message.id);
+  const result=await importStickerPack(new Uint8Array(await file.arrayBuffer()),message.details?.media?.packId);
+  if(generation!==authGeneration||sessionChats.activePeer!==peer)throw Error('Чат изменился.');return result;
+}
+async function sendPreviewSticker(file:PreparedMedia):Promise<void>{
+  const pack=receivedPack,peer=receivedPackPeer;if(!pack||sessionChats.activePeer!==peer)throw Error('Чат изменился.');
+  await sendLibraryFile(new File([file.bytes as BlobPart],file.asset.name,{type:file.asset.mime}),{media:{kind:'sticker',packId:pack.pack.id,packName:pack.pack.name},allowForwardAttribution},peer);
+  receivedPack=null;
+}
+let stickerStorageChain:Promise<unknown>=Promise.resolve(),migratedStickerGeneration=-1;
+let stickerExchange:StickerCacheExchange|null=null;
+const completingCachedStickers=new Set<string>();
+async function completeCachedStickerOffers(hash:string):Promise<void>{
+ if(completingCachedStickers.has(hash))return;completingCachedStickers.add(hash);
+ const generation=authGeneration;
+ try{
+  const pending=sessionChats.order.flatMap(peer=>sessionChats.byPeer[peer].messages.map(m=>({peer,m}))).filter(({m})=>m.direction==='incoming'&&m.file?.sha256===hash&&!m.restoredFromBackup&&!m.importedFromDevice&&!m.fileDeleted&&!['ready','canceled','rejected'].includes(m.fileStatus??''));
+  for(const{peer,m}of pending.slice(0,32)){
+   if(generation!==authGeneration||endingSession||memoryBusy)return;
+   if(courierState.incomingFiles.some(r=>r.job.body.id===m.id&&r.job.body.from===peer)){courierDelivery?.wake();continue;}
+   try{await useCachedSticker(peer,m.file!);}catch{/* Normal transfer remains available. */}
+  }
+ }finally{completingCachedStickers.delete(hash);}
+}
+async function cacheStickerBytes(bytes:Uint8Array,offer:FileOffer):Promise<string|undefined>{
+  if(!reusableMedia(offer))return;
+  const generation=authGeneration,owner=address,key=chatStoreKey,durable=trustedSession,epoch=storageEpoch();
+  const work=stickerStorageChain.catch(()=>{}).then(async()=>{
+    if(generation!==authGeneration||owner!==address||screen!=='account'||endingSession||memoryBusy)throw Error('Профиль изменился.');
+    const prepared=await prepareMedia(bytes,offer.name);
+    if(prepared.asset.hash!==offer.sha256||prepared.asset.mime!==offer.mime)throw Error('Файл отсутствует или повреждён.');
+    const next=cacheMedia(mediaLibrary,prepared),asset=next.assets.find(a=>a.hash===offer.sha256)!,id=libraryFileId(asset.id);
+    let exists=false;try{exists=!!await loadLibraryAsset(asset.hash);}catch{/* Reimport repairs corrupt/missing bytes. */}
+    if(generation!==authGeneration)throw Error('Профиль изменился.');
+    if(durable){
+      if(!key)throw Error('Хранилище недоступно.');
+      await historyWrites.enqueue(async()=>{
+        requireStorageEpoch(epoch);if(generation!==authGeneration)throw Error('Профиль изменился.');
+        const merged=cacheMedia(mediaLibrary,{...prepared,asset});
+        const linked=linkCachedMedia(sessionChats,asset);
+        await saveLocalSessionData(key,owner,{...chatSnapshot(),chats:saveChats(linked.chats),mediaLibrary:merged},exists?new Map():new Map([[id,bytes]]));
+        if(generation===authGeneration){mediaLibrary=merged;sessionChats=linkCachedMedia(sessionChats,asset).chats;}
+        // The alias and verified canonical bytes are durable before cleanup.
+        // Other readers may still own the old buffer, so do not zero it here.
+        await deleteLocalFiles(owner,linked.logical).catch(()=>{});
+        if(generation===authGeneration)for(const logical of linked.logical)sessionFiles.delete(logical);
+      });
+    }else{if(!exists)sessionFiles.set(id,bytes.slice());mediaLibrary=next;const linked=linkCachedMedia(sessionChats,asset);sessionChats=linked.chats;for(const logical of linked.logical)sessionFiles.delete(logical);}
+    return asset.id;
+  });
+  stickerStorageChain=work;return work;
+}
+async function migrateStickerCopies(generation:number):Promise<void>{
+  if(migratedStickerGeneration===generation)return;migratedStickerGeneration=generation;
+  const seen=new Set<string>();
+  const candidates=sessionChats.order.flatMap(peer=>sessionChats.byPeer[peer].messages.map(m=>({peer,m}))).filter(({m})=>m.file&&!m.fileDeleted&&reusableMedia({...m.file,details:m.details??m.file.details}));
+  for(const{peer,m}of candidates){
+    if(generation!==authGeneration||screen!=='account'||endingSession||memoryBusy||panicBusy)return;
+    if(!m.file||seen.has(m.file.sha256))continue;seen.add(m.file.sha256);
+    try{const bytes=await getFileBytes(peer,m.id);if(bytes)await cacheStickerBytes(bytes,{...m.file,details:m.details??m.file.details});}catch{/* Missing old bytes never erase the original reference. */}
+    await new Promise(resolve=>setTimeout(resolve,0));
+  }
+}
+async function cachedSticker(offer:FileOffer):Promise<Uint8Array|null>{
+  if(!reusableMedia(offer))return null;
+  const asset=reusableAsset(mediaLibrary,offer);if(!asset)return null;
+  try{return (await loadLibraryAsset(asset.hash))?.slice()??null;}catch{return null;}
+}
+async function useCachedSticker(peer:string,offer:FileOffer,ack?:()=>Promise<void>,timestamp?:number):Promise<boolean>{
+  const activeChat=chat,generation=authGeneration,bytes=await cachedSticker(offer);
+  if(!bytes)return false;
+  try{
+    if(!activeChat||chat!==activeChat||generation!==authGeneration||sessionChats.byPeer[peer]?.contact!=='accepted')return false;
+    let entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===offer.id);
+    if(!entry&&timestamp&&!sessionChats.byPeer[peer]?.deletedIds?.includes(offer.id)){
+      sessionChats=receiveFileMessage(sessionChats,{id:offer.id,text:'',from:peer,timestamp,direction:'incoming',file:offer,details:offer.details,fileStatus:'offered',fileProgress:0});
+      entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===offer.id);
+    }
+    if(!entry||entry.fileDeleted||['canceled','rejected'].includes(entry.fileStatus??''))return false;
+    if(entry.direction!=='incoming'||JSON.stringify(entry.file)!==JSON.stringify(offer))return false;
+    const ref=await cacheStickerBytes(bytes,offer);if(!ref)return false;
+    if(generation!==authGeneration||chat!==activeChat||sessionChats.byPeer[peer]?.contact!=='accepted')return false;
+    const latest=sessionChats.byPeer[peer]?.messages.find(m=>m.id===offer.id);
+    if(!latest||latest.fileDeleted||['canceled','rejected'].includes(latest.fileStatus??''))return false;
+    updateFileEntry(peer,offer.id,{mediaRef:ref,fileStatus:'ready',fileAccepted:true,fileProgress:offer.size});
+    if(!await persistLocalChats()){
+      sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.map(m=>m.id===offer.id&&!m.fileDeleted&&m.fileStatus==='ready'?{...m,fileStatus:entry!.fileStatus,fileAccepted:entry!.fileAccepted,fileProgress:entry!.fileProgress,mediaRef:entry!.mediaRef}:m)}));return false;
+    }
+    if(generation!==authGeneration||chat!==activeChat)return false;
+    incomingFiles.delete(fileTransferKey(peer,offer.id));
+    if(ack)await ack();else await activeChat.sendFileControl('received',offer.id,peer);
+    if(entry.fileStatus!=='ready')incomingNotification(peer);return true;
+  }finally{bytes.fill(0);}
+}
 
-async function storeFileBytes(peer: string, id: string, bytes: Uint8Array): Promise<void> {
+async function storeFileBytes(peer: string, id: string, bytes: Uint8Array,offer?:FileOffer): Promise<string|undefined> {
   if (memoryBusy || endingSession) throw new Error('storage_busy');
+  const generationForFile=authGeneration,epoch=storageEpoch();
   const storageId = fileTransferKey(peer, id);
+  const entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id),candidate=offer??entry?.file;
+  if(candidate&&reusableMedia(candidate)){
+    let ref:string|undefined;
+    try{ref=await cacheStickerBytes(bytes,candidate);}catch(error){
+      if(authGeneration!==generationForFile)throw error;
+      // A full optional cache must never prevent ordinary attachment delivery.
+    }
+    requireStorageEpoch(epoch);if(generationForFile!==authGeneration)throw Error('Профиль изменился.');
+    if(ref){if(entry)updateFileEntry(peer,id,{mediaRef:ref});void completeCachedStickerOffers(candidate.sha256);return ref;}
+  }
+  requireStorageEpoch(epoch);if(generationForFile!==authGeneration)throw Error('Профиль изменился.');
   if (trustedSession) {
     if (!chatStoreKey || !address) throw new Error('file_store_unavailable');
     const write = saveLocalFileData(chatStoreKey, address, storageId, bytes);
@@ -3079,6 +3206,11 @@ async function storeFileBytes(peer: string, id: string, bytes: Uint8Array): Prom
 
 async function getFileBytes(peer: string, id: string): Promise<Uint8Array | null> {
   const storageId = fileTransferKey(peer, id);
+  const message=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id);
+  if(message?.mediaRef&&!message.fileDeleted){
+    const physical=libraryFileId(message.mediaRef),bytes=sessionFiles.get(physical)??(chatStoreKey?await loadLocalFileData(chatStoreKey,address,physical):null);
+    if(bytes&&message.file&&bytes.length===message.file.size&&await sha256Hex(bytes)===message.file.sha256)return bytes;
+  }
   return sessionFiles.get(storageId) ?? (chatStoreKey ? await loadLocalFileData(chatStoreKey, address, storageId) : null);
 }
 
@@ -3119,6 +3251,8 @@ async function addAttachments(files: File[], rule?: MessageDetails['ephemeral'])
 }
 
 async function enqueueAttachment(file: File, peer: string, activeChat: ChatService, extra?: MessageDetails): Promise<boolean> {
+  let stagedId='',stagedDurable=false;
+  const generation=authGeneration;
   try {
     if (extra?.ephemeral && !extra.ephemeral.allowDownload && !/^(image\/(png|jpeg|webp|gif|avif)|audio\/|video\/)/.test(file.type)) throw new Error('Без скачивания пока поддерживаются только изображения, аудио и видео.');
     const source = new Uint8Array(await file.arrayBuffer());
@@ -3136,24 +3270,29 @@ async function enqueueAttachment(file: File, peer: string, activeChat: ChatServi
     if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
     const fileAccountId = address;
     const fileWasTrusted = trustedSession;
-    await storeFileBytes(peer, id, bytes);
+    stagedId=id;
+    sessionChats = recordSentMessage(sessionChats, peer, { id, text: '', from: address,
+      timestamp: Date.now(), direction: 'outgoing', details: offer.details, file: offer,
+      delivery: 'saving',
+      fileStatus: peer === address ? 'ready' : 'queued', fileProgress: peer === address ? bytes.length : 0 });
+    const mediaRef=await storeFileBytes(peer, id, bytes,offer);
+    stagedDurable=!!mediaRef&&fileWasTrusted;
     if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') {
       if (fileWasTrusted) void deleteLocalFileData(fileAccountId, fileTransferKey(peer, id)).catch(() => {});
       else sessionFiles.delete(fileTransferKey(peer, id));
       return false;
     }
-    sessionChats = recordSentMessage(sessionChats, peer, { id, text: '', from: address,
-      timestamp: Date.now(), direction: 'outgoing', details: offer.details, file: offer,
-      delivery: 'saving',
-      fileStatus: peer === address ? 'ready' : 'queued', fileProgress: peer === address ? bytes.length : 0 });
-    if (!await persistLocalChats()) {
+    // Shared bytes and the staged message were committed together by the cache.
+    if (!stagedDurable&&!await persistLocalChats()) {
       if (chat === activeChat) sessionChats = updateConversation(sessionChats,peer,c => ({...c,messages:c.messages.filter(m=>m.id!==id)}));
       if (fileWasTrusted) await deleteLocalFileData(fileAccountId, fileTransferKey(peer, id));
       else sessionFiles.delete(fileTransferKey(peer, id));
       throw new Error('Не удалось сохранить файл и историю.');
     }
+    stagedDurable=fileWasTrusted;
     if (chat !== activeChat || address !== fileAccountId) return false;
     sessionChats = setDeliveryStatus(sessionChats,peer,id,peer === address ? 'delivered' : 'queued');
+    if(peer!==address)void stickerExchange?.probe(peer,offer).finally(()=>courierDelivery?.wake());
     if (!extra) { const nextReplies = { ...replyDrafts }; delete nextReplies[peer]; replyDrafts = nextReplies; }
     if (peer === address) return true;
     courierDelivery?.wake();
@@ -3161,6 +3300,7 @@ async function enqueueAttachment(file: File, peer: string, activeChat: ChatServi
     else void activeChat.connect(peer).catch(() => {});
     return true;
   } catch (e) {
+    if(stagedId&&!stagedDurable&&generation===authGeneration&&chat===activeChat)sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.filter(m=>m.id!==stagedId||m.delivery!=='saving')}));
     if (chat === activeChat) status = e instanceof Error ? e.message : 'Не удалось добавить файл.';
     return false;
   }
@@ -3229,6 +3369,7 @@ function scheduleFileRetry(peer: string, id: string, activeChat: ChatService): v
 async function acceptFile(peer: string, id: string): Promise<void> {
   const entry = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id && message.direction === 'incoming');
   if (!entry?.file || entry.fileDeleted || !chat || memoryBusy || panicBusy || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
+  if(!courierState.incomingFiles.some(r=>r.job.body.id===id&&r.job.body.from===peer)&&await useCachedSticker(peer,entry.file))return;
   if (courierState.incomingFiles.some(r => r.job.body.id === id && r.job.body.from === peer)) {
     const receiving = courierState.incomingFiles.filter(r => r.job.body.id !== id && sessionChats.byPeer[r.job.body.from]?.messages.some(m => m.id === r.job.body.id && m.fileAccepted && m.fileStatus !== 'ready')).length;
     if (receiving + incomingFiles.size >= 2) { status = 'Одновременно можно получать не более двух файлов.'; return; }
@@ -4282,6 +4423,23 @@ async function initializeChat() {
   };
   transport.onNodesChange(updateNodes);
   const nextChat = new ChatService(transport);
+  const exchange=new StickerCacheExchange({
+    current:()=>chat===nextChat&&generation===authGeneration&&screen==='account'&&!endingSession&&!memoryBusy,
+    accepted:peer=>sessionChats.byPeer[peer]?.contact==='accepted',
+    ready:peer=>!nextChat.isDirectReady(peer)&&nextChat.isIntroductionReady(peer),
+    send:(peer,value)=>nextChat.sendMediaCache(peer,value),
+    receive:(peer,offer,timestamp)=>useCachedSticker(peer,offer,async()=>{},timestamp),
+    delivered:async(peer,id)=>{
+      const m=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id&&m.direction==='outgoing'&&m.from===address&&!!m.file&&!m.fileDeleted);
+      if(!m||chat!==nextChat)throw Error('media_cache_message_changed');
+      updateFileEntry(peer,id,{fileStatus:'ready',fileProgress:m.file!.size});sessionChats=setDeliveryStatus(sessionChats,peer,id,'delivered');
+      if(!await persistLocalChats())throw Error('incoming_message_not_saved');
+      if(chat!==nextChat||generation!==authGeneration)throw Error('media_cache_session_changed');
+      clearFileRetry(peer,id);outbox.acknowledge(peer,id);void notificationController?.delivered(peer);
+    },
+  });
+  stickerExchange?.close();stickerExchange=exchange;
+  nextChat.onDisconnect(()=>{exchange.close();if(stickerExchange===exchange)stickerExchange=null;});
   installDeviceDiscovery({ chat: nextChat,
     current: () => chat === nextChat && generation === authGeneration && screen === 'account' && !endingSession && !memoryBusy,
     allowed: peer => sessionChats.byPeer[peer]?.contact === 'accepted',
@@ -4347,6 +4505,16 @@ async function initializeChat() {
       signalingRoutes: () => networkSettings.signalingEnabled === false ? [] : nodeStates.filter(n => n.status === 'connected').map(n => n.url),
       authorize: authorizePrimary, issue: outgoingIssue,
       files: {
+        beforeUpload:(peer,offer)=>{
+          const waiting=exchange.defer(peer,offer);
+          if(waiting)void exchange.probe(peer,offer).finally(()=>courierDelivery?.wake());
+          return waiting;
+        },
+        cached:async(peer,offer)=>{
+          const m=sessionChats.byPeer[peer]?.messages.find(m=>m.id===offer.id);
+          if(chat!==nextChat||!m||m.fileDeleted||['canceled','rejected'].includes(m.fileStatus??''))return null;
+          return cachedSticker(offer);
+        },
         load: async (peer, id) => (await getFileBytes(peer, id))?.slice() ?? null,
         offer: (peer, offer, timestamp, courierAddress) => {
           if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted' || sessionChats.byPeer[peer].deletedIds?.includes(offer.id)) throw new Error('attachment_contact_unavailable');
@@ -4377,7 +4545,7 @@ async function initializeChat() {
           updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: bytes.length });
           incomingNotification(peer);
         },
-        savePart: (peer, id, index, bytes) => storeFileBytes(peer, `${id}:courier:${index}`, bytes),
+        savePart: async (peer, id, index, bytes) => {await storeFileBytes(peer, `${id}:courier:${index}`, bytes);},
         loadPart: async (peer, id, index) => (await getFileBytes(peer, `${id}:courier:${index}`))?.slice() ?? null,
         cleanup: async (peer, id, chunks) => {
           if (!chatStoreKey || chat !== nextChat) throw new Error('courier_session_closed');
@@ -4550,6 +4718,7 @@ async function initializeChat() {
       if (chat === nextChat) sessionChats = previousChats;
       throw new Error('incoming_file_offer_not_saved');
     }
+    await useCachedSticker(peer,offer);
   });
   nextChat.onFileControl(async (peer, id, action) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
@@ -4645,6 +4814,7 @@ async function initializeChat() {
       keys: async (peer,kind,bundle) => {
         if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') throw Error('blocked_contact');
         if (kind === 'notification') { await acceptNotificationRoute(peer, bundle); return; }
+        if(kind==='media-cache'){await exchange.receive(peer,bundle);return;}
         if (kind === 'courier') await courierDelivery?.accept(peer,bundle);
         else await offlineDelivery?.accept(peer,bundle);
         courierDelivery?.wake();
@@ -4655,6 +4825,7 @@ async function initializeChat() {
     nextChat.setIntroduction(introduction);
   }
   chat = nextChat;
+  void migrateStickerCopies(generation);
   const acceptNotificationRoute = async (peer: string, value: unknown) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
     const previous = notificationState, next = rememberNotificationRoute(previous, peer, value);
@@ -5281,13 +5452,11 @@ async function changePassword(): Promise<void> {
     {/key}
   {/if}
   {#if receivedPack}
-    <CompactDialog title={$i18n.text("Добавить стикерпак")} onClose={backWithinApp}>
-      <strong>{receivedPack.pack.name}</strong>
-      <p>{$i18n("m_878c37f8407d", {v0: (receivedPack.pack.assets.length), v1: ((receivedPack.files.reduce((s,f)=>s+f.bytes.length,0)/1024/1024).toFixed(1))})}</p>
-      <p>{$i18n.text("Сохранить в библиотеку этого профиля?")}</p>
-      <button disabled={mediaBusy} onclick={()=>void acceptReceivedPack()}>{$i18n.text("Добавить набор")}</button>
-      <button disabled={mediaBusy} onclick={backWithinApp}>{$i18n.text("Отмена")}</button>
-    </CompactDialog>
+    {#key receivedPack.pack.id}
+      <StickerPackPreview value={receivedPack} installed={mediaLibrary.packs.some(p=>p.id===receivedPack!.pack.id)} busy={mediaBusy}
+        canSend={sessionChats.activePeer===receivedPackPeer&&sessionChats.byPeer[receivedPackPeer]?.contact==='accepted'}
+        onAdd={acceptReceivedPack} onSend={sendPreviewSticker} onClose={backWithinApp}/>
+    {/key}
   {/if}
   {#if networkSummaryOpen}
     <CompactDialog title={$i18n.text("Состояние сети")} onClose={backWithinApp}>
@@ -5953,7 +6122,7 @@ async function changePassword(): Promise<void> {
               {/if}
               {#if message.file}
                 {@const compactMedia = autoReceiveFilesEnabled && mediaCanOpen(message) && inlineMediaFor(message.file) !== null}
-                {#if !compactMedia}<strong>📎 {message.file.name}</strong> {$i18n("m_f8c74e7edc56", {v0: ((message.file.size / 1024).toFixed(1))})}{/if}
+                {#if !compactMedia&&!(message.details?.media?.kind==='sticker-pack'&&mediaCanOpen(message))}<strong>📎 {message.file.name}</strong> {$i18n("m_f8c74e7edc56", {v0: ((message.file.size / 1024).toFixed(1))})}{/if}
                 {#if message.fileDeleted}
                   <br /><small>{$i18n.text("Файл удалён с этого устройства")}</small>
                 {:else if message.direction === 'incoming' && (message.fileStatus === 'offered' || message.fileStatus === 'failed')}
@@ -5990,7 +6159,8 @@ async function changePassword(): Promise<void> {
                 {/if}
                 {#if mediaCanOpen(message) && !message.fileDeleted}
                   {#if message.details?.media?.kind === 'sticker-pack'}
-                    <button disabled={mediaBusy} onclick={()=>void saveMessageMedia(activeConversation.peerAddress,message)}>{$i18n.text("Добавить набор")}</button>
+                    <StickerPackCard name={message.details.media.packName??message.file.name} busy={mediaBusy}
+                      load={()=>previewMessagePack(activeConversation.peerAddress,message)} onOpen={()=>void saveMessageMedia(activeConversation.peerAddress,message)}/>
                   {:else if message.details?.media?.kind !== 'sticker' && message.file.mime === 'image/gif'}
                     <button disabled={mediaBusy} onclick={()=>void saveMessageMedia(activeConversation.peerAddress,message)}>{$i18n.text("В GIF")}</button>
                   {/if}
@@ -6011,8 +6181,9 @@ async function changePassword(): Promise<void> {
               {:else}
                 <MessageText text={message.text} />
                 {#if message.details?.media?.kind === 'pack-request' && message.direction === 'incoming'}
-                  {@const requestedPack = mediaLibrary.packs.find(p=>p.id===message.details?.media?.packId)}
-                  {#if requestedPack}<button disabled={mediaBusy || attachingFiles} onclick={()=>void answerPackRequest(requestedPack,activeConversation.peerAddress)}>{$i18n.text("Отправить набор")}</button>
+                  {@const requestedPack = mediaLibrary.packs.find(p=>p.id===message.details?.media?.packId||p.previousIds?.includes(message.details?.media?.packId??''))}
+                  {#if requestedPack&&!packRequestAnswered(activeConversation.messages,message)}<button disabled={mediaBusy || attachingFiles} onclick={()=>void answerPackRequest(requestedPack,activeConversation.peerAddress,message)}>{$i18n.text("Отправить набор")}</button>
+                  {:else if requestedPack}<small>{$i18n.text('Набор уже отправлен')}</small>
                   {:else}<small>{$i18n.text("Этого набора нет в вашей библиотеке")}</small>{/if}
                 {/if}
               {/if}
@@ -6036,7 +6207,7 @@ async function changePassword(): Promise<void> {
           <MediaViewer id={galleryId} name={galleryItems[galleryIndex].file?.name ?? 'Медиа'}
             sticker={galleryItems[galleryIndex].details?.media?.kind === 'sticker' ? {
               packName: galleryItems[galleryIndex].details?.media?.packName,
-              canRequest: galleryItems[galleryIndex].direction === 'incoming' && !!galleryItems[galleryIndex].details?.media?.packId && activeConversation.contact === 'accepted'
+              canRequest: galleryItems[galleryIndex].direction === 'incoming' && !!galleryItems[galleryIndex].details?.media?.packId && activeConversation.contact === 'accepted'&&!mediaLibrary.packs.some(p=>p.id===galleryItems[galleryIndex].details?.media?.packId)&&!packRequested(activeConversation.messages,galleryItems[galleryIndex].details!.media!.packId!)
             } : undefined} onStickerAction={galleryStickerAction}
             fileInfo={{ size: galleryItems[galleryIndex].file!.size, mime: galleryItems[galleryIndex].file!.mime,
               timestamp: galleryItems[galleryIndex].timestamp,
