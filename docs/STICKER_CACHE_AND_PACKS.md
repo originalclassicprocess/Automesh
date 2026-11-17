@@ -1,6 +1,6 @@
 # Sticker cache and pack library
 
-This change is local development work after 0.5.10; it has not been published or deployed.
+Implemented for app 0.5.11; publication and deployment use the verified release pipeline.
 
 ## Storage and migration
 

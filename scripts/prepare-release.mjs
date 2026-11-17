@@ -70,6 +70,7 @@ copy('docs/PROFILE_PRESETS.md');
 copy('docs/SIMPLE_PROFILES.md');
 copy('docs/STRONG_PASSWORD_RELEASE.md');
 copy('docs/CHAT_MEDIA.md');
+copy('docs/STICKER_CACHE_AND_PACKS.md');
 copy('docs/MEDIA_VIEWER.md');
 copy('docs/IMAGE_PRIVACY_DELIVERY.md'); copy('docs/PHOTO_AVATARS.md'); copy('docs/CHAT_POLISH_LOCAL.md'); copy('docs/VOICE_MESSAGES.md');
 copy('docs/THIRD_PARTY_MEDIA_NOTICES.md');
