@@ -8,6 +8,8 @@ const config = {
 		runes: ({ filename }) => (filename.split(/[/\\]/).includes('node_modules') ? undefined : true)
 	},
 	kit: {
+		// This application uses its own signed APIs, not SvelteKit remote functions.
+		experimental: { remoteFunctions: false },
 		adapter: adapter(),
 		version: { name: buildVersion() },
 		csp: {

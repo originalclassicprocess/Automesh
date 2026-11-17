@@ -1,5 +1,12 @@
 # Automesh 0.5.10
 
+Release audit notes: SvelteKit 2.70.4 remains at its reviewed version. Two new
+experimental-remote-function advisories are explicitly assessed as inapplicable
+only while that feature is disabled and no remote modules/API references exist.
+All findings remain reported; unknown moderate/high and all critical advisories
+block publication. See docs/DEPENDENCY_SECURITY_2026-11-17.md. A Kit 3 migration
+is separate work, not silently included in this release.
+
 - With an enabled delivery node, notify only after attachment chunks and the final
   encrypted envelope are committed. Without a node, alert immediately that the
   sender is attempting delivery. A push never confirms message delivery.
