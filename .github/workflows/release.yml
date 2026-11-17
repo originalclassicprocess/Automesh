@@ -33,7 +33,7 @@ jobs:
       - run: node scripts/release-context.mjs
       - run: npm ci --ignore-scripts
       - run: npm --prefix nodes ci --ignore-scripts
-      - run: npm audit --audit-level=moderate
+      - run: npm run audit:release
       - run: npm run check
       - run: npm run i18n:check
       - run: node scripts/check-public-node-source.mjs

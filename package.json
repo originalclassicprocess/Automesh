@@ -8,6 +8,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "audit:release": "node scripts/audit-release.mjs",
     "dev": "vite dev",
     "start": "node server/app.js",
     "release": "npm run build && node scripts/prepare-release.mjs",
