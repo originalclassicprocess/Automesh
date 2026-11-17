@@ -30,5 +30,8 @@ cache exchange and fallback, courier receipts, input mode/viewport transitions,
 mobile-size UI checks, types, translations, production build and offline shell.
 Native phone-keyboard behavior still requires device acceptance testing.
 
-Dependencies and the explicitly reviewed remote-function audit applicability gate
-are unchanged from 0.5.10; see docs/DEPENDENCY_SECURITY_2026-11-17.md.
+Dependency versions and the reviewed remote-function assessment are unchanged
+from 0.5.10. The new picomatch advisory has no upstream fix; this release proposes
+an owner-reviewed, exact-toolchain build-only assessment, reported and guarded by
+tests rather than hidden. See docs/DEPENDENCY_SECURITY_2026-11-18.md and the
+existing docs/DEPENDENCY_SECURITY_2026-11-17.md. Runtime message delivery is unchanged.

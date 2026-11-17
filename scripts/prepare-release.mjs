@@ -46,6 +46,7 @@ copy('docs/RELEASE_'+JSON.parse(readFileSync(join(root,'package.json'),'utf8')).
 copy('docs/PUBLIC_READINESS_2026-11-08.md');
 copy('docs/DEPENDENCY_LICENSE_REVIEW.md'); copy('docs/DEPENDENCY_SECURITY_2026-11-08.md');
 copy('docs/DEPENDENCY_SECURITY_2026-11-17.md');
+copy('docs/DEPENDENCY_SECURITY_2026-11-18.md');
 copy('docs/third-party-licenses');
 copy('docs/AUDIT_2026-10-02.md'); copy('docs/online-e2ee-v1.md');
 copy('docs/STORAGE_MEDIA_CHECKLIST.md');
