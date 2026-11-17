@@ -6236,7 +6236,11 @@ async function changePassword(): Promise<void> {
         {#snippet textComposer(microphone?: Snippet)}
         {#if sendOptionsOpen}<SendOptions value={sendRule} onSave={value => { sendRule = value; sendOptionsOpen = false; }} onClose={() => sendOptionsOpen = false} />{/if}
         {#if ephemeralView && ephemeralView.account === address && screen === 'account'}<EphemeralViewer message={ephemeralView.message} url={ephemeralView.url} deadline={ephemeralView.deadline} onClose={closeEphemeral} onDownload={downloadEphemeral} />{/if}
-        {#if emojiOpen}<EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false} />{/if}
+        {#if emojiOpen}<EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false}
+          library={mediaLibrary} load={loadLibraryAsset} canSend={activeConversation.contact === 'accepted'}
+          busy={attachingFiles || composerSending || actionBusy || mediaBusy}
+          onSend={async (asset,pack) => { await sendLibraryAsset(asset,pack); emojiOpen = false; }}
+          onManage={tab => { emojiOpen = false; openMediaLibrary(tab); }} />{/if}
         <PastedImages files={pastedFiles} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
         <div class="composer">
         <div class="composer-controls composer-left">
@@ -6265,7 +6269,7 @@ async function changePassword(): Promise<void> {
           data-message-composer aria-label={$i18n.text("Сообщение")}
           disabled={actionBusy || composerSending}
         ></textarea>
-        <button class="emoji-toggle" type="button" onclick={() => emojiOpen = !emojiOpen} disabled={actionBusy || composerSending} aria-label={$i18n.text("Выбрать эмодзи")} aria-expanded={emojiOpen} title={$i18n.text("Эмодзи")}><ChatIcon name="emoji" /></button>
+        <button class="emoji-toggle" type="button" onclick={() => emojiOpen = !emojiOpen} disabled={actionBusy || composerSending} aria-label={$i18n.text('Эмодзи, стикеры и GIF')} aria-expanded={emojiOpen} title={$i18n.text('Эмодзи, стикеры и GIF')}><ChatIcon name="emoji" /></button>
         </div>
         <div class="composer-controls composer-right">
         {#if activeConversation.contact === 'accepted'}

@@ -58,6 +58,13 @@ with all stickers. The popup supports adding the pack and sending an individual
 sticker directly. Request/send buttons derive their completed state from saved
 chat history rather than temporary UI flags.
 
+The main chat composer's smile button opens Emoji / Stickers / GIF modes in the
+same inline panel. Entering Stickers starts with favorites from installed packs;
+the horizontal selector switches to any installed pack. GIF mode uses the local
+GIF collection. Both send through the existing attachment/library path, including
+cache reuse and normal delivery. Library management is reachable directly from
+the panel. Other users of the emoji-only component retain their existing behavior.
+
 ## Validation
 
 Regression coverage includes shared encrypted storage, account isolation, backup
