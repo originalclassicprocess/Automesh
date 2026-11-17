@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { name }: { name: 'copy' | 'qr' | 'phone' | 'hangup' | 'mic-off' | 'shield' | 'microphone' | 'network' | 'send' | 'select' | 'forward' | 'download' | 'share' | 'reply' | 'chat' | 'info' | 'play' | 'stop' | 'previous' | 'next' | 'queue' | 'repeat' | 'repeat-one' | 'order-up' | 'order-down' | 'shuffle' | 'volume' | 'muted' | 'trash' | 'node' | 'close' | 'emoji' | 'attachment' | 'search' | 'radio' } = $props();
+  let { name }: { name: 'copy' | 'qr' | 'phone' | 'hangup' | 'mic-off' | 'shield' | 'microphone' | 'network' | 'send' | 'select' | 'forward' | 'download' | 'share' | 'reply' | 'chat' | 'info' | 'play' | 'stop' | 'previous' | 'next' | 'queue' | 'repeat' | 'repeat-one' | 'order-up' | 'order-down' | 'shuffle' | 'volume' | 'muted' | 'trash' | 'node' | 'close' | 'emoji' | 'keyboard' | 'attachment' | 'search' | 'radio' } = $props();
 </script>
 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
   {#if name === 'copy'}
@@ -10,6 +10,8 @@
     <path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10M6 15l8-8" />
   {:else if name === 'emoji'}
     <circle cx="12" cy="12" r="9" /><path d="M8 14a4 4 0 0 0 8 0M8 9h.01M16 9h.01" />
+  {:else if name === 'keyboard'}
+    <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/>
   {:else if name === 'search'}
     <circle cx="10" cy="10" r="6" /><path d="m15 15 6 6" />
   {:else if name === 'phone'}

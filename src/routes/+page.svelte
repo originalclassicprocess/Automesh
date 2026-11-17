@@ -29,6 +29,7 @@ import OfflineKeyBadge from '$lib/chat/OfflineKeyBadge.svelte';
 import CompactDialog from '$lib/application/CompactDialog.svelte';
 import { installFileDrop } from '$lib/chat/file-drop';
 import { autoSizeComposer } from '$lib/chat/composer-size';
+import { ComposerInput } from '$lib/chat/composer-input';
 import { otherUnreadCount } from '$lib/chat/chat-header';
 import MessageCard from '$lib/chat/MessageCard.svelte';
 import ChatSearch from '$lib/chat/ChatSearch.svelte';
@@ -661,6 +662,8 @@ let selecting = $state(false); let selectedMessages = $state<string[]>([]);
 let chatSearchPosition=0;
 function toggleChatSearch(){const node=document.querySelector<HTMLElement>('[data-chat-scroll]');if(!chatSearchOpen){chatSearchPosition=node?.scrollTop??0;chatSearchOpen=true;}else{chatSearchOpen=false;void tick().then(()=>node?.scrollTo({top:chatSearchPosition}));}}
 let chatSearchOpen = $state(false), emojiOpen = $state(false), showJumpDown = $state(false);
+let mobileInput = $state(false);
+const inputPanel = new ComposerInput(() => emojiOpen, open => emojiOpen = open, mobile => mobileInput = mobile);
 let composerCaret = { peer: '', start: 0, end: 0 };
 let sendOptionsOpen = $state(false), sendRule = $state<MessageDetails['ephemeral']>(undefined);
 let ephemeralOpening = $state(false);
@@ -2672,7 +2675,7 @@ async function send() {
       // Remove each successfully queued file; a retry cannot duplicate earlier ones.
       pastedFiles=pastedFiles.filter(value=>value!==file);
     }
-    if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat) { await sendTextOnly(); if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat && !pastedFiles.length && !sessionChats.byPeer[peer]?.draft.trim()) { sendRule = undefined; emojiOpen = false; } }
+    if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat) { await sendTextOnly(); if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat && !pastedFiles.length && !sessionChats.byPeer[peer]?.draft.trim()) sendRule = undefined; }
   } finally { composerSending=false; }
 }
 function pasteImage(event: ClipboardEvent): void {
@@ -2750,8 +2753,8 @@ async function sendTextOnly() {
     sessionChats = setDeliveryStatus(sessionChats,peer,messageId,peer === address ? 'delivered' : 'queued');
     sendRule = undefined;
     const nextReplies = { ...replyDrafts }; delete nextReplies[peer]; replyDrafts = nextReplies;
-    if (peer === address) { if (sessionChats.activePeer === peer) emojiOpen = false; return; }
-    if (useRadio && activeRadio) { await activeRadio.send(peer,messageId); if (generation === authGeneration && senderAddress === address && sessionChats.activePeer === peer) emojiOpen = false; return; }
+    if (peer === address) return;
+    if (useRadio && activeRadio) { await activeRadio.send(peer,messageId); return; }
     void notificationController?.tick(true);
     // Primary-to-primary delivery never enters the delegated-device protocol.
     // Existing device journals remain separate; synchronization is not a gate.
@@ -2763,7 +2766,6 @@ async function sendTextOnly() {
       if (sessionChats.byPeer[peer]?.connection === 'connected') void flushOutbox(peer, sendingChat);
       else void sendingChat.connect(peer).catch(() => {});
     }
-    if (sessionChats.activePeer === peer) emojiOpen = false;
   } catch (e) {
     if (generation !== authGeneration || senderAddress !== address) return;
     if (useRadio) { markRadioRetry(peer,messageId); radioErrorText=radioError(e); }
@@ -4037,7 +4039,7 @@ function insertEmoji(value: string): void {
   const { start, end } = composerCaret.peer === peer ? composerCaret : { start: draft.length, end: draft.length };
   setDraft(peer, draft.slice(0, start) + value + draft.slice(end));
   composerCaret = { peer, start: start + value.length, end: start + value.length };
-  void tick().then(() => { const field = document.querySelector<HTMLTextAreaElement>('textarea[data-message-composer]'); field?.focus(); field?.setSelectionRange(composerCaret.start, composerCaret.end); });
+  void tick().then(() => inputPanel.restoreCaret(composerCaret.start, composerCaret.end));
 }
 
 function sendPress(node: HTMLButtonElement) {
@@ -6237,11 +6239,12 @@ async function changePassword(): Promise<void> {
         {#snippet textComposer(microphone?: Snippet)}
         {#if sendOptionsOpen}<SendOptions value={sendRule} onSave={value => { sendRule = value; sendOptionsOpen = false; }} onClose={() => sendOptionsOpen = false} />{/if}
         {#if ephemeralView && ephemeralView.account === address && screen === 'account'}<EphemeralViewer message={ephemeralView.message} url={ephemeralView.url} deadline={ephemeralView.deadline} onClose={closeEphemeral} onDownload={downloadEphemeral} />{/if}
-        {#if emojiOpen}<EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false}
+        <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
+        {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false}
           library={mediaLibrary} load={loadLibraryAsset} canSend={activeConversation.contact === 'accepted'}
           busy={attachingFiles || composerSending || actionBusy || mediaBusy}
-          onSend={async (asset,pack) => { await sendLibraryAsset(asset,pack); emojiOpen = false; }}
-          onManage={tab => { emojiOpen = false; openMediaLibrary(tab); }} />{/if}
+          onSend={sendLibraryAsset}
+          onManage={tab => { emojiOpen = false; openMediaLibrary(tab); }} /></div>{/if}
         <PastedImages files={pastedFiles} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
         <div class="composer">
         <div class="composer-controls composer-left">
@@ -6270,16 +6273,17 @@ async function changePassword(): Promise<void> {
           data-message-composer aria-label={$i18n.text("Сообщение")}
           disabled={actionBusy || composerSending}
         ></textarea>
-        <button class="emoji-toggle" type="button" onclick={() => emojiOpen = !emojiOpen} disabled={actionBusy || composerSending} aria-label={$i18n.text('Эмодзи, стикеры и GIF')} aria-expanded={emojiOpen} title={$i18n.text('Эмодзи, стикеры и GIF')}><ChatIcon name="emoji" /></button>
+        <button class="emoji-toggle" data-composer-toggle type="button" onclick={inputPanel.toggle} disabled={actionBusy || composerSending} aria-label={$i18n.text(emojiOpen && mobileInput ? 'Открыть клавиатуру' : 'Эмодзи, стикеры и GIF')} aria-expanded={emojiOpen} title={$i18n.text(emojiOpen && mobileInput ? 'Открыть клавиатуру' : 'Эмодзи, стикеры и GIF')}><ChatIcon name={emojiOpen && mobileInput ? 'keyboard' : 'emoji'} /></button>
         </div>
         <div class="composer-controls composer-right">
         {#if activeConversation.contact === 'accepted'}
           {#if microphone}{@render microphone()}{/if}
         {/if}
-        <button class="primary send-button" use:sendPress onclick={send} oncontextmenu={event => { event.preventDefault(); sendOptionsOpen = true; }} disabled={switchingTrust || actionBusy || composerSending || attachingFiles || activeConversation.sending || (!activeConversation.draft.trim() && !pastedFiles.length)}
+        <button class="primary send-button" data-composer-send use:sendPress onclick={send} oncontextmenu={event => { event.preventDefault(); sendOptionsOpen = true; }} disabled={switchingTrust || actionBusy || composerSending || attachingFiles || activeConversation.sending || (!activeConversation.draft.trim() && !pastedFiles.length)}
           aria-label={activeConversation.sending ? $i18n.text("Отправляем сообщение") : $i18n.text("Отправить сообщение")} title={$i18n.text("Отправить · удерживайте для настроек")} aria-busy={activeConversation.sending}>
           <ChatIcon name="send" />
         </button>
+        </div>
         </div>
         </div>
         {/snippet}

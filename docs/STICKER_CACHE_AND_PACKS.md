@@ -63,7 +63,17 @@ same inline panel. Entering Stickers starts with favorites from installed packs;
 the horizontal selector switches to any installed pack. GIF mode uses the local
 GIF collection. Both send through the existing attachment/library path, including
 cache reuse and normal delivery. Library management is reachable directly from
-the panel. Other users of the emoji-only component retain their existing behavior.
+the panel. Other users of the emoji-only component retain their emoji categories.
+
+On phones/touch screens the input row stays above the picker, which occupies a
+keyboard-sized area below it. Opening the picker blurs the editable and suppresses
+its soft keyboard; selecting an emoji restores only the selection, without focus.
+The keyboard button (or tapping the editable) restores input mode and focus inside
+the user's synchronous gesture. The picker waits for a shrinking visual viewport
+to recover before appearing, avoiding a stacked keyboard and picker. Rotation and
+pinch zoom are handled separately from keyboard changes. Desktop layout keeps the
+picker above the input. Sending text, stickers or GIFs does not close the picker.
+The shared keyboard/picker behavior also applies to linked-device and LoRa chats.
 
 ## Validation
 
