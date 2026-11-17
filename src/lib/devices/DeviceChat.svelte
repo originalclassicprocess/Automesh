@@ -146,6 +146,7 @@
       const details = reply ? { reply } : undefined;
       chats = recordSentMessage(chats, peer, { id, from: owner, text, timestamp: Date.now(), direction: 'outgoing', delivery: 'queued', deviceMessage: true, ...(details ? { details } : {}) });
       await save(); draft = ''; reply = null; await runtime.send(peer, encodeChatContent(text, details), id);
+      if (current && chats.activePeer === peer) emojiOpen = false;
     } catch { error = runtimeMode === 'node' ? 'Сообщение пока не отправлено. Проверьте ноду и подключение контакта; сохранённая очередь повторяется автоматически.' : 'Сообщение пока не отправлено. Для прямого режима нужны доступные владелец и собеседник. Сохранённая очередь повторится при восстановлении связи; несохранённый текст остаётся в поле ввода.'; }
     finally { if (current) busy = false; }
   }

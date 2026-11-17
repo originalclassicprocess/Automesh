@@ -2672,7 +2672,7 @@ async function send() {
       // Remove each successfully queued file; a retry cannot duplicate earlier ones.
       pastedFiles=pastedFiles.filter(value=>value!==file);
     }
-    if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat) { await sendTextOnly(); if (!pastedFiles.length && !sessionChats.byPeer[peer]?.draft.trim()) sendRule = undefined; }
+    if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat) { await sendTextOnly(); if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat && !pastedFiles.length && !sessionChats.byPeer[peer]?.draft.trim()) { sendRule = undefined; emojiOpen = false; } }
   } finally { composerSending=false; }
 }
 function pasteImage(event: ClipboardEvent): void {
@@ -2750,8 +2750,8 @@ async function sendTextOnly() {
     sessionChats = setDeliveryStatus(sessionChats,peer,messageId,peer === address ? 'delivered' : 'queued');
     sendRule = undefined;
     const nextReplies = { ...replyDrafts }; delete nextReplies[peer]; replyDrafts = nextReplies;
-    if (peer === address) return;
-    if (useRadio && activeRadio) { await activeRadio.send(peer,messageId); return; }
+    if (peer === address) { if (sessionChats.activePeer === peer) emojiOpen = false; return; }
+    if (useRadio && activeRadio) { await activeRadio.send(peer,messageId); if (generation === authGeneration && senderAddress === address && sessionChats.activePeer === peer) emojiOpen = false; return; }
     void notificationController?.tick(true);
     // Primary-to-primary delivery never enters the delegated-device protocol.
     // Existing device journals remain separate; synchronization is not a gate.
@@ -2763,6 +2763,7 @@ async function sendTextOnly() {
       if (sessionChats.byPeer[peer]?.connection === 'connected') void flushOutbox(peer, sendingChat);
       else void sendingChat.connect(peer).catch(() => {});
     }
+    if (sessionChats.activePeer === peer) emojiOpen = false;
   } catch (e) {
     if (generation !== authGeneration || senderAddress !== address) return;
     if (useRadio) { markRadioRetry(peer,messageId); radioErrorText=radioError(e); }
