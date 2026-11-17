@@ -39,6 +39,7 @@
   import { visibleConversations, submitOnEnter } from '../chat/conversation-list';
   import ConversationRow from '../chat/ConversationRow.svelte';
   import { autoSizeComposer } from '../chat/composer-size';
+  import { ComposerInput } from '../chat/composer-input';
   import { createChatScroll } from '../chat/chat-scroll';
   import EmojiPicker from '../chat/EmojiPicker.svelte';
   import type { ChatEntry } from '../chat/session-chats';
@@ -81,11 +82,13 @@
   let showJumpDown = $state(false), chatOpenToken = $state(0);
   const manageChatScroll = createChatScroll({ activePeer: () => chats.activePeer, firstUnread: () => undefined, onJump: visible => showJumpDown = visible });
   let emojiOpen = $state(false), composer = $state<HTMLTextAreaElement>();
+  let mobileInput = $state(false);
+  const inputPanel = new ComposerInput(() => emojiOpen, open => emojiOpen = open, mobile => mobileInput = mobile);
   let caret = { start: 0, end: 0 };
   function rememberCaret(event: Event) { const field = event.currentTarget as HTMLTextAreaElement; caret = { start: field.selectionStart, end: field.selectionEnd }; }
   function insertEmoji(value: string) { const start = Math.min(caret.start, draft.length), end = Math.min(caret.end, draft.length);
     draft = draft.slice(0,start) + value + draft.slice(end); caret = { start: start+value.length, end: start+value.length };
-    void tick().then(() => { composer?.focus(); composer?.setSelectionRange(caret.start,caret.end); }); }
+    void tick().then(() => inputPanel.restoreCaret(caret.start,caret.end)); }
   function composerKey(event: KeyboardEvent) { if (submitOnEnter(event)) { event.preventDefault(); void send(); } }
   const guard = () => { if (!current || document.hidden) throw new Error('device_session_closed'); };
   function snapshot(): LocalChatData { return snapshotLocalChatData({ selfNickname, readReceiptsEnabled: false, autoLockMinutes: 15,
@@ -325,17 +328,19 @@
             {/each}
           </div>{#if showJumpDown}<button type="button" class="jump-down" aria-label={$i18n.text("К последним сообщениям")} onclick={() => messages?.scrollTo({top: messages.scrollHeight, behavior:'smooth'})}><ChatIcon name="order-down" /></button>{/if}</div>
           {#if reply}<div class="composer-reply"><span>↩ {reply.preview}</span><button type="button" onclick={() => reply = null} aria-label={$i18n.text("Отменить ответ")}>×</button></div>{/if}
-          {#if emojiOpen}<EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false} />{/if}
+          <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
+          {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false} /></div>{/if}
           <form class="composer" onsubmit={event => { event.preventDefault(); void send(); }}>
             <div class="composer-controls composer-left"><button class="icon-button" type="button" aria-label={$i18n.text("Статус доставки")} onclick={() => { settingsOpen = true; section = 'connection'; }}><ChatIcon name="node" /></button>
               <button class="icon-button" type="button" disabled aria-label={$i18n.text("Прикрепить")} title={rights}><ChatIcon name="attachment" /></button></div>
             <div class="composer-field"><textarea bind:this={composer} bind:value={draft} use:autoSizeComposer={draft} onkeydown={composerKey}
               onselect={rememberCaret} onkeyup={rememberCaret} onclick={rememberCaret} oninput={rememberCaret}
               rows="1" maxlength={4096} aria-label={$i18n.text("Сообщение")} placeholder={chats.activePeer === owner ? $i18n.text("Перенесённая история сохранённых") : $i18n.text("Сообщение…")} disabled={!ready || chats.activePeer === owner || active.contact === 'pending' || active.contact === 'blocked'}></textarea>
-              <button class="emoji-toggle" type="button" aria-label={$i18n.text("Выбрать эмодзи")} aria-expanded={emojiOpen} title={$i18n.text("Эмодзи")} disabled={!ready || chats.activePeer === owner || busy || active.contact !== 'accepted'} onclick={() => emojiOpen = !emojiOpen}><ChatIcon name="emoji" /></button></div>
+              <button class="emoji-toggle" data-composer-toggle type="button" aria-label={$i18n.text(emojiOpen && mobileInput ? 'Открыть клавиатуру' : 'Выбрать эмодзи')} aria-expanded={emojiOpen} title={$i18n.text(emojiOpen && mobileInput ? 'Открыть клавиатуру' : 'Эмодзи')} disabled={!ready || chats.activePeer === owner || busy || active.contact !== 'accepted'} onclick={inputPanel.toggle}><ChatIcon name={emojiOpen && mobileInput ? 'keyboard' : 'emoji'} /></button></div>
             <div class="composer-controls composer-right"><button class="icon-button" type="button" disabled aria-label={$i18n.text("Записать голосовое сообщение")} title={rights}><ChatIcon name="microphone" /></button>
-              <button class="send-button" type="submit" aria-label={$i18n.text("Отправить сообщение")} disabled={!ready || chats.activePeer === owner || busy || !draft.trim() || active.contact === 'pending' || active.contact === 'blocked'}><ChatIcon name="send" /></button></div>
+              <button class="send-button" data-composer-send type="submit" aria-label={$i18n.text("Отправить сообщение")} disabled={!ready || chats.activePeer === owner || busy || !draft.trim() || active.contact === 'pending' || active.contact === 'blocked'}><ChatIcon name="send" /></button></div>
           </form>
+          </div>
         {:else}<p>{$i18n.text("Добавьте собеседника или выберите чат.")}</p>{/if}
       </section>
     </div>

@@ -40,6 +40,8 @@ export type ChatEntry = {
   fileProgress?: number;
   fileAccepted?: boolean;
   fileDeleted?: boolean;
+  // Profile-local content reference; never sent as network metadata.
+  mediaRef?: string;
 };
 
 export type ContactState = 'new' | 'outgoing' | 'pending' | 'accepted' | 'blocked';

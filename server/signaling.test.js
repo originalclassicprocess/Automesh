@@ -160,6 +160,10 @@ describe('signaling server', () => {
     expect(JSON.parse((await invalid)[0].toString())).toMatchObject({ type: 'error', reason: 'invalid_courier_hop' });
     courier.send(JSON.stringify({ type: 'courier_delivery', to: missingId, job: { ...job, body: { ...job.body, to: missingId } }, hop }));
     // Relay only routes opaque bytes; it neither validates author crypto nor keeps a mailbox.
+    // Wait until this socket's offline send has actually been processed before
+    // registering the recipient; TCP ordering across two sockets is not defined.
+    const offline = once(courier, 'message'); courier.send(JSON.stringify({ type: 'connect_request', to: missingId }));
+    expect(JSON.parse((await offline)[0].toString())).toMatchObject({ type: 'peer_unavailable' });
     const missing = await connect(missingId); const seen = []; missing.on('message', raw => seen.push(JSON.parse(raw.toString())));
     const barrier = once(courier, 'message'); courier.send(JSON.stringify({ type: 'watch_peer', to: missingId })); await barrier;
     expect(seen).toEqual([]);

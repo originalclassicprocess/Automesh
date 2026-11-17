@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.11 — shared stickers and mobile composer (2026-11-17)
+
+Deduplicate sticker bytes across packs/messages and reuse verified recipient
+content by hash. Preview and edit packs, use favorites and pack selection inside
+the composer, and switch phones between keyboard and persistent media panel.
+No node update required. See docs/RELEASE_0_5_11.md.
+
 ## 0.5.10 — notification timing and selection actions (2026-11-16)
 
 Notify after durable node upload; keep immediate attempt alerts without a node.

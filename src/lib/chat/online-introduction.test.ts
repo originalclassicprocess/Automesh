@@ -139,6 +139,12 @@ it('never acknowledges a request that failed durable saving',async()=>{
   await new Promise(r=>setTimeout(r,30));
   expect(a.receipts).toEqual([]);expect(a.state()).toBe('outgoing');expect(b.keys).toEqual([]);
 });
+it('carries bounded cache-control metadata through the existing authenticated introduction channel',async()=>{
+ const bus=new Bus(),a=await client(bus,21,'accepted'),b=await client(bus,22,'accepted');
+ await a.connect(b.id.address);await wait(()=>{expect(a.service.isReady(b.id.address)).toBe(true);expect(b.service.isReady(a.id.address)).toBe(true);});
+ const bundle={op:'miss',request:crypto.randomUUID(),id:crypto.randomUUID()};
+ await a.service.sendKeys(b.id.address,'media-cache',bundle);await wait(()=>expect(b.keys).toContainEqual({kind:'media-cache',bundle}));
+});
 
 it('rejects a forged envelope and a replay without granting consent or duplicating history',async()=>{
   const bus=new Bus(),a=await client(bus,7),b=await client(bus,8,'new');

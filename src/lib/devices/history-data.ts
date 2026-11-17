@@ -3,6 +3,7 @@ import { dataOnlyChatData } from '../backup/data-backup';
 import { MAX_FULL_BACKUP_BYTES, referencedBackupFiles, type BackupProfile } from '../backup/full-backup';
 import { emptySessionChats, restoreChats, type ChatEntry, type SessionChats } from '../chat/session-chats';
 import { canonicalJson } from '../core/canonical';
+import {isLibraryFileId,libraryFileId}from'../chat/media-library';
 
 export const HISTORY_MAX_BYTES = MAX_FULL_BACKUP_BYTES;
 export function selectHistoryData(input: LocalChatData, peers: readonly string[]): LocalChatData {
@@ -20,7 +21,7 @@ export function selectHistoryData(input: LocalChatData, peers: readonly string[]
     data.chats.order.push(peer);
     data.chats.byPeer[peer] = { contact: conversation.contact, messages: conversation.messages.filter(m => !m.details?.pin).map(message => {
       const copy = { ...message, restoredFromBackup: true, importedFromDevice: true as const };
-      delete copy.delivery; delete copy.forwardedTo;
+      delete copy.delivery; delete copy.forwardedTo;delete copy.mediaRef;
       if (copy.direction === 'incoming') copy.readState = 'skipped';
       if (copy.file) { copy.fileAccepted = false; copy.fileProgress = 0; copy.fileStatus = 'canceled'; }
       return copy;
@@ -35,14 +36,17 @@ export async function captureDeviceHistory(owner: string, key: CryptoKey, peers:
   guard: () => void): Promise<BackupProfile> {
   const prefixes = peers.map(peer => `${peer}:`);
   guard(); const saved = await snapshotLocalStorage([owner], HISTORY_MAX_BYTES + 20 * 1024 * 1024, guard,
-    file => attachments && prefixes.some(prefix => file.id.startsWith(prefix))); guard();
+    file => attachments && (isLibraryFileId(file.id)||prefixes.some(prefix => file.id.startsWith(prefix)))); guard();
   const record = saved.accounts.find(item => item.accountId === owner);
-  const data = selectHistoryData(record ? await openSealedChatData(key, owner, record) : normalizeLocalChatData({}), peers);
+  const original=record?await openSealedChatData(key,owner,record):normalizeLocalChatData({});
+  const data = selectHistoryData(original, peers);
   guard(); const profile: BackupProfile = { accountId: owner, data, files: new Map() };
   try {
     if (attachments) for (const id of referencedBackupFiles(data).keys()) {
-      const file = saved.files.find(item => item.id === id);
-      if (file) { profile.files.set(id, await openSealedFileData(key, owner, id, file)); guard(); }
+      const at=id.lastIndexOf(':'),message=original.chats.byPeer[id.slice(0,at)]?.messages.find(m=>m.id===id.slice(at+1));
+      const physical=message?.mediaRef?libraryFileId(message.mediaRef):id;
+      const file = saved.files.find(item => item.id === physical);
+      if (file) { profile.files.set(id, await openSealedFileData(key, owner, physical, file)); guard(); }
     }
     return profile;
   } catch (error) { for (const bytes of profile.files.values()) bytes.fill(0); throw error; }

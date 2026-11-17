@@ -148,6 +148,15 @@ img, video { border-radius:6px; }
   .composer-reply span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .composer { display:flex; align-items:end; gap:4px; margin-top:6px; flex-shrink:0; }
   .composer-field { position:relative; display:flex; flex:1; min-width:0; }
+  .composer-dock { display:flex; flex-direction:column; flex-shrink:0; min-width:0; min-height:0; }
+  .composer-dock > .composer-picker { min-height:0; }
+  .composer-dock[data-mobile-input][data-panel-open] { max-height:60%; }
+  .composer-dock[data-mobile-input] > .composer-picker { order:2; margin-top:6px; height:min(var(--composer-panel-height,280px), 42dvh); flex-shrink:1; }
+  .composer-dock[data-mobile-input] > .composer-picker > .emoji-picker { height:100%; max-height:100%; display:flex; flex-direction:column; overflow:hidden; }
+  .composer-dock[data-mobile-input] > .composer-picker .emoji-grid { overflow:auto; min-height:0; }
+  .composer-dock[data-mobile-input] > .composer-picker header { flex-shrink:0; }
+  .composer-dock[data-mobile-input]:not([data-panel-open]) > .composer-picker,
+  .composer-dock[data-mobile-input][data-keyboard-hiding] > .composer-picker { display:none; }
   .composer-field textarea { width:100%; padding-right:40px !important; }
   .emoji-toggle { position:absolute; bottom:4px; right:3px; display:grid; place-items:center; padding:4px; width:34px; height:36px; border:0; background:transparent; color:var(--muted); }
   .message-history { position:relative; display:flex; flex:1; min-height:60px; }

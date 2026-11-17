@@ -38,7 +38,7 @@ export function referencedBackupFiles(data: LocalChatData): Map<string, { size: 
     result.set(id,value);
   };
   for (const peer of data.chats.order) for (const message of data.chats.byPeer[peer].messages) {
-    if (message.file && !message.fileDeleted && !message.details?.ephemeral) reference(`${peer}:${message.file.id}`, { size: message.file.size, hash: message.file.sha256 });
+    if (message.file && !message.fileDeleted && !message.details?.ephemeral) reference(message.mediaRef?libraryFileId(message.mediaRef):`${peer}:${message.file.id}`, { size: message.file.size, hash: message.file.sha256 });
   }
   for (const asset of data.mediaLibrary?.assets ?? []) reference(libraryFileId(asset.id), { size: asset.size, hash: asset.hash });
   return result;

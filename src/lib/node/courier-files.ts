@@ -1,6 +1,8 @@
 import type { FileOffer } from '$lib/chat/file-transfer';
 import type { AttachmentManifest } from './attachment-crypto';
 export type CourierFileIO = {
+  beforeUpload?(peer:string,offer:FileOffer):boolean;
+  cached?(peer:string,offer:FileOffer):Promise<Uint8Array|null>;
   load(peer: string, id: string): Promise<Uint8Array | null>;
   offer(peer: string, offer: FileOffer, timestamp: number, courier: string): void;
   accepted(peer: string, id: string): boolean;

@@ -9,7 +9,7 @@ describe('batch library deletion',()=>{
     const pack=await makePack('First',[first,second]), shared=await makePack('Shared',[first]);
     const library=addMedia(addMedia(addMedia(emptyMediaLibrary(),[second]),[first,second],pack),[first],shared);
     const next=await removeMediaSelection(library,[first.asset.hash],'stickers',pack.id);
-    expect(next.packs).toContainEqual(await makePack('First',[second]));
+    expect(next.packs).toContainEqual({...await makePack('First',[second]),previousIds:[pack.id]});
     expect(next.packs).toContainEqual(shared); expect(next.assets).toHaveLength(2);
     expect(library.packs[0]).toEqual(pack);
     const empty=await removeMediaSelection(next,[first.asset.hash,second.asset.hash],'stickers');

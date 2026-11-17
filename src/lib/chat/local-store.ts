@@ -1,7 +1,7 @@
 import { normalizeRadioReception } from '$lib/radio/reception';
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 import type { ChatEntry, SavedChats } from './session-chats';
-import { MAX_FILE_BYTES, normalizeFileOffer } from './file-transfer';
+import { MAX_FILE_BYTES, normalizeFileOffer, FILE_UUID_RE, sha256Hex } from './file-transfer';
 import { normalizeAutoLockMinutes } from './session-settings';
 import { normalizeNetworkSettings, type NetworkSettings } from '$lib/transport/network-settings';
 import { requireStorageEpoch, storageEpoch } from '$lib/application/storage-reset';
@@ -93,14 +93,17 @@ export async function deriveChatStoreKey(identitySeed: Uint8Array, accountId: st
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(dbName, 2);
+    // Old readers do not understand shared media references. Reject their v2
+    // opens after migration so they cannot discard aliases and corrupt history.
+    let blocked=false;const request = indexedDB.open(dbName, 3);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(storeName)) request.result.createObjectStore(storeName, { keyPath: 'accountId' });
       if (!request.result.objectStoreNames.contains(fileStoreName)) {
         request.result.createObjectStore(fileStoreName, { keyPath: 'key' }).createIndex('accountId', 'accountId');
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onblocked=()=>{blocked=true;reject(new Error('Закройте старые вкладки Automesh и повторите.'));};
+    request.onsuccess = () => {if(blocked)request.result.close();else resolve(request.result);};
     request.onerror = () => reject(request.error ?? new Error('chat_store_open_failed'));
   });
 }
@@ -207,6 +210,7 @@ function cleanMessages(value: unknown): ChatEntry[] {
       ? message.delivery : undefined;
     return {
       id: message.id,
+      ...(typeof message.mediaRef==='string'&&FILE_UUID_RE.test(message.mediaRef)&&!message.details?.ephemeral&&['sticker','gif'].includes(message.details?.media?.kind??'')?{mediaRef:message.mediaRef}:{}),
       ...(message.importedFromDevice === true && message.restoredFromBackup === true ? { importedFromDevice: true } : {}),
       ...(Array.isArray(message.deviceCopies) ? { deviceCopies: [...new Set(message.deviceCopies.filter((kind: unknown): kind is 'own' | 'peer' => kind === 'own' || kind === 'peer'))] } : {}),
       ...(message.deviceCopyDelivery === 'stored' || message.deviceCopyDelivery === 'delivered' ? { deviceCopyDelivery: message.deviceCopyDelivery } : {}),
@@ -518,7 +522,16 @@ export async function loadLocalFileData(key: CryptoKey, accountId: string, id: s
       request.onerror = () => reject(request.error ?? new Error('file_store_read_failed'));
     });
   } finally { db.close(); }
-  if (!record) return null;
+  if (!record) {
+    // Historical/device exports still request logical attachment IDs. Resolve
+    // the encrypted profile-local reference without exposing content hashes.
+    const at=id.lastIndexOf(':'),peer=id.slice(0,at),messageId=id.slice(at+1);
+    if(at<1||!isValidAccountId(peer)||!FILE_UUID_RE.test(messageId))return null;
+    const data=await loadLocalChatData(key,accountId),message=data?.chats.byPeer[peer]?.messages.find(m=>m.id===messageId);
+    if(!message?.mediaRef||message.fileDeleted||!message.file)return null;
+    const bytes=await loadLocalFileData(key,accountId,'media-library:'+message.mediaRef);
+    return bytes&&bytes.length===message.file.size&&await sha256Hex(bytes)===message.file.sha256?bytes:null;
+  }
   return openSealedFileData(key, accountId, id, record);
 }
 

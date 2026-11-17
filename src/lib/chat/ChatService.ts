@@ -64,7 +64,7 @@ export class ChatService {
     start(peer: string): void;
     isReady(peer: string): boolean;
     accept(peer: string): Promise<void>;
-    sendKeys(peer: string, kind: 'courier' | 'offline' | 'notification', bundle: unknown): Promise<void>;
+    sendKeys(peer: string, kind: 'courier' | 'offline' | 'notification' | 'media-cache', bundle: unknown): Promise<void>;
     close(): void;
   };
   setIntroduction(value: NonNullable<ChatService['introduction']>) { this.introduction = value; }
@@ -268,6 +268,10 @@ export class ChatService {
     else if (this.isIntroductionReady(peer)) await this.introduction!.sendKeys(peer, 'notification', route);
   }
   onNotificationRoute(cb: (peer: string, value: unknown) => unknown): void { this.notificationHandlers.push(cb); }
+  async sendMediaCache(peer:string,value:unknown):Promise<void>{
+    if(!this.isIntroductionReady(peer)||JSON.stringify(value).length>4096)throw Error('media_cache_unavailable');
+    await this.introduction!.sendKeys(peer,'media-cache',value);
+  }
 
   async sendAvatar(avatar: string, peer: string): Promise<void> {
     if (avatar !== '' && !normalizeAvatar(avatar)) throw new Error('invalid_avatar');
