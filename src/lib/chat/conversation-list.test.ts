@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { conversationPreview, submitOnEnter, visibleConversations } from './conversation-list';
 import { emptySessionChats, receiveMessage, selectConversation } from './session-chats';
+import { encodeAccountId } from '../addressing/bech32m.js';
 
 describe('conversation list and keyboard input', () => {
+  it('finds an existing chat from bare, local and network-bearing contact links', () => {
+    const peer = encodeAccountId(new Uint8Array(20).fill(9));
+    const state = selectConversation(emptySessionChats(), peer);
+    for (const query of [peer, `http://127.0.0.1:5199/#/contact/${peer}`,
+      `https://automesh.online/?networks=hint#/contact/${peer}?signal=wss%3A%2F%2Fnode.example`])
+      expect(visibleConversations(state, query, () => 'Friend')).toEqual([peer]);
+  });
   it('sorts by last activity, filters by name or address and keeps the stored order intact', () => {
     let state = selectConversation(emptySessionChats(), 'alice');
     state = receiveMessage(state, { id: '1', from: 'alice', text: 'hello', timestamp: 1, direction: 'incoming' });

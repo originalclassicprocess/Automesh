@@ -34,7 +34,7 @@ function orientationOnly(value: number): Uint8Array {
   view.setUint16(8, 1, true); view.setUint16(10, 0x112, true); view.setUint16(12, 3, true);
   view.setUint32(14, 1, true); view.setUint16(18, value, true); return bytes;
 }
-function exifOrientation(bytes: Uint8Array): number | undefined {
+export function exifOrientation(bytes: Uint8Array): number | undefined {
   return orientation(matches(bytes, ascii('Exif\0\0')) ? bytes.subarray(6) : bytes);
 }
 function jpegSegment(marker: number, payload: Uint8Array): Uint8Array {

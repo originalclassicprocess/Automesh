@@ -5,8 +5,9 @@
   import { readQrImage } from '$lib/transport/qr-reader';
   import { contactReferenceFromInput } from './contact-input';
   import QrImageButton from '$lib/application/QrImageButton.svelte';
-  let { query = $bindable(''), ownId, onOpen }: {
-    query?: string; ownId: string; onOpen: (id: string, signalingUrl?: string) => void;
+  import Avatar from './Avatar.svelte';
+  let { query = $bindable(''), ownId, onOpen, knownIds=[] }: {
+    query?: string; ownId: string; knownIds?:readonly string[];onOpen: (id: string, signalingUrl?: string) => void;
   } = $props();
   let scanner = $state(false);
   let camera = $state(false);
@@ -15,6 +16,7 @@
   let token = 0;
   onDestroy(() => { token++; });
   const canOpen = $derived.by(() => { try { contactReferenceFromInput(query, ownId); return true; } catch { return false; } });
+  const candidate = $derived.by(() => { try { const value=contactReferenceFromInput(query,ownId);return knownIds.includes(value.accountId)?null:value; } catch { return null; } });
   function close() { token++; scanner = false; camera = false; error = ''; reading = false; }
   function open(value = query) {
     try { const contact = contactReferenceFromInput(value, ownId); query = ''; close(); onOpen(contact.accountId, contact.signalingUrl); }
@@ -39,6 +41,9 @@
     <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M1 1h7v7H1zm2 2v3h3V3zm9-2h7v7h-7zm2 2v3h3V3zM1 12h7v7H1zm2 2v3h3v-3zm9-4h3v3h-3zm4 2h3v3h-3zm-6 4h3v3h-3zm5 0h4v3h-4z" /></svg>
   </button>
 </div>
+{#if candidate}<button class="contact-result" type="button" onclick={()=>open()}>
+  <Avatar accountId={candidate.accountId} size={28}/><span><small>{$i18n.text('Открыть чат по Mesh ID')}</small><span>{candidate.accountId}</span></span>
+</button>{/if}
 {#if scanner}
   <section class="scanner" aria-label={$i18n.text("Добавить контакт по QR")}>
     <div class="scan-actions">
@@ -66,4 +71,5 @@
   .image-source > :global(label){width:100%}
   @container(max-width:360px){.scan-actions{grid-template-columns:minmax(0,1fr) 40px}.image-source{grid-column:1 / -1}.scan-close{grid-column:2;grid-row:1}}
   p { color:var(--danger); font-size:.85rem; }
+  .contact-result{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px;margin-bottom:8px;min-width:0}.contact-result>span{display:flex;flex-direction:column;gap:3px;min-width:0}.contact-result small{color:var(--muted);font-size:11px}.contact-result span span{font-size:11px;overflow-wrap:anywhere}
 </style>

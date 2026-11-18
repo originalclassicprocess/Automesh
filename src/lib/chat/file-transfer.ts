@@ -15,6 +15,16 @@ export type FileOffer = {
   details?: MessageDetails;
 };
 
+// Optional colors/dimensions are cosmetic hints, not transfer identity. Older
+// clients may drop them on restore; all content/intent fields still must match.
+export function sameFileOffer(a: FileOffer, b: FileOffer): boolean {
+  const identity = (offer: FileOffer) => {
+    const details = { ...offer.details }; delete details.imagePreview;
+    return { ...offer, details: Object.keys(details).length ? details : undefined };
+  };
+  return JSON.stringify(identity(a)) === JSON.stringify(identity(b));
+}
+
 export function safeFileName(value: string): string {
   const cleaned = value.replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').trim().slice(0, 120);
   return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'file';

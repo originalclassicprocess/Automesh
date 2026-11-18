@@ -481,9 +481,12 @@ function fileAad(accountId: string, id: string): ArrayBuffer {
 export async function sealLocalFileData(key: CryptoKey, accountId: string, id: string, bytes: Uint8Array): Promise<SealedFileRecord> {
   if (bytes.byteLength > MAX_FILE_BYTES) throw new Error('file_too_large');
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: toBuffer(iv), additionalData: fileAad(accountId, id) }, key, toBuffer(bytes));
-  return { key: fileKey(accountId, id), accountId, id, iv, cipher };
+  const input = toBuffer(bytes);
+  try {
+    const cipher = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: toBuffer(iv), additionalData: fileAad(accountId, id) }, key, input);
+    return { key: fileKey(accountId, id), accountId, id, iv, cipher };
+  } finally { new Uint8Array(input).fill(0); }
 }
 
 export async function openSealedFileData(key: CryptoKey, accountId: string, id: string, record: SealedFileRecord): Promise<Uint8Array> {

@@ -13,6 +13,15 @@ export class FileReceiver {
     this.bytes = new Uint8Array(size);
   }
   append(index: number, chunk: Uint8Array): void {
+    // Retries on the same authenticated offer can overlap with old chunks.
+    // Accept only exact duplicates already present, never conflicting bytes or
+    // future chunks; progress and final hash verification remain authoritative.
+    if (Number.isSafeInteger(index) && index >= 0 && index < this.index) {
+      const start = index * FILE_CHUNK_BYTES;
+      if (chunk.length === Math.min(FILE_CHUNK_BYTES, this.bytes.length - start) &&
+          chunk.every((byte, i) => byte === this.bytes[start + i])) return;
+      throw new Error('invalid_file_chunk_order_or_size');
+    }
     const remaining = this.bytes.length - this.offset;
     if (remaining <= 0 || index !== this.index || chunk.length !== Math.min(FILE_CHUNK_BYTES, remaining))
       throw new Error('invalid_file_chunk_order_or_size');

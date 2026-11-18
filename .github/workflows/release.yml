@@ -5,7 +5,7 @@ on:
       version:
         description: Exact package version (published releases are never overwritten)
         required: true
-        default: '0.5.11'
+        default: '0.5.12'
 permissions:
   contents: read
 concurrency:
@@ -49,6 +49,9 @@ jobs:
           mkdir -p .release/publication
           tar -czf ".release/publication/Automesh-App-$RELEASE_VERSION-update.tar.gz" -C .release/automesh-public-release .
           cp .release/automesh-public-release/docs/build-info.json ".release/publication/Automesh-App-$RELEASE_VERSION-source.json"
+      - name: Report build and archive sizes (informational)
+        continue-on-error: true
+        run: npm run build:report -- --archive ".release/publication/Automesh-App-$RELEASE_VERSION-update.tar.gz"
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: .release/publication/*.tar.gz

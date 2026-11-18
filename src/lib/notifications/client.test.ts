@@ -24,11 +24,41 @@ async function fixture(overrides:Partial<NotificationPort>={}) {
   return {a,b,controller,port,calls,announced,statuses,request,get chats(){return chats;},set chats(value){chats=value;},get state(){return state;},set state(value){state=value;}};
 }
 describe('notification side channel',()=>{
+  it('publishes a manual reverse capability during a live file transfer without sending a push',async()=>{
+    const f=await fixture();f.state={...f.state,enabled:true};f.chats.byPeer[f.b.account].connection='connected';
+    const before=JSON.stringify(f.chats);await f.controller.tick(true);
+    const route=f.calls.find(c=>c.url.endsWith('/return-route'));
+    expect(route.input.body.to).toBe(f.b.account);expect(route.input.body.route.token).toHaveLength(43);
+    expect(f.calls.filter(c=>c.url.endsWith('/notify'))).toHaveLength(0);
+    expect(JSON.stringify(route)).not.toContain('private content');expect(JSON.stringify(f.chats)).toBe(before);
+  });
+  it('uses a manual capability only on click and never changes message delivery',async()=>{
+    const f=await fixture();f.state={...f.state,enabled:true};f.chats.byPeer[f.b.account].messages=[];
+    const request=f.request, ticket={peer:f.b.account,provider:f.port.defaultProvider,device:'b'.repeat(43),token:'t'.repeat(43),expires:Date.now()+60000,manual:true};
+    f.port.request=async(url,options)=>{
+      const response=await request(url,options);
+      return String(url).endsWith('/ready')?new Response(JSON.stringify({tickets:[ticket],waiting:[]})):response;
+    };
+    await f.controller.tick(true);expect(f.calls.filter(c=>c.url.endsWith('/notify'))).toHaveLength(0);
+    const before=JSON.stringify(f.chats);expect(await f.controller.remindSender(f.b.account)).toBe(1);
+    const notified=f.calls.find(c=>c.url.endsWith('/notify'));expect(notified.input.body).toMatchObject({to:f.b.account,kind:'return',event:ticket.token,returnRoute:null});
+    expect(f.calls.some(c=>c.url.endsWith('/ready-ack'))).toBe(true);expect(JSON.stringify(f.chats)).toBe(before);
+    f.state=rememberNotificationRoute(f.state,f.b.account,{provider:f.port.defaultProvider,device:'c'.repeat(43),updatedAt:Date.now(),enabled:true,hasNode:true});
+    const count=f.calls.length;expect(await f.controller.remindSender(f.b.account)).toBe(0);expect(f.calls).toHaveLength(count);
+  });
+  it('does not create reverse work if the sender or recipient has a node, or notifications are disabled',async()=>{
+    const own=await fixture({hasNode:()=>true});own.state={...own.state,enabled:true};own.chats.byPeer[own.b.account].connection='connected';
+    await own.controller.tick(true);expect(own.calls.some(c=>c.url.endsWith('/return-route'))).toBe(false);expect(await own.controller.remindSender(own.b.account)).toBe(0);
+    const off=await fixture();expect(await off.controller.remindSender(off.b.account)).toBe(0);expect(off.calls).toEqual([]);
+  });
   it('keeps per-chat mute settings local, normalizes them and expires them automatically',async()=>{
     const f=await fixture(),now=Date.now(),temporary=muteChatNotifications(f.state,f.b.account,3600000,now);
     expect(chatNotificationsMuted(temporary,f.b.account,now+3599999)).toBe(true);expect(chatNotificationsMuted(temporary,f.b.account,now+3600000)).toBe(false);
     const forever=muteChatNotifications(f.state,f.b.account,-1);expect(chatNotificationsMuted(normalizeNotifications(JSON.parse(JSON.stringify(forever))),f.b.account,now+365*86400000)).toBe(true);
     expect(chatNotificationsMuted(muteChatNotifications(forever,f.b.account,0),f.b.account)).toBe(false);expect(f.state.muted).toBeUndefined();
+    const eight=muteChatNotifications(f.state,f.b.account,8*3600000,now);
+    expect(normalizeNotifications(JSON.parse(JSON.stringify(eight))).muteDurations?.[f.b.account]).toBe(8);
+    expect(muteChatNotifications(eight,f.b.account,-1).muteDurations).toBeUndefined();
   });
   it('syncs mute and the focused peer without publishing either preference to contacts',async()=>{
     const f=await fixture({viewing:()=>''});f.state={...f.state,enabled:true};
