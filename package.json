@@ -1,7 +1,7 @@
 {
   "name": "mesh-autonomy",
   "private": true,
-  "version": "0.5.11",
+  "version": "0.5.12",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -20,6 +20,8 @@
     "lan:pwa:web": "node scripts/lan.mjs --pwa --app-only",
     "lan:signal": "node scripts/lan.mjs --signal-only",
     "build": "vite build",
+    "build:report": "node scripts/build-size-report.mjs",
+    "test:scale": "node scripts/run-scale-check.mjs",
     "local:pwa": "npm run build && vite preview --host 127.0.0.1 --port 5173 --strictPort",
     "test": "vitest run src server && npm run test:nodes",
     "test:nodes": "npm --prefix nodes test",

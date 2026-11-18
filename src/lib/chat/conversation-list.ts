@@ -1,4 +1,5 @@
 import type { Conversation, SessionChats } from './session-chats';
+import { contactSearchTerm } from './contact-input';
 
 export function conversationPreview(conversation: Conversation, ui: (source: string) => string = source => source): string {
   const last = conversation.messages.findLast(message => !message.details?.pin && !message.details?.ephemeralOpened);
@@ -8,7 +9,7 @@ export function conversationPreview(conversation: Conversation, ui: (source: str
 }
 
 export function visibleConversations(state: SessionChats, query: string, name: (peer: string) => string, ownId = ''): string[] {
-  const needle = query.trim().toLocaleLowerCase();
+  const needle = contactSearchTerm(query).toLocaleLowerCase();
   return state.order.filter((peer) => !needle || `${name(peer)} ${peer}`.toLocaleLowerCase().includes(needle))
     .sort((a, b) => a === ownId ? -1 : b === ownId ? 1 :
       (state.byPeer[b].messages.at(-1)?.timestamp ?? 0) - (state.byPeer[a].messages.at(-1)?.timestamp ?? 0));

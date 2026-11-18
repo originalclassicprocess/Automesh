@@ -1,4 +1,4 @@
-import type { FileOffer } from './file-transfer';
+import { sameFileOffer, type FileOffer } from './file-transfer';
 import type { MessageDetails } from './message-details';
 import type { CallRecord } from '$lib/calls/history';
 import type { DeliveryIssue, DeliveryErrorCode } from '$lib/application/delivery-issues';
@@ -190,11 +190,11 @@ export function receiveFileMessage(state: SessionChats, entry: ChatEntry): Sessi
   if (!existing) return receiveMessage(state, entry);
   if (existing.direction !== 'incoming' || existing.from !== entry.from) throw new Error('conflicting_message_id');
   if (existing.file) {
-    if (JSON.stringify(existing.file) !== JSON.stringify(entry.file)) throw new Error('conflicting_message_id');
+    if (!sameFileOffer(existing.file, entry.file!)) throw new Error('conflicting_message_id');
     return state;
   }
   if (existing.text !== '' || existing.details?.pin || existing.details?.contactCard ||
-      Object.entries(existing.details ?? {}).some(([key, value]) =>
+      Object.entries(existing.details ?? {}).some(([key, value]) => key !== 'imagePreview' &&
         JSON.stringify(value) !== JSON.stringify(entry.file!.details?.[key as keyof MessageDetails]))) throw new Error('conflicting_message_id');
   return updateConversation(state, entry.from, conversation => {
     const messages = conversation.messages.map(message => message.id === entry.id ? entry : message);

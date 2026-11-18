@@ -20,6 +20,7 @@ export function automaticAudioOffers(state: SessionChats, receiving: number, rem
 
 export function automaticFileOffers(state: SessionChats, receiving: number, remaining: number, enabled: boolean,
   allowed: (offer: FileOffer) => boolean = offer => offer.size >= 0 && offer.size <= MAX_FILE_BYTES,
+  reserved: ReadonlySet<string> = new Set(), budgeted: ReadonlySet<string> = new Set(),
 ): Array<{ peer: string; id: string; size: number }> {
   if (!enabled) return [];
   const result: Array<{ peer: string; id: string; size: number }> = [];
@@ -29,10 +30,12 @@ export function automaticFileOffers(state: SessionChats, receiving: number, rema
     if (conversation.contact !== 'accepted') continue;
     for (const entry of conversation.messages) {
       if (!slots) return result;
-      if (entry.direction !== 'incoming' || entry.fileStatus !== 'offered' || entry.fileAccepted || entry.fileDeleted || !entry.file ||
+      const key = `${peer}:${entry.id}`;
+      const cost = budgeted.has(key) ? 0 : entry.file?.size ?? 0;
+      if (entry.direction !== 'incoming' || !(entry.fileStatus === 'offered' || entry.fileStatus === 'failed' && entry.fileAccepted === true) || reserved.has(key) || entry.fileDeleted || !entry.file ||
         (conversation.connection !== 'connected' && !entry.courierVia) ||
-        !allowed(entry.file) || entry.file.size > remaining) continue;
-      result.push({ peer, id: entry.id, size: entry.file.size }); remaining -= entry.file.size; slots--;
+        !allowed(entry.file) || cost > remaining) continue;
+      result.push({ peer, id: entry.id, size: entry.file.size }); remaining -= cost; slots--;
     }
   }
   return result;

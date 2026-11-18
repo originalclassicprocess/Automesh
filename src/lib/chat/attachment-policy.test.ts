@@ -59,14 +59,21 @@ describe('bounded attachments', () => {
     state = updateConversation(state, 'peer', c => ({ ...c, contact: 'accepted', connection: 'offline' }));
     expect(automaticAudioOffers(state, 0, 5000)).toEqual([]);
   });
-  it('does not repeatedly auto-accept a manually rejected, failed or already accepted transfer', () => {
+  it('does not automatically retry a rejected, unaccepted failed or reserved transfer', () => {
     let state = ensureConversation(emptySessionChats(), 'peer');
     const file: FileOffer = { id: 'id', name: 'voice.m4a', mime: 'audio/mp4', size: 1000, sha256: 'a'.repeat(64) };
-    for (const patch of [{ fileAccepted: true, fileStatus: 'offered' as const }, { fileStatus: 'rejected' as const }, { fileStatus: 'failed' as const }]) {
+    for (const patch of [{ fileStatus: 'rejected' as const }, { fileStatus: 'failed' as const },{fileStatus:'canceled' as const}]) {
       state = updateConversation(state, 'peer', c => ({ ...c, contact: 'accepted', connection: 'connected', messages: [
         { id: 'id', from: 'peer', direction: 'incoming', text: '', timestamp: 1, file, ...patch },
       ] }));
       expect(automaticAudioOffers(state, 0, 5000)).toEqual([]);
     }
+  });
+  it('resumes consented interrupted offers, excludes active reservations and charges each unique file once',()=>{
+    const state=ensureConversation(emptySessionChats(),'peer');Object.assign(state.byPeer.peer,{contact:'accepted',connection:'connected',messages:[
+      {id:'id',direction:'incoming',from:'peer',text:'',timestamp:1,fileAccepted:true,fileStatus:'offered',file:{id:'id',name:'a.png',mime:'image/png',size:1000,sha256:'a'.repeat(64)}}]});
+    expect(automaticFileOffers(state,0,1000,true)).toHaveLength(1);
+    expect(automaticFileOffers(state,1,1000,true,undefined,new Set(['peer:id']))).toEqual([]);
+    expect(automaticFileOffers(state,0,0,true,undefined,new Set(),new Set(['peer:id']))).toHaveLength(1);
   });
 });

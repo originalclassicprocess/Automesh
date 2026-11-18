@@ -13,11 +13,11 @@ export function contactReferenceFromInput(value: string, ownId: string): Contact
     try {
       const url = new URL(id);
       const accountId = contactFromHash(url.hash);
-      if (url.protocol === 'https:' && !url.username && !url.password && !url.search && url.pathname === '/' && accountId) {
+      if (['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && accountId) {
         id = accountId;
         // Do not turn someone else's LAN/loopback address into a destination on
         // this device. Local routes continue to use explicit node/direct QR.
-        if (!isLocalHost(url.hostname) && /[a-z]/i.test(url.hostname) && !url.hostname.startsWith('[')) {
+        if (url.protocol === 'https:' && !isLocalHost(url.hostname) && /[a-z]/i.test(url.hostname) && !url.hostname.startsWith('[')) {
           signalingUrl = validatedSignalingUrl(signalingUrlForPage(url.href), url.href, 'internet') ?? undefined;
         }
       }
@@ -26,6 +26,12 @@ export function contactReferenceFromInput(value: string, ownId: string): Contact
   if (!isValidAccountId(id)) throw new Error('Нужен Mesh ID собеседника (mesh1…) или его контактный QR. QR сервера или соединения сюда не подходит.');
   if (id === ownId) throw new Error('Это ваш аккаунт. Выберите QR собеседника.');
   return { accountId: id, ...(signalingUrl ? { signalingUrl } : {}) };
+}
+// Shared by the text filter and the add-contact parser; never dereference a URL
+// or learn routes from a partial name search.
+export function contactSearchTerm(value: string): string {
+  try { return contactReferenceFromInput(value, '').accountId; }
+  catch { return value.trim().toLocaleLowerCase(); }
 }
 export function contactIdFromInput(value: string, ownId: string): string {
   return contactReferenceFromInput(value, ownId).accountId;

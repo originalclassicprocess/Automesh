@@ -6,9 +6,9 @@ export function contactLink(accountId: string, pageUrl?: string): string {
   return `${applicationOrigin(pageUrl)}/#/contact/${encodeURIComponent(accountId)}`;
 }
 export function contactFromHash(hash: string): string | null {
-  if (hash.length > 200 || !hash.startsWith('#/contact/')) return null;
+  if (hash.length > 2048 || !hash.startsWith('#/contact/')) return null;
   try {
-    const id = decodeURIComponent(hash.slice('#/contact/'.length));
+    const id = decodeURIComponent(hash.slice('#/contact/'.length).split('?')[0]);
     return isValidAccountId(id) ? id : null;
   } catch { return null; }
 }

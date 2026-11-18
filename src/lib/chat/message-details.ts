@@ -1,9 +1,11 @@
+import { normalizeImagePreview, type ImagePreview } from './image-preview';
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 export const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export type ContactCard = { accountId: string; nickname: string };
 export type ReplyReference = { id: string; from: string; preview: string };
 export type ForwardReference = { sourceId: string; author?: ContactCard };
 export type MessageDetails = {
+  imagePreview?: ImagePreview;
   ephemeral?: { seconds?: number; views?: number; allowDownload: boolean };
   ephemeralOpened?: { targetId: string; viewedAt: number; views: number };
   media?: { kind: 'gif' | 'sticker' | 'sticker-pack' | 'pack-request'; packId?: string; packName?: string };
@@ -99,6 +101,9 @@ export function normalizeMessageDetails(raw: unknown): MessageDetails | null {
     result.media = { kind: media.kind as NonNullable<MessageDetails['media']>['kind'],
       ...(media.packId ? { packId: media.packId as string } : {}), ...(media.packName ? { packName: media.packName as string } : {}) };
   }
+  if (value.imagePreview !== undefined && !result.ephemeral && !result.ephemeralOpened && !result.radioContact && !result.pin) {
+    const preview = normalizeImagePreview(value.imagePreview); if (preview) result.imagePreview = preview;
+  }
   return result;
 }
 export const RICH_PREFIX = '\u0000mesh-chat-v2:';
@@ -109,7 +114,7 @@ export function encodeChatContent(text: string, details?: MessageDetails): strin
   // Ordinary text stays compatible with existing clients. New metadata needs
   // an updated receiver; it is never silently dropped as a fallback.
   if ((valid.pin || valid.ephemeralOpened) && text !== '') throw new Error('invalid_pin_content');
-  if (!valid.pin && !valid.ephemeral && !valid.ephemeralOpened && !valid.reply && !valid.forwarded && !valid.contactCard && !valid.radioContact && !valid.media && valid.allowForwardAttribution !== false) return `\u0000mesh-chat-v1:${text}`;
+  if (!valid.imagePreview && !valid.pin && !valid.ephemeral && !valid.ephemeralOpened && !valid.reply && !valid.forwarded && !valid.contactCard && !valid.radioContact && !valid.media && valid.allowForwardAttribution !== false) return `\u0000mesh-chat-v1:${text}`;
   const content = (valid.ephemeral || valid.ephemeralOpened ? EPHEMERAL_PREFIX : RICH_PREFIX) + JSON.stringify({ text, details: valid });
   if (new TextEncoder().encode(content).length > 64 * 1024) throw new Error('message_too_large');
   return content;

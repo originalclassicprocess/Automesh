@@ -150,6 +150,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
     if(action==='view-close'){
       requireDevice(input);if(!exact(b,[]))throw Error('notifications_input');
       db.prepare("UPDATE policies SET viewing='',visible_until=0 WHERE account=? AND device=?").run(input.account,input.device);
+      db.prepare('UPDATE devices SET active=0 WHERE account=? AND device=?').run(input.account,input.device);
       return {updated:true};
     }
     if(action==='policy'){
@@ -161,7 +162,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
       }
       db.prepare('INSERT INTO policies VALUES(?,?,?,?,?) ON CONFLICT(account,device) DO UPDATE SET muted=excluded.muted,viewing=excluded.viewing,visible_until=excluded.visible_until').run(input.account,input.device,JSON.stringify(muted),b.viewing,b.viewing?now()+25000:0);
       for(const r of db.prepare('SELECT id,peer FROM jobs WHERE account=? AND device=?').all(input.account,input.device))if(suppressed(input.account,input.device,r.peer))db.prepare('DELETE FROM jobs WHERE id=?').run(r.id);
-      for(const r of db.prepare('SELECT peer FROM returns WHERE account=? AND device=?').all(input.account,input.device))if(suppressed(input.account,input.device,r.peer))db.prepare('DELETE FROM returns WHERE account=? AND device=? AND peer=?').run(input.account,input.device,r.peer);
+      for(const r of db.prepare('SELECT peer,route FROM returns WHERE account=? AND device=?').all(input.account,input.device))if(!JSON.parse(r.route).manual&&suppressed(input.account,input.device,r.peer))db.prepare('DELETE FROM returns WHERE account=? AND device=? AND peer=?').run(input.account,input.device,r.peer);
       return {updated:true};
     }
     if (action === 'register') {
@@ -183,12 +184,26 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
       db.prepare(`INSERT INTO waiting VALUES(?,?,?,?,?) ON CONFLICT(account,device,peer) DO UPDATE SET token=excluded.token,expires=excluded.expires`).run(input.account,input.device,b.peer,b.token,now()+DAY);
       return { waiting:true };
     }
+    if(action==='return-route'){
+      if(!exact(b,['to','route'])||typeof b.to!=='string'||!/^mesh1[a-z0-9]{30,64}$/.test(b.to))throw Error('notifications_input');
+      const r=b.route;
+      if(!exact(r,['provider','device','token','expires'])||!notificationProvider(r.provider)||!token(r.device)||!token(r.token)||!Number.isSafeInteger(r.expires)||r.expires<=now()||r.expires>now()+DAY)throw Error('notifications_input');
+      budget(`send:${input.account}`,60);
+      for(const d of db.prepare('SELECT * FROM devices WHERE account=? AND expires>? LIMIT 16').all(b.to,now())){
+        if(d.node||!allowed(d,input.account))continue;
+        const exists=db.prepare('SELECT peer FROM returns WHERE account=? AND device=? AND peer=?').get(b.to,d.device,input.account);
+        if(!exists&&db.prepare('SELECT count(*) n FROM returns').get().n>=50000)throw Error('notifications_capacity');
+        db.prepare('INSERT INTO returns VALUES(?,?,?,?,?) ON CONFLICT(account,device,peer) DO UPDATE SET route=excluded.route,expires=excluded.expires')
+          .run(b.to,d.device,input.account,JSON.stringify({...r,manual:true}),r.expires);
+      }
+      return {accepted:true};
+    }
     if (action === 'ready') {
       const d=requireDevice(input);
-      if (!exact(b,['node']) || typeof b.node !== 'boolean') throw Error('notifications_input');
+      if ((!exact(b,['node'])&&!exact(b,['node','peer'])) || typeof b.node !== 'boolean' || b.peer!==undefined&&(typeof b.peer!=='string'||!/^mesh1[a-z0-9]{30,64}$/.test(b.peer))) throw Error('notifications_input');
       db.prepare('UPDATE devices SET active=?,node=? WHERE account=? AND device=?').run(now()+90000,Number(b.node === true),input.account,input.device);
       if (b.node || d.node) return { tickets:[] };
-      return { tickets: db.prepare('SELECT peer,route FROM returns WHERE account=? AND device=? AND expires>? LIMIT 32').all(input.account,input.device,now()).filter(r=>allowed(d,r.peer)).map(r=>({peer:r.peer,...JSON.parse(r.route)})),
+      return { tickets: (b.peer?db.prepare('SELECT peer,route FROM returns WHERE account=? AND device=? AND peer=? AND expires>? LIMIT 32').all(input.account,input.device,b.peer,now()):db.prepare('SELECT peer,route FROM returns WHERE account=? AND device=? AND expires>? LIMIT 32').all(input.account,input.device,now())).filter(r=>allowed(d,r.peer)&&(b.peer||!JSON.parse(r.route).manual)).map(r=>({peer:r.peer,...JSON.parse(r.route)})),
         waiting: db.prepare('SELECT peer,token FROM waiting WHERE account=? AND device=? AND expires>? LIMIT 500').all(input.account,input.device,now()) };
     }
     if (action === 'ready-ack') {
@@ -215,7 +230,7 @@ export function createNotifications({ origin, directory, now = Date.now, send = 
         const prior=db.prepare('SELECT * FROM jobs WHERE id=?').get(id);
         if (b.kind === 'return') {
           const w=db.prepare('SELECT * FROM waiting WHERE account=? AND device=? AND peer=? AND token=? AND expires>?').get(b.to,d.device,input.account,b.event,now());
-          if (!w || d.node || b.returnRoute !== null) continue;
+          if (!w || d.node || deviceFor(input)?.node || b.returnRoute !== null) continue;
         } else if (b.returnRoute !== null) {
           const r=b.returnRoute;
           if (!exact(r,['provider','device','token','expires']) || !notificationProvider(r.provider) || !token(r.device) || !token(r.token) || !Number.isSafeInteger(r.expires) || r.expires <= now() || r.expires > now()+DAY) throw Error('notifications_input');

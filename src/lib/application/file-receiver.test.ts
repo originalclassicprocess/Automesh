@@ -3,6 +3,14 @@ import { FileReceiver } from './file-receiver';
 import { FILE_CHUNK_BYTES, MAX_FILE_BYTES } from '$lib/chat/file-transfer';
 
 describe('bounded ordered file reassembly', () => {
+  it('ignores identical interleaved retry chunks without double-counting or losing bytes', () => {
+    const receiver=new FileReceiver(FILE_CHUNK_BYTES+3),first=new Uint8Array(FILE_CHUNK_BYTES).fill(9),last=new Uint8Array([2,3,4]);
+    receiver.append(0,first);receiver.append(0,first);expect(receiver.nextIndex).toBe(1);
+    receiver.append(1,last);receiver.append(0,first);receiver.append(1,last);
+    expect(receiver.received).toBe(FILE_CHUNK_BYTES+3);expect(receiver.nextIndex).toBe(2);
+    expect(()=>receiver.append(0,new Uint8Array(FILE_CHUNK_BYTES).fill(8))).toThrow();
+    expect(receiver.bytes.slice(-3)).toEqual(last);
+  });
   it('reassembles full chunks and a final short chunk', () => {
     const receiver = new FileReceiver(FILE_CHUNK_BYTES + 3);
     receiver.append(0, new Uint8Array(FILE_CHUNK_BYTES).fill(7)); receiver.append(1, new Uint8Array([1, 2, 3]));

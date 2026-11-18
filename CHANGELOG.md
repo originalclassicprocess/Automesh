@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.12 — lock and file queue recovery (2026-11-18)
+
+Protect locked-session recovery, resume interrupted file queues, add manual sender
+reminders without nodes, compact chat indicators and mute controls, accept full
+contact links, and show image aspect/color placeholders. Index history-media
+lookups and report build sizes. No node update. See docs/RELEASE_0_5_12.md.
+
 ## 0.5.11 — shared stickers and mobile composer (2026-11-17)
 
 Deduplicate sticker bytes across packs/messages and reuse verified recipient

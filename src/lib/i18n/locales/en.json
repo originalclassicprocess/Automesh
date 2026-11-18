@@ -3062,5 +3062,13 @@
   "m_e23dad97adff": "This pack has no stickers yet.",
   "m_f5ba2149b54c": "No favorite stickers yet. Choose a pack above or add your own.",
   "m_b37d4f93339f": "Add or edit packs",
-  "m_2d5630c4dc89": "Open keyboard"
+  "m_2d5630c4dc89": "Open keyboard",
+  "m_308fb146aa75": "Session locked. Keep this tab open: browser storage could not be updated. Unlock the app and retry saving.",
+  "m_679a126f3024": "Approximate image colors",
+  "m_550573c560e7": "Enable notifications in the app settings to request a reminder.",
+  "m_baa49d3932e1": "Ask the sender to return and continue the transfer",
+  "m_e067e72c0617": "Remind sender",
+  "m_7bbca7cf755a": "Reminder requested. The sender can receive it if browser notifications are allowed.",
+  "m_797301dcf0c6": "There is no new reminder request.",
+  "m_ef6bf14aa840": "Could not request a reminder. Check your connection and notification provider."
 }

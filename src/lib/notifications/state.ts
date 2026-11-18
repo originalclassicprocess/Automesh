@@ -1,7 +1,7 @@
 import { isValidAccountId } from '../addressing/bech32m.js';
 export const NOTIFICATION_PROTOCOL = 'automesh-notifications-v1';
 export type NotificationRoute = { provider:string; device:string; updatedAt:number; enabled:boolean; hasNode:boolean };
-export type NotificationState = { enabled:boolean; provider:string; peers:Record<string,NotificationRoute[]>; muted?:Record<string,number> };
+export type NotificationState = { enabled:boolean; provider:string; peers:Record<string,NotificationRoute[]>; muted?:Record<string,number>; muteDurations?:Record<string,number> };
 export const emptyNotifications = ():NotificationState => ({enabled:false,provider:'',peers:{}});
 export function providerUrl(value:string, localOrigin?:string):string | null {
   try {
@@ -33,6 +33,10 @@ export function normalizeNotifications(value:unknown):NotificationState {
     if (!isValidAccountId(peer) || !Array.isArray(routes)) continue;
     s.peers[peer]=routes.slice(0,8).map(notificationRoute).filter((r):r is NotificationRoute=>!!r);
   }
+  if(raw.muteDurations&&typeof raw.muteDurations==='object'&&!Array.isArray(raw.muteDurations)){
+    const durations=Object.fromEntries(Object.entries(raw.muteDurations).slice(0,500).filter(([peer,hours])=>s.muted?.[peer]!==-1&&!!s.muted?.[peer]&&[1,8,24].includes(hours)));
+    if(Object.keys(durations).length)s.muteDurations=durations;
+  }
   return s;
 }
 export function chatNotificationsMuted(state:NotificationState,peer:string,now=Date.now()):boolean {
@@ -42,7 +46,9 @@ export function muteChatNotifications(state:NotificationState,peer:string,durati
   if(!isValidAccountId(peer)||![-1,0,3600000,28800000,86400000].includes(duration))throw Error('notification_mute');
   const muted={...state.muted};
   if(duration===0)delete muted[peer];else {if(!Object.hasOwn(muted,peer)&&Object.keys(muted).length>=500)throw Error('notification_mute_limit');muted[peer]=duration===-1?-1:now+duration;}
-  return {...state,muted};
+  const muteDurations={...state.muteDurations};if(duration>0)muteDurations[peer]=duration/3600000;else delete muteDurations[peer];
+  const next={...state,muted};if(Object.keys(muteDurations).length)next.muteDurations=muteDurations;else delete next.muteDurations;
+  return next;
 }
 export function rememberNotificationRoute(state:NotificationState,peer:string,value:unknown):NotificationState {
   const r=notificationRoute(value); if (!r || !isValidAccountId(peer)) return state;

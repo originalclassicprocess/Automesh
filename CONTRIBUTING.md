@@ -23,6 +23,12 @@ Run relevant tests/type checks and supply a rollback plan for storage/deployment
 changes. Contribute only code/assets you can license under MIT; preserve
 third-party notices. Report security issues privately when possible.
 
+For reproducible build-size reports and large-history/sticker checks, see
+[performance checks](docs/PERFORMANCE_CHECKS.md). These checks do not deploy.
+
+For lock/unlock recovery and memory-protection invariants, see
+[locked sessions](docs/SESSION_LOCK_SECURITY.md).
+
 ## Shared interface and themes
 
 Use `src/lib/application/theme.css` semantic tokens for component colors

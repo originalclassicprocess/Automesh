@@ -13,7 +13,7 @@ export const notificationDevice = (storage:Pick<Storage,'getItem'|'setItem'>):st
 export async function notificationRequest(provider:string,action:string,account:string,device:string,identity:IdentityProvider,body:unknown,request:typeof fetch=fetch,signal?:AbortSignal):Promise<any> {
   const input=await signedNotification(provider,action,account,device,identity,body);
   if (signal?.aborted) throw Error('notification_closed');
-  const response=await request(`${provider}/${action}`,{method:'POST',mode:'cors',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/json'},body:JSON.stringify(input),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(12000)]):AbortSignal.timeout(12000)});
+  const response=await request(`${provider}/${action}`,{method:'POST',mode:'cors',keepalive:action==='view-close',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/json'},body:JSON.stringify(input),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(12000)]):AbortSignal.timeout(12000)});
   if (!response.ok) throw Error(response.status===429?'notification_rate':'notification_unavailable');
   return response.json();
 }
@@ -31,7 +31,7 @@ function notificationCandidate(m:ChatEntry,now:number,storedOnly=false):boolean 
     !m.details?.ephemeral && !m.details?.ephemeralOpened && !m.details?.pin && !m.fileDeleted && !['ready','rejected','canceled'].includes(m.fileStatus??'') &&
     now-m.timestamp>=0 && now-m.timestamp<24*3600000;
 }
-type Ticket={peer:string;provider:string;device:string;token:string;expires:number};
+type Ticket={manual?:boolean;peer:string;provider:string;device:string;token:string;expires:number};
 export interface NotificationPort {
   account:string; device:string; identity:IdentityProvider; defaultProvider:string;
   current():boolean; internet():boolean; hasNode():boolean; state():NotificationState; chats():SessionChats;
@@ -56,6 +56,8 @@ export class NotificationController {
   private tokens=new Map<string,string>();
   private announced=new Map<string,{value:string;at:number}>();
   private notified=new Map<string,{at:number;id:string}>();
+  private returnPublished=new Map<string,number>();
+  private reminding=new Set<string>();
   private ownRoute:NotificationRoute | null=null;
   private policyValue='';
   private policyAt=0;
@@ -64,7 +66,7 @@ export class NotificationController {
   constructor(private o:NotificationPort) {}
   close(){
     if(!this.abort.signal.aborted&&this.policyProvider)void notificationRequest(this.policyProvider,'view-close',this.o.account,this.o.device,this.o.identity,{},this.o.request).catch(()=>{});
-    this.abort.abort();this.tokens.clear();this.announced.clear();
+    this.abort.abort();this.tokens.clear();this.announced.clear();this.returnPublished.clear();this.reminding.clear();
   }
   private current(){return !this.abort.signal.aborted && this.o.current() && this.o.internet();}
   private provider(){return this.o.state().provider || this.o.defaultProvider;}
@@ -206,21 +208,37 @@ export class NotificationController {
     } catch {if(this.current())this.o.status?.('notification_unavailable');}
     finally {this.busy=false;if(this.rerun){this.rerun=false;if(this.current())void this.tick(true);}}
   }
-  private async ready() {
-    const data=await this.call(this.provider(),'ready',{node:this.o.hasNode()});
-    if(!this.current())return;
+  async remindSender(peer:string):Promise<number>{
+    const c=this.o.chats().byPeer[peer];
+    if(!this.current()||!this.o.state().enabled||!c||c.contact!=='accepted'||this.o.hasNode()||
+       (this.o.state().peers[peer]??[]).some(r=>r.enabled&&r.hasNode))return 0;
+    if(this.reminding.has(peer))return 0;
+    this.reminding.add(peer);
+    try{return await this.ready(peer);}finally{this.reminding.delete(peer);}
+  }
+  private async ready(peer?:string):Promise<number> {
+    const data=await this.call(this.provider(),'ready',{node:this.o.hasNode(),...(peer?{peer}:{})});
+    if(!this.current())return 0;
     const pending=new Set(pendingNotificationPeers(this.o.chats(),this.o.account));
     if(Array.isArray(data.waiting))for(const w of data.waiting.slice(0,500))if(typeof w.peer==='string'&&typeof w.token==='string'&&(!pending.has(w.peer)||this.o.hasNode()))await this.call(this.provider(),'waiting',{peer:w.peer,token:w.token,pending:false});
-    if(this.o.hasNode() || !Array.isArray(data.tickets))return;
+    if(this.o.hasNode() || !Array.isArray(data.tickets))return 0;
+    let sent=0;
     for(const t of data.tickets.slice(0,32) as Ticket[]) {
-      if(!this.current())return;
-      if(!this.allowed().includes(t.peer) || !providerUrl(t.provider) || !/^[A-Za-z0-9_-]{22,86}$/.test(t.token) || t.expires<Date.now())continue;
-      // The sender's provider independently requires its live waiting ticket
-      // and suppresses this when it has a node or has already finished sending.
+      if(!this.current())return sent;
+      if(peer?t.peer!==peer:t.manual===true)continue;
+      if(!this.allowed().includes(t.peer)||(this.o.state().peers[t.peer]??[]).some(r=>r.enabled&&r.hasNode)||!providerUrl(t.provider)||!/^[A-Za-z0-9_-]{22,86}$/.test(t.token)||t.expires<Date.now())continue;
       await this.call(t.provider,'notify',{to:t.peer,kind:'return',event:t.token,returnRoute:null});
-      if(!this.current())return;
-      await this.call(this.provider(),'ready-ack',{peer:t.peer,token:t.token});
+      if(!this.current())return sent;
+      await this.call(this.provider(),'ready-ack',{peer:t.peer,token:t.token});sent++;
     }
+    return sent;
+  }
+  private async reverseRoute(peer:string):Promise<{provider:string;device:string;token:string;expires:number}|null>{
+    if(!this.o.state().enabled||this.o.hasNode()||(this.o.state().peers[peer]??[]).some(r=>r.enabled&&r.hasNode))return null;
+    let t=this.tokens.get(peer);if(!t){t=encode(crypto.getRandomValues(new Uint8Array(32)));this.tokens.set(peer,t);}
+    try{const w=await this.call(this.provider(),'waiting',{peer,token:t,pending:true});
+      return w.waiting?{provider:this.provider(),device:this.o.device,token:t,expires:Date.now()+23*3600000}:null;
+    }catch{return null;}
   }
   private async wakePeers() {
     const pending=new Set(pendingNotificationPeers(this.o.chats(),this.o.account));
@@ -231,7 +249,20 @@ export class NotificationController {
     }
     for(const peer of [...pending].slice(0,32)) {
       if(!this.current())return;
-      const hasNode=this.o.hasNode(),c=this.o.chats().byPeer[peer];if(!hasNode && c.connection==='connected')continue;
+      const hasNode=this.o.hasNode(),c=this.o.chats().byPeer[peer];
+      if(!hasNode&&c.connection==='connected'){
+        // Publish a bounded capability while the sender is still here. This
+        // records permission for a manual return nudge, without a push/job.
+        if(Date.now()-(this.returnPublished.get(peer)??0)>=60000){
+          this.returnPublished.set(peer,Date.now());
+          const route=await this.reverseRoute(peer);
+          if(route)for(const provider of [...new Set([...(this.o.state().peers[peer]??[]).filter(r=>r.enabled).map(r=>r.provider),this.o.defaultProvider])].slice(0,4)){
+            if(!this.current())return;
+            if(providerUrl(provider,new URL(this.o.defaultProvider).origin))try{await this.call(provider,'return-route',{to:peer,route});}catch{/* Older providers keep ordinary delivery/notifications. */}
+          }
+        }
+        continue;
+      }
       // Node handoff is authoritative only after all attachment parts and the
       // final envelope commit. A newer queued upload must not hide older work.
       const latest=c.messages.filter(m=>notificationCandidate(m,Date.now(),hasNode)).at(-1)?.id;
@@ -240,15 +271,7 @@ export class NotificationController {
       const prior=this.notified.get(peer);if(prior && (prior.id===notificationId || Date.now()-prior.at<60000))continue;
       const known=this.o.state().peers[peer]??[];
       const providers=[...new Set([...known.filter(r=>r.enabled).map(r=>r.provider),this.o.defaultProvider])].slice(0,4);
-      let returnRoute: {provider:string;device:string;token:string;expires:number}|null=null;
-      // No reverse nudge if either user's advertised/configured delivery node
-      // can handle the message; notifications never override node delivery.
-      if(enabled && !this.o.hasNode() && !known.some(r=>r.enabled && r.hasNode)) {
-        let t=this.tokens.get(peer);if(!t){t=encode(crypto.getRandomValues(new Uint8Array(32)));this.tokens.set(peer,t);}
-        try{const w=await this.call(this.provider(),'waiting',{peer,token:t,pending:true});
-          if(w.waiting)returnRoute={provider:this.provider(),device:this.o.device,token:t,expires:Date.now()+23*3600000};
-        }catch{/* An unavailable return channel must not stop the recipient's wake. */}
-      }
+      const returnRoute=await this.reverseRoute(peer);
       this.notified.set(peer,{at:Date.now(),id:notificationId});
       const event=encode(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${NOTIFICATION_PROTOCOL}:${this.o.account}:${peer}:${latest}`))));
       for(const provider of providers) {

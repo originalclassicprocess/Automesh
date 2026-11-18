@@ -27,6 +27,9 @@ jobs:
       - run: npm run check:core
       - run: npm test
       - run: npm run build
+      - name: Report build sizes (informational)
+        continue-on-error: true
+        run: npm run build:report
       - run: node scripts/test-pwa-shell.mjs
       - run: npm run test:production
   notifier:

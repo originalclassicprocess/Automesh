@@ -46,6 +46,7 @@ import { isQueueAudio, type AudioQueueTrack } from '$lib/chat/audio-queue';
 import { contactMediaKind } from '$lib/chat/contact-media';
 import { emptyMediaLibrary, normalizeMediaLibrary, libraryFileId, isLibraryFileId, addMedia, makePack, prepareMedia, cacheMedia, type MediaLibrary, type PreparedMedia, type MediaAsset, type StickerPack } from '$lib/chat/media-library';
 import {reusableMedia,reusableAsset,retainMessageMedia,rebaseMediaLibrary,linkCachedMedia,packRequested,packRequestAnswered}from'$lib/chat/media-cache';
+import { preserveSnapshotMediaRefs } from '$lib/chat/snapshot-media';
 import StickerPackCard from'$lib/chat/StickerPackCard.svelte';
 import StickerPackPreview from'$lib/chat/StickerPackPreview.svelte';
 import{StickerCacheExchange}from'$lib/chat/sticker-cache-exchange';
@@ -137,7 +138,11 @@ import { hasTransparentPixels } from '$lib/chat/transparent-image';
 import { clipboardImages, pastedText } from '$lib/chat/clipboard-images';
 import PastedImages from '$lib/chat/PastedImages.svelte';
 import { SerializedWrites } from '$lib/application/serialized-writes';
+import { SessionTasks, prepareSessionLock, openLockedSession, discardLockedSession, discardOpenedSession, clearUnownedFileBytes, type LockedSession, type OpenedSession } from '$lib/application/session-lock';
+import { createImagePreview } from '$lib/chat/image-preview';
+import ImagePlaceholder from '$lib/chat/ImagePlaceholder.svelte';
 import { FileReceiver } from '$lib/application/file-receiver';
+import { FileReceiveSlots, type FileReceiveLease } from '$lib/application/file-receive-slots';
 import { AutoUnlock } from '$lib/application/auto-unlock';
 import StoragePanel from '$lib/application/StoragePanel.svelte';
 import { storageThumbnail } from '$lib/application/storage-thumbnail';
@@ -164,6 +169,7 @@ import { displayedReply, savedConversation, replyReference, replyCount, messageP
 import ChatActionDialog from '$lib/application/ChatActionDialog.svelte';
 import ContactCard from '$lib/chat/ContactCard.svelte';
 import { contactLink, contactFromHash } from '$lib/chat/contact-link';
+import { contactReferenceFromInput } from '$lib/chat/contact-input';
 import { PageNavigation, historyPageState } from '$lib/application/page-navigation';
 import { settingsParent, sameSettingsLocation } from '$lib/application/settings-parent';
 import { OnlineIntroduction, type IntroductionStatus } from '$lib/chat/online-introduction';
@@ -206,7 +212,7 @@ import {
   saveChatDataWithFileDeletion,
   type LocalChatData,
 } from '$lib/chat/local-store';
-import { FILE_CHUNK_BYTES, safeFileName, sha256Hex, type FileOffer } from '$lib/chat/file-transfer';
+import { FILE_CHUNK_BYTES, safeFileName, sha256Hex, sameFileOffer, type FileOffer } from '$lib/chat/file-transfer';
 import { textFitsLimit } from '$lib/chat/text-limits';
 import { defaultDeleteHistory, historyAction } from '$lib/chat/session-policy';
 import { autoLockIsDue, DEFAULT_AUTO_LOCK_MINUTES, normalizeAutoLockMinutes, readReceiptsForMode } from '$lib/chat/session-settings';
@@ -629,6 +635,20 @@ function incomingNotification(peer: string): void {
   if (!browser || !notificationState.enabled || chatNotificationsMuted(notificationState,peer) || viewedNotificationChat()===peer || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
   void showIncomingNotification(notificationState.provider || defaultNotificationProvider, $uiLocale.startsWith('ru') ? 'ru' : 'en').catch(() => {});
 }
+let reminderBusy = $state(false), reminderNote = $state(''), reminderScope = '';
+$effect(() => { const scope = authGeneration+':'+sessionChats.activePeer; if(scope!==reminderScope)untrack(()=>{reminderScope=scope;reminderBusy=false;reminderNote='';}); });
+function awaitingSender(peer:string):boolean {
+  return sessionChats.byPeer[peer]?.contact==='accepted' && !((courierState.enabled&&courierState.node)||(offlineDeliveryState.enabled&&offlineDeliveryState.node)) &&
+    !(notificationState.peers[peer]??[]).some(r=>r.enabled&&r.hasNode) &&
+    sessionChats.byPeer[peer].messages.some(m=>m.direction==='incoming'&&m.file&&!m.fileDeleted&&!m.restoredFromBackup&&!m.importedFromDevice&&!['ready','rejected','canceled'].includes(m.fileStatus??''));
+}
+async function remindSender(peer:string):Promise<void>{
+  if(reminderBusy||!notificationState.enabled||!notificationController||!awaitingSender(peer))return;
+  const generation=authGeneration;reminderBusy=true;reminderNote='';
+  try{const sent=await notificationController.remindSender(peer);if(generation===authGeneration&&sessionChats.activePeer===peer)reminderNote=sent?'Напоминание запрошено. Оно придёт отправителю, если браузер разрешает уведомления.':'Нет нового запроса на напоминание.';}
+  catch{if(generation===authGeneration&&sessionChats.activePeer===peer)reminderNote='Не удалось запросить напоминание. Проверьте подключение и провайдер уведомлений.';}
+  finally{if(generation===authGeneration&&sessionChats.activePeer===peer)reminderBusy=false;}
+}
 function viewedNotificationChat():string {
   return browser && screen==='account' && accountView==='chats' && !document.hidden && document.hasFocus() && !allProfileChats && (!narrowScreen || mobilePane==='chat') ? sessionChats.activePeer : '';
 }
@@ -653,6 +673,7 @@ let activeKeyBudget = $derived(offlineKeyBudget(address, sessionChats.activePeer
 let otherUnread = $derived(otherUnreadCount(sessionChats.byPeer, sessionChats.activePeer));
 let networkSummaryOpen = $state(false), nodeBudgetOpen = $state(false), fileDragActive = $state(false);
 let offlineNodeConfigured = $derived(!!(courierState.enabled && courierState.node || offlineDeliveryState.enabled && offlineDeliveryState.node));
+const typedContact = $derived.by(() => { try{return contactReferenceFromInput(chatSearch,address).accountId;}catch{return '';} });
 let listedPeers = $derived(visibleConversations(sessionChats, chatSearch, contactName, address));
 let connectedPeerCount = $derived(sessionChats.order.filter((peer) => peer !== address && sessionChats.byPeer[peer].connection === 'connected').length);
 let courierWaiting = $derived(sessionChats.order.reduce((count, peer) => count + sessionChats.byPeer[peer].messages.filter(m =>
@@ -1201,9 +1222,16 @@ const readReceiptSending = new Set<string>();
 const peerReadConfirmed = new Set<string>();
 const visibleReadNodes = new Map<string, { peer: string; messageId: string; visible: boolean }>();
 const sessionFiles = new Map<string, Uint8Array>();
-let lockedSession: { accountId: string; data: LocalChatData; files: Map<string, Uint8Array>; trusted: boolean } | null = null;
+let lockedSession: LockedSession | null = null;
+const attachmentTasks = new SessionTasks(), sessionTasks = new SessionTasks();
+const downloadUrls = new Set<string>();
 const incomingFiles = new Map<string, FileReceiver>();
-const sendingFiles = new Set<string>();
+const sendingFiles = new Map<string, symbol>();
+const receiveSlots = new FileReceiveSlots<ChatService>();
+const receiveRetryAfter = new Map<string, number>();
+const automaticFileIds = new Set<string>();
+const filePeerEpoch = new Map<string, number>();
+let receivePump: Promise<void> | null = null;
 const fileRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const fileRetryAttempts = new Map<string, number>();
 const pendingFileWrites = new Set<Promise<void>>();
@@ -1220,6 +1248,7 @@ onMount(() => {
     void recoverConfiguredDeviceNode().catch(() => {});
     for (const peer of sessionChats.order) publishDeliveryKeys(peer);
     void notificationController?.tick();
+    recoverFileReceives();
     void automaticRadio();
     void recoverRadio();
   }, 10_000);
@@ -1624,20 +1653,6 @@ async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<vo
   readReceiptsEnabled = readReceiptsForMode(trusted, trustedReadReceiptsPreference);
 }
 
-async function restoreLockedChats(seed: Uint8Array): Promise<boolean> {
-  if (!lockedSession || lockedSession.accountId !== address) return false;
-  const previous = lockedSession;
-  const generation = authGeneration; const accountId = address;
-  const key = await deriveChatStoreKey(seed, accountId);
-  if (generation !== authGeneration || address !== accountId || lockedSession !== previous) return true;
-  chatStoreKey = key;
-  applyChatData(previous.data);
-  sessionFiles.clear();
-  for (const [key, bytes] of previous.files) sessionFiles.set(key, bytes);
-  lockedSession = null;
-  return true;
-}
-
 function persistLocalChats(): Promise<boolean> {
   const key = chatStoreKey;
   const accountId = address;
@@ -1655,10 +1670,7 @@ function persistLocalChats(): Promise<boolean> {
       snapshot.mediaLibrary = normalizeMediaLibrary(mediaLibrary);
       // Cache linking can commit ahead of this previously captured snapshot.
       // Preserve its durable references before old duplicate blobs are removed.
-      for(const peer of snapshot.chats.order)for(const m of snapshot.chats.byPeer[peer].messages){
-        const live=sessionChats.byPeer[peer]?.messages.find(row=>row.id===m.id);
-        if(!m.fileDeleted&&live?.mediaRef&&live.file?.sha256===m.file?.sha256)m.mediaRef=live.mediaRef;
-      }
+      preserveSnapshotMediaRefs(snapshot.chats, sessionChats);
     }
     return saveLocalChatData(key, accountId, snapshot);
   });
@@ -1914,8 +1926,8 @@ function backWithinApp(): void {
   if (allProfileChats && accountView === 'chats') { allProfileChats = false; return; }
   if (!pageNavigation?.back()) pageNavigation?.rearmRoot();
 }
-function navigationBusy(includeVoice = true): boolean {
-  return (includeVoice && voiceBusy) || authBusy || endingSession || switchingTrust || memoryBusy || panicBusy || actionBusy || pinBusy || profileSwitchBusy || mediaBusy;
+function navigationBusy(includeVoice = true, includeEnding = true): boolean {
+  return (includeVoice && voiceBusy) || authBusy || (includeEnding && endingSession) || switchingTrust || memoryBusy || panicBusy || actionBusy || pinBusy || profileSwitchBusy || mediaBusy;
 }
 function cancelAccountSetup(target: 'entry' | 'import' = 'entry'): void {
   clearSensitiveData(); releaseAccountLease(); identity = null;
@@ -2354,8 +2366,8 @@ function adoptProfileContext(context: ProfileChatContext): void {
   const backupVerified = seedBackupVerified;
   clearMediaPreview(); stopNodeTools(); outbox.reset();
   for (const timer of fileRetryTimers.values()) clearTimeout(timer);
-  fileRetryTimers.clear(); fileRetryAttempts.clear(); sessionFiles.clear(); incomingFiles.clear(); sendingFiles.clear();
-  peerReadConfirmed.clear(); readReceiptSending.clear(); visibleReadNodes.clear(); automaticFileBytes = 0;
+  fileRetryTimers.clear(); fileRetryAttempts.clear(); sessionFiles.clear(); incomingFiles.clear(); receiveSlots.clear(); receiveRetryAfter.clear(); sendingFiles.clear();
+  peerReadConfirmed.clear(); readReceiptSending.clear(); visibleReadNodes.clear(); automaticFileBytes = 0; automaticFileIds.clear();
   replyDrafts = {}; selecting = false; selectedMessages = []; attachmentMenu = false;
   networkSummaryOpen = false; nodeBudgetOpen = false; fileDragActive = false;
   actionMode = null; actionError = ''; highlightedMessage = ''; forwardCompleted.clear();
@@ -2595,7 +2607,7 @@ async function unlockAccount(automatic = false, password = unlockPin, current = 
   authBusy = true;
   autoUnlockBusy = automatic;
   status = '';
-  const generation = authGeneration;
+  const generation = authGeneration, unlockEpoch = storageEpoch();
 
   try {
     const vault = await loadVault(password);
@@ -2617,23 +2629,32 @@ async function unlockAccount(automatic = false, password = unlockPin, current = 
         if (vault.legacy) await saveVault(vault.mnemonic, password, vault.metadata, isTrustedDevice());
         if (generation !== authGeneration || !current() || password !== unlockPin) return;
         const sessionTrusted = lockedSession?.trusted ?? isTrustedDevice();
-        const guard = () => { if (generation !== authGeneration || !current()) throw new Error('auth_cancelled'); };
+        const guard = () => { requireStorageEpoch(unlockEpoch); if (generation !== authGeneration || !current() || screen !== 'unlock' || password !== unlockPin) throw new Error('auth_cancelled'); };
         const registry = await readSessionProfiles(seed, account.accountId, sessionTrusted, guard);
         const remembered = sessionTrusted ? await withBrowserProfileSelection({ root: seed, scope: account.accountId, trusted: true, guard }, store => store.read()) : undefined;
         const selected = resolveProfileSelection(registry, lockedProfileId || remembered);
         let context: ProfileChatContext | undefined;
+        const locked = lockedSession; let opened: OpenedSession | null = null;
         try {
           context = await prepareProfileChatContext({ root: seed, owner: account.accountId, registry, profileId: selected, guard,
-            read: (key, id) => lockedSession?.accountId === id ? Promise.resolve(snapshotLocalChatData(lockedSession.data)) : loadLocalChatData(key,id) });
+            read: async (key, id) => {
+              if (locked?.accountId !== id) return loadLocalChatData(key,id);
+              opened = await openLockedSession(locked, key, id, () => { guard(); if (lockedSession !== locked) throw Error('auth_cancelled'); });
+              return opened.data;
+            } });
           const sources = PROFILE_FEATURES.advancedInbox && registry && context.profile ? await readProfileInbox({ root: seed, owner: account.accountId, registry, viewer: context.profile.id, now: Date.now(), guard }) : emptyInboxPage();
           const qr = context.network ? await QRCode.toDataURL(context.accountId) : '';
           const nextKey = await context.provider.getPublicKeyBytes(); guard();
-          const files = lockedSession?.accountId === context.accountId ? lockedSession.files : null;
+          guard();
+          if (lockedSession !== locked) throw Error('auth_cancelled');
+          if (locked && context.accountId !== locked.accountId) throw Error('locked_session_account_mismatch');
+          const files = (opened as OpenedSession | null)?.files;
           trustedSession = sessionTrusted; adoptProfileContext(context); context = undefined;
           for (const [key, bytes] of files ?? []) sessionFiles.set(key,bytes);
+          opened = null; discardLockedSession(locked);
           lockedSession = null; lockedProfileId = ''; profileRegistry = registry; profileInboxSnapshot = sources;
           publicKey = Array.from(nextKey, byte => byte.toString(16).padStart(2,'0')).join(''); qrPublic = qr;
-        } finally { context?.close(); }
+        } finally { discardOpenedSession(opened); context?.close(); }
         trustedSession = sessionTrusted;
         trustedDeviceChoice = sessionTrusted;
         unlockPin = '';
@@ -2657,12 +2678,13 @@ async function unlockAccount(automatic = false, password = unlockPin, current = 
   }
 }
 
-async function send() {
+function send(): Promise<void> { return attachmentTasks.track(sendNow()); }
+async function sendNow() {
   if (composerSending || attachingFiles || navigationBusy() || screen !== 'account') return;
   const peer=sessionChats.activePeer, generation=authGeneration, activeChat=chat;
   const files=[...pastedFiles];
   if (preferRadio && files.length) { status='Файлы по LoRa не передаются. Снимите выбор LoRa для обычной отправки.'; return; }
-  if (!files.length) { await sendTextOnly(); return; }
+  if (!files.length) { await sendTextOnly(true); return; }
   if (sessionChats.byPeer[peer]?.contact !== 'accepted') return;
   const draft=sessionChats.byPeer[peer].draft.trim();
   if (draft && !textFitsLimit(draft,false)) { status='Сообщение слишком длинное (максимум 64 КБ).'; return; }
@@ -2670,12 +2692,12 @@ async function send() {
   try {
     for (const file of files) {
       if (generation!==authGeneration || peer!==sessionChats.activePeer || chat!==activeChat) return;
-      if (!await addAttachments([file], sendRule)) return;
+      if (!await addAttachments([file], sendRule, true)) return;
       if (generation!==authGeneration || peer!==sessionChats.activePeer || chat!==activeChat) return;
       // Remove each successfully queued file; a retry cannot duplicate earlier ones.
       pastedFiles=pastedFiles.filter(value=>value!==file);
     }
-    if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat) { await sendTextOnly(); if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat && !pastedFiles.length && !sessionChats.byPeer[peer]?.draft.trim()) sendRule = undefined; }
+    if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat) { await sendTextOnly(true); if (generation===authGeneration && peer===sessionChats.activePeer && chat===activeChat && !pastedFiles.length && !sessionChats.byPeer[peer]?.draft.trim()) sendRule = undefined; }
   } finally { composerSending=false; }
 }
 function pasteImage(event: ClipboardEvent): void {
@@ -2695,11 +2717,11 @@ function pasteImage(event: ClipboardEvent): void {
     void tick().then(()=>{if(field.isConnected && sessionChats.activePeer===peer)field.setSelectionRange(start+text.length,start+text.length);});
   }
 }
-async function sendTextOnly() {
+async function sendTextOnly(admitted = false) {
   const peer = sessionChats.activePeer;
   const conversation = sessionChats.byPeer[peer];
   const text = conversation?.draft.trim();
-  if (!text || conversation.sending || switchingTrust || actionBusy || memoryBusy || endingSession) return;
+  if (!text || conversation.sending || switchingTrust || actionBusy || memoryBusy || (endingSession && !admitted)) return;
   if (conversation.contact !== 'new' && conversation.contact !== 'accepted') return;
   if (!textFitsLimit(text, conversation.contact === 'new')) {
     sessionChats = updateConversation(sessionChats, peer, (current) => ({
@@ -2976,6 +2998,7 @@ async function loadLibraryAsset(hash: string): Promise<Uint8Array | null> {
   return bytes;
 }
 async function commitMediaLibrary(next: MediaLibrary, files: PreparedMedia[] = [], expectedGeneration = authGeneration): Promise<void> {
+  if (endingSession) throw Error('Профиль изменился.');
   const baseline=mediaLibrary;
   const work=stickerStorageChain.catch(()=>{}).then(()=>commitMediaLibraryNow(rebaseMediaLibrary(next,baseline,mediaLibrary,sessionChats),files,expectedGeneration));
   stickerStorageChain=work;
@@ -2983,7 +3006,7 @@ async function commitMediaLibrary(next: MediaLibrary, files: PreparedMedia[] = [
 }
 async function commitMediaLibraryNow(next: MediaLibrary, files: PreparedMedia[], expectedGeneration: number): Promise<void> {
   if (screen !== 'account' || expectedGeneration !== authGeneration) throw new Error('Профиль изменился.');
-  if (navigationBusy()) throw new Error('Дождитесь завершения текущего действия.');
+  if (navigationBusy(true, false)) throw new Error('Дождитесь завершения текущего действия.');
   const accountId = address; const generation = authGeneration; const key = chatStoreKey;
   const previous = mediaLibrary; const epoch = storageEpoch(); const durable = trustedSession;
   const normalized = normalizeMediaLibrary(retainMessageMedia(next,previous,sessionChats));
@@ -3020,7 +3043,10 @@ async function preparedLibraryPack(pack: StickerPack): Promise<PreparedMedia[]> 
   }
   return result;
 }
-async function sendLibraryFile(file: File, details: MessageDetails, peer = sessionChats.activePeer): Promise<void> {
+function sendLibraryFile(file: File, details: MessageDetails, peer = sessionChats.activePeer): Promise<void> {
+  return attachmentTasks.track(sendLibraryFileNow(file, details, peer));
+}
+async function sendLibraryFileNow(file: File, details: MessageDetails, peer: string): Promise<void> {
   const activeChat = chat;
   if (!activeChat || navigationBusy() || attachingFiles || sessionChats.byPeer[peer]?.contact !== 'accepted') throw new Error('Откройте чат с принятым контактом.');
   const pending = sessionChats.byPeer[peer].messages.filter(m => m.direction === 'outgoing' && m.file && !['ready','canceled','rejected'].includes(m.fileStatus ?? '')).length;
@@ -3168,7 +3194,7 @@ async function useCachedSticker(peer:string,offer:FileOffer,ack?:()=>Promise<voi
       entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===offer.id);
     }
     if(!entry||entry.fileDeleted||['canceled','rejected'].includes(entry.fileStatus??''))return false;
-    if(entry.direction!=='incoming'||JSON.stringify(entry.file)!==JSON.stringify(offer))return false;
+    if(entry.direction!=='incoming'||!sameFileOffer(entry.file!,offer))return false;
     const ref=await cacheStickerBytes(bytes,offer);if(!ref)return false;
     if(generation!==authGeneration||chat!==activeChat||sessionChats.byPeer[peer]?.contact!=='accepted')return false;
     const latest=sessionChats.byPeer[peer]?.messages.find(m=>m.id===offer.id);
@@ -3178,14 +3204,21 @@ async function useCachedSticker(peer:string,offer:FileOffer,ack?:()=>Promise<voi
       sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.map(m=>m.id===offer.id&&!m.fileDeleted&&m.fileStatus==='ready'?{...m,fileStatus:entry!.fileStatus,fileAccepted:entry!.fileAccepted,fileProgress:entry!.fileProgress,mediaRef:entry!.mediaRef}:m)}));return false;
     }
     if(generation!==authGeneration||chat!==activeChat)return false;
-    incomingFiles.delete(fileTransferKey(peer,offer.id));
+    releaseReceiveSlot(fileTransferKey(peer,offer.id));
     if(ack)await ack();else await activeChat.sendFileControl('received',offer.id,peer);
     if(entry.fileStatus!=='ready')incomingNotification(peer);return true;
   }finally{bytes.fill(0);}
 }
 
-async function storeFileBytes(peer: string, id: string, bytes: Uint8Array,offer?:FileOffer): Promise<string|undefined> {
-  if (memoryBusy || endingSession) throw new Error('storage_busy');
+function releaseFileScratch(bytes: Uint8Array | undefined): void {
+  clearUnownedFileBytes(bytes, sessionFiles.values());
+}
+
+function storeFileBytes(peer: string, id: string, bytes: Uint8Array, offer?: FileOffer, admitted = false): Promise<string|undefined> {
+  return sessionTasks.track(storeFileBytesNow(peer, id, bytes, offer, admitted));
+}
+async function storeFileBytesNow(peer: string, id: string, bytes: Uint8Array,offer?:FileOffer, admitted = false): Promise<string|undefined> {
+  if (memoryBusy || (endingSession && !admitted)) throw new Error('storage_busy');
   const generationForFile=authGeneration,epoch=storageEpoch();
   const storageId = fileTransferKey(peer, id);
   const entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id),candidate=offer??entry?.file;
@@ -3232,10 +3265,13 @@ function stageAttachments(files: File[]): void {
   pastedFiles = [...pastedFiles,...files];
 }
 
-async function addAttachments(files: File[], rule?: MessageDetails['ephemeral']): Promise<boolean> {
+function addAttachments(files: File[], rule?: MessageDetails['ephemeral'], admitted = false): Promise<boolean> {
+  return attachmentTasks.track(addAttachmentsNow(files, rule, admitted));
+}
+async function addAttachmentsNow(files: File[], rule?: MessageDetails['ephemeral'], admitted = false): Promise<boolean> {
   const peer = sessionChats.activePeer;
   const activeChat = chat;
-  if (!files.length || !activeChat || attachingFiles || navigationBusy(false) || screen !== 'account' || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
+  if (!files.length || !activeChat || attachingFiles || navigationBusy(false, !admitted) || screen !== 'account' || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
   const pending = sessionChats.byPeer[peer].messages.filter((message) => message.direction === 'outgoing' && message.file &&
     message.fileStatus !== 'ready' && message.fileStatus !== 'canceled' && message.fileStatus !== 'rejected').length;
   const error = validateAttachmentBatch(files, pending);
@@ -3245,7 +3281,7 @@ async function addAttachments(files: File[], rule?: MessageDetails['ephemeral'])
     // Sequential disk writes bound peak memory. Every file keeps its own offer,
     // authenticated chunks, progress, retry and final integrity check.
     for (const file of files) {
-      if (chat !== activeChat || endingSession || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
+      if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
       if (rule && !rule.allowDownload && !/^(image\/(png|jpeg|webp|gif|avif)|audio\/|video\/)/.test(file.type)) { status = 'Без скачивания пока поддерживаются только изображения, аудио и видео. Для этого файла разрешите скачивание.'; return false; }
       if (!await enqueueAttachment(file, peer, activeChat, rule ? { ephemeral: { ...rule }, allowForwardAttribution: false } : undefined)) return false;
     }
@@ -3255,17 +3291,22 @@ async function addAttachments(files: File[], rule?: MessageDetails['ephemeral'])
 
 async function enqueueAttachment(file: File, peer: string, activeChat: ChatService, extra?: MessageDetails): Promise<boolean> {
   let stagedId='',stagedDurable=false;
+  let sourceBytes: Uint8Array | undefined, preparedBytes: Uint8Array | undefined;
   const generation=authGeneration;
   try {
     if (extra?.ephemeral && !extra.ephemeral.allowDownload && !/^(image\/(png|jpeg|webp|gif|avif)|audio\/|video\/)/.test(file.type)) throw new Error('Без скачивания пока поддерживаются только изображения, аудио и видео.');
-    const source = new Uint8Array(await file.arrayBuffer());
+    const source = sourceBytes = new Uint8Array(await file.arrayBuffer());
     const cleaned = cleanImageMetadataEnabled ? await preparePrivateImage(source, file.type, file.name) : { bytes: source, mime: file.type, name: file.name };
-    const bytes = cleaned.bytes;
+    const bytes = preparedBytes = cleaned.bytes;
     if (bytes !== source) source.fill(0);
     if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
     const details: MessageDetails = extra ?? { allowForwardAttribution, ...(replyDrafts[peer] ? { reply: replyDrafts[peer] } : {}) };
     if (!details.media && await hasTransparentPixels(bytes,cleaned.mime)) details.media={kind:'sticker'};
     if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return false;
+    if (!details.ephemeral && !details.imagePreview) {
+      const preview = await createImagePreview(bytes, cleaned.mime); if (preview) details.imagePreview = preview;
+    }
+    if (chat !== activeChat || generation !== authGeneration) return false;
     const id = crypto.randomUUID();
     const offer: FileOffer = { id, name: safeFileName(cleaned.name), size: bytes.length,
       mime: cleaned.mime.slice(0, 100), sha256: await sha256Hex(bytes),
@@ -3278,7 +3319,7 @@ async function enqueueAttachment(file: File, peer: string, activeChat: ChatServi
       timestamp: Date.now(), direction: 'outgoing', details: offer.details, file: offer,
       delivery: 'saving',
       fileStatus: peer === address ? 'ready' : 'queued', fileProgress: peer === address ? bytes.length : 0 });
-    const mediaRef=await storeFileBytes(peer, id, bytes,offer);
+    const mediaRef=await storeFileBytes(peer, id, bytes,offer,true);
     stagedDurable=!!mediaRef&&fileWasTrusted;
     if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') {
       if (fileWasTrusted) void deleteLocalFileData(fileAccountId, fileTransferKey(peer, id)).catch(() => {});
@@ -3295,7 +3336,7 @@ async function enqueueAttachment(file: File, peer: string, activeChat: ChatServi
     stagedDurable=fileWasTrusted;
     if (chat !== activeChat || address !== fileAccountId) return false;
     sessionChats = setDeliveryStatus(sessionChats,peer,id,peer === address ? 'delivered' : 'queued');
-    if(peer!==address)void stickerExchange?.probe(peer,offer).finally(()=>courierDelivery?.wake());
+    if(peer!==address){void notificationController?.tick(true);void stickerExchange?.probe(peer,offer).finally(()=>courierDelivery?.wake());}
     if (!extra) { const nextReplies = { ...replyDrafts }; delete nextReplies[peer]; replyDrafts = nextReplies; }
     if (peer === address) return true;
     courierDelivery?.wake();
@@ -3306,42 +3347,79 @@ async function enqueueAttachment(file: File, peer: string, activeChat: ChatServi
     if(stagedId&&!stagedDurable&&generation===authGeneration&&chat===activeChat)sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.filter(m=>m.id!==stagedId||m.delivery!=='saving')}));
     if (chat === activeChat) status = e instanceof Error ? e.message : 'Не удалось добавить файл.';
     return false;
-  }
+  } finally { releaseFileScratch(sourceBytes); releaseFileScratch(preparedBytes); }
 }
 
+function receivingCourierFiles(): number {
+  return courierState.incomingFiles.filter(r => sessionChats.byPeer[r.job.body.from]?.messages.some(m => m.id === r.job.body.id && m.fileAccepted && !m.fileDeleted && m.fileStatus === 'receiving')).length;
+}
+function releaseReceiveSlot(key: string, expected = receiveSlots.get(key)): void {
+  if (!expected || !receiveSlots.current(expected)) return;
+  const receiver = incomingFiles.get(key); incomingFiles.delete(key); receiveSlots.release(expected);
+  if (receiver) releaseFileScratch(receiver.bytes);
+}
+function clearPeerFileWork(peer: string): void {
+  filePeerEpoch.set(peer, (filePeerEpoch.get(peer) ?? 0) + 1);
+  for (const key of receiveSlots.keys()) if (key.startsWith(peer + ':')) releaseReceiveSlot(key);
+  for (const key of sendingFiles.keys()) if (key.startsWith(peer + ':')) sendingFiles.delete(key);
+}
 function receiveWaitingFiles(): void {
-  if (!chat || profileSwitchBusy || endingSession || switchingTrust || memoryBusy || panicBusy || !autoReceiveFilesEnabled || (trustedSession && !chatStoreKey)) return;
-  // Accepted contacts only; two simultaneous receives and 100 MiB per unlocked
-  // session. Failed/rejected/deleted offers are never automatically retried.
-  const courierReceiving = courierState.incomingFiles.filter(r => sessionChats.byPeer[r.job.body.from]?.messages.some(m => m.id === r.job.body.id && m.fileAccepted && m.fileStatus !== 'ready')).length;
-  for (const offer of automaticFileOffers(sessionChats, incomingFiles.size + courierReceiving, MAX_AUTO_FILE_BYTES - automaticFileBytes, autoReceiveFilesEnabled)) {
-    automaticFileBytes += offer.size;
-    void acceptFile(offer.peer, offer.id);
+  if (receivePump) return;
+  const work = pumpReceiveFiles(); receivePump = work;
+  void work.catch(() => {}).finally(() => { if (receivePump === work) receivePump = null; });
+}
+async function pumpReceiveFiles(): Promise<void> {
+  const active = chat;
+  if (!active || profileSwitchBusy || endingSession || switchingTrust || memoryBusy || panicBusy || !autoReceiveFilesEnabled || (trustedSession && !chatStoreKey)) return;
+  const generation = authGeneration;
+  // Select again after each admission; leases already cover cache/storage awaits.
+  for (let n = 0; n < 32 && chat === active && generation === authGeneration && !endingSession; n++) {
+    const excluded = new Set(receiveSlots.keys());
+    for (const [key, until] of receiveRetryAfter) if (until > Date.now()) excluded.add(key);
+    const offer = automaticFileOffers(sessionChats, receiveSlots.size + receivingCourierFiles(), MAX_AUTO_FILE_BYTES - automaticFileBytes,
+      autoReceiveFilesEnabled, undefined, excluded, automaticFileIds)[0];
+    if (!offer) break;
+    await acceptFile(offer.peer, offer.id, true);
   }
 }
-
+function recoverFileReceives(): void {
+  if (!chat || navigationBusy()) return;
+  const active = chat;
+  for (const lease of receiveSlots.stalled(active)) {
+    const split = lease.key.lastIndexOf(':'), peer = lease.key.slice(0,split), id = lease.key.slice(split+1);
+    if (sessionChats.byPeer[peer]?.connection !== 'connected') continue;
+    lease.touched = Date.now();
+    // Ask again without resetting already verified ordered bytes. Exact retry
+    // chunks are harmless; final content hash and durable ACK remain mandatory.
+    void active.sendFileControl('accept',id,peer).catch(() => {});
+  }
+  receiveWaitingFiles();
+}
 $effect(() => {
-  const enabled = autoReceiveFilesEnabled;
-  // Changes in offered/ready states wake the bounded receive queue.
-  const pending = sessionChats.order.some(peer => sessionChats.byPeer[peer].messages.some(entry =>
-    entry.direction === 'incoming' && entry.fileStatus === 'offered' && !entry.fileAccepted));
-  if (pending && enabled) receiveWaitingFiles();
+  autoReceiveFilesEnabled; endingSession; screen;
+  const pending = sessionChats.order.some(peer => {
+    const c = sessionChats.byPeer[peer];
+    return (c.connection === 'connected' || c.messages.some(m=>m.courierVia)) && c.messages.some(m =>
+      m.direction === 'incoming' && (m.fileStatus === 'offered' || m.fileStatus === 'failed' && m.fileAccepted === true));
+  });
+  if (pending) untrack(receiveWaitingFiles);
 });
 
 async function offerFile(peer: string, id: string, activeChat: ChatService): Promise<void> {
   const entry = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id && message.direction === 'outgoing');
   if (!pendingFile(entry) || chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted' ||
     sessionChats.byPeer[peer]?.connection !== 'connected') return;
+  const epoch = filePeerEpoch.get(peer) ?? 0;
   try {
     await activeChat.sendFileOffer(entry.file, peer);
-    if (chat !== activeChat) return;
+    if (chat !== activeChat || (filePeerEpoch.get(peer) ?? 0) !== epoch) return;
     const latest = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id);
     if (latest?.fileStatus === 'ready' || latest?.fileStatus === 'rejected' || latest?.fileStatus === 'canceled') return;
-    updateFileEntry(peer, id, { fileStatus: 'offered', fileProgress: 0 });
+    if (latest?.fileStatus !== 'sending') updateFileEntry(peer, id, { fileStatus: 'offered' });
     void persistLocalChats();
     scheduleFileRetry(peer, id, activeChat);
   } catch (e) {
-
+    if (chat !== activeChat || (filePeerEpoch.get(peer) ?? 0) !== epoch) return;
     updateFileEntry(peer, id, { fileStatus: 'queued' });
     void persistLocalChats();
   }
@@ -3369,51 +3447,60 @@ function scheduleFileRetry(peer: string, id: string, activeChat: ChatService): v
   }, Math.min(15_000 * 2 ** Math.min(attempt - 1, 3), 120_000)));
 }
 
-async function acceptFile(peer: string, id: string): Promise<void> {
-  const entry = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id && message.direction === 'incoming');
-  if (!entry?.file || entry.fileDeleted || !chat || memoryBusy || panicBusy || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
-  if(!courierState.incomingFiles.some(r=>r.job.body.id===id&&r.job.body.from===peer)&&await useCachedSticker(peer,entry.file))return;
-  if (courierState.incomingFiles.some(r => r.job.body.id === id && r.job.body.from === peer)) {
-    const receiving = courierState.incomingFiles.filter(r => r.job.body.id !== id && sessionChats.byPeer[r.job.body.from]?.messages.some(m => m.id === r.job.body.id && m.fileAccepted && m.fileStatus !== 'ready')).length;
-    if (receiving + incomingFiles.size >= 2) { status = 'Одновременно можно получать не более двух файлов.'; return; }
-    updateFileEntry(peer, id, { fileAccepted: true, fileStatus: 'receiving' });
-    if (await persistLocalChats()) courierDelivery?.wake(); else updateFileEntry(peer, id, { fileAccepted: false, fileStatus: 'offered' });
-    return;
-  }
-  if (!incomingFiles.has(fileTransferKey(peer, id)) && incomingFiles.size >= 2) {
-    status = 'Одновременно можно получать не более двух файлов.';
-    return;
-  }
-  const activeChat = chat;
-  const key = fileTransferKey(peer, id);
-  // A repeated offer/accept must not reset an in-flight reassembly buffer.
-  if (entry.fileStatus === 'receiving' && incomingFiles.has(key)) return;
-  incomingFiles.set(key, new FileReceiver(entry.file.size));
-  updateFileEntry(peer, id, { fileAccepted: true, fileStatus: 'receiving', fileProgress: 0 });
-  if (!await persistLocalChats()) { incomingFiles.delete(key); updateFileEntry(peer, id, { fileAccepted: false, fileStatus: 'offered' }); return; }
-  if (chat !== activeChat) return;
+function acceptFile(peer: string, id: string, automatic = false): Promise<void> {
+  return sessionTasks.track(acceptFileNow(peer,id,automatic));
+}
+async function acceptFileNow(peer: string, id: string, automatic: boolean): Promise<void> {
+  const active = chat, generation = authGeneration, key = fileTransferKey(peer,id);
+  let entry = sessionChats.byPeer[peer]?.messages.find(m=>m.id===id&&m.direction==='incoming');
+  if (!active || !entry?.file || entry.fileDeleted || ['ready','rejected','canceled'].includes(entry.fileStatus??'') || navigationBusy() || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
+  if (receiveSlots.has(key)) return;
+  const lease = receiveSlots.reserve(key,active,receivingCourierFiles());
+  if (!lease) { if (!automatic) status = 'Одновременно можно получать не более двух файлов.'; return; }
+  const current = () => chat === active && generation === authGeneration && receiveSlots.current(lease) && !endingSession && sessionChats.byPeer[peer]?.contact === 'accepted';
+  if (automatic && !automaticFileIds.has(key)) { automaticFileIds.add(key); automaticFileBytes += entry.file.size; }
+  let handedOff = false;
   try {
-    if (entry.file.size === 0) {
-      if (await sha256Hex(new Uint8Array()) !== entry.file.sha256) throw new Error('file_hash_mismatch');
-      await storeFileBytes(peer, id, new Uint8Array());
-      incomingFiles.delete(key);
-      updateFileEntry(peer, id, { fileStatus: 'ready' });
-      if (await persistLocalChats()) { incomingNotification(peer); await activeChat.sendFileControl('received', id, peer); }
-      else updateFileEntry(peer, id, { fileStatus: 'failed' });
-    } else await activeChat.sendFileControl('accept', id, peer);
-  } catch (e) {
-
-    incomingFiles.delete(key);
-    if (chat === activeChat) {
-      updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0,
-        fileAccepted: e instanceof Error && e.message === 'file_hash_mismatch' ? false : true });
-      void persistLocalChats();
+    const courier = courierState.incomingFiles.some(r=>r.job.body.id===id&&r.job.body.from===peer);
+    if (!courier && await useCachedSticker(peer,entry.file)) return;
+    if (!current()) return;
+    entry = sessionChats.byPeer[peer]?.messages.find(m=>m.id===id&&m.direction==='incoming');
+    if (!entry?.file || entry.fileDeleted || ['ready','rejected','canceled'].includes(entry.fileStatus??'')) return;
+    if (courier) {
+      updateFileEntry(peer,id,{fileAccepted:true,fileStatus:'receiving'});
+      if (await persistLocalChats()) { if (current()) { releaseReceiveSlot(key,lease); courierDelivery?.wake(); } }
+      else if (current()) updateFileEntry(peer,id,{fileAccepted:false,fileStatus:'offered'});
+      return;
     }
+    incomingFiles.set(key,new FileReceiver(entry.file.size));
+    updateFileEntry(peer,id,{fileAccepted:true,fileStatus:'receiving',fileProgress:0});
+    if (!await persistLocalChats()) throw Error('incoming_file_offer_not_saved');
+    if (!current()) return;
+    lease.phase = 'receiving'; lease.touched = Date.now();
+    if (entry.file.size === 0) {
+      lease.phase = 'committing';
+      if (await sha256Hex(new Uint8Array()) !== entry.file.sha256) throw Error('file_hash_mismatch');
+      await storeFileBytes(peer,id,new Uint8Array());
+      if (!current()) return;
+      updateFileEntry(peer,id,{fileStatus:'ready',fileProgress:0});
+      if (!await persistLocalChats()) throw Error('incoming_file_offer_not_saved');
+      if (current()) { incomingNotification(peer); await active.sendFileControl('received',id,peer); }
+    } else { handedOff = true; await active.sendFileControl('accept',id,peer); }
+  } catch (error) {
+    if (handedOff && receiveSlots.get(key)?.phase === 'committing') return;
+    if (current()) {
+      const retry = !(error instanceof Error && ['file_hash_mismatch','incoming_file_offer_not_saved'].includes(error.message));
+      updateFileEntry(peer,id,{fileStatus:'failed',fileProgress:0,fileAccepted:retry});
+      receiveRetryAfter.set(key,Date.now()+10_000); void persistLocalChats();
+    }
+    releaseReceiveSlot(key,lease);
+  } finally {
+    if (!handedOff || !current()) releaseReceiveSlot(key,lease);
   }
 }
 
 async function rejectFile(peer: string, id: string): Promise<void> {
-  incomingFiles.delete(fileTransferKey(peer, id));
+  releaseReceiveSlot(fileTransferKey(peer,id));
   updateFileEntry(peer, id, { fileAccepted: false, fileStatus: 'rejected' });
   await persistLocalChats();
   if (chat) void chat.sendFileControl('reject', id, peer).catch(() => {});
@@ -3523,7 +3610,7 @@ async function cancelFile(peer: string, id: string,bulk=false): Promise<boolean>
   const entry = sessionChats.byPeer[peer]?.messages.find(message => message.id === id);
   if (!entry?.file || entry.nodeQueue || entry.fileStatus === 'ready' || ['delivered', 'read'].includes(entry.delivery ?? '')) return false;
   clearFileRetry(peer, id);
-  incomingFiles.delete(fileTransferKey(peer, id));
+  releaseReceiveSlot(fileTransferKey(peer,id));
   updateFileEntry(peer, id, { fileStatus: 'canceled', fileProgress: 0, fileAccepted: false });
   if(entry.direction==='outgoing')void notificationController?.cancelMessage(peer,id);
   const saved=await persistLocalChats();
@@ -3532,21 +3619,25 @@ async function cancelFile(peer: string, id: string,bulk=false): Promise<boolean>
   return saved;
 }
 
-async function sendFileData(peer: string, id: string, activeChat: ChatService): Promise<void> {
+function sendFileData(peer: string, id: string, activeChat: ChatService): Promise<void> {
+  return sessionTasks.track(sendFileDataNow(peer, id, activeChat));
+}
+async function sendFileDataNow(peer: string, id: string, activeChat: ChatService): Promise<void> {
   const key = fileTransferKey(peer, id);
   if (sendingFiles.has(key)) return;
   if (sendingFiles.size >= 2) { scheduleFileRetry(peer, id, activeChat); return; }
   const entry = sessionChats.byPeer[peer]?.messages.find((message) => message.id === id && message.direction === 'outgoing');
   if (!pendingFile(entry) || chat !== activeChat) return;
-  sendingFiles.add(key);
+  const attempt = Symbol(key); sendingFiles.set(key,attempt);
+  let scratch: Uint8Array | undefined;
   try {
-    const bytes = await getFileBytes(peer, id);
+    const bytes = await getFileBytes(peer, id); scratch = bytes ?? undefined;
     if (!bytes || bytes.length !== entry.file.size || await sha256Hex(bytes) !== entry.file.sha256)
       throw new Error('Файл больше не доступен в этом браузере.');
-    if (chat !== activeChat || !pendingFile(sessionChats.byPeer[peer]?.messages.find(m => m.id === id))) return;
+    if (sendingFiles.get(key) !== attempt || chat !== activeChat || !pendingFile(sessionChats.byPeer[peer]?.messages.find(m => m.id === id))) return;
     updateFileEntry(peer, id, { fileStatus: 'sending', fileProgress: 0 });
     for (let offset = 0, index = 0; offset < bytes.length; offset += FILE_CHUNK_BYTES, index++) {
-      if (chat !== activeChat || sessionChats.byPeer[peer]?.connection !== 'connected' ||
+      if (sendingFiles.get(key) !== attempt || chat !== activeChat || sessionChats.byPeer[peer]?.connection !== 'connected' ||
         sessionChats.byPeer[peer]?.contact !== 'accepted' ||
         !pendingFile(sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)))
         throw new Error('Передача прервана.');
@@ -3555,58 +3646,65 @@ async function sendFileData(peer: string, id: string, activeChat: ChatService): 
         updateFileEntry(peer, id, { fileProgress: Math.min(offset + FILE_CHUNK_BYTES, bytes.length) });
     }
     // An empty file has no chunks; the receiver completes it on acceptance.
-    if (chat === activeChat && sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)?.fileStatus !== 'ready') {
+    if (sendingFiles.get(key) === attempt && chat === activeChat && sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)?.fileStatus !== 'ready') {
       updateFileEntry(peer, id, { fileStatus: 'offered' }); void persistLocalChats();
     }
   } catch (e) {
 
-    if (chat === activeChat && sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)?.fileStatus !== 'canceled') {
+    if (sendingFiles.get(key) === attempt && chat === activeChat && sessionChats.byPeer[peer]?.messages.find((message) => message.id === id)?.fileStatus !== 'canceled') {
       updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0 });
       void persistLocalChats();
     }
-  } finally { sendingFiles.delete(key); }
+  } finally { if (sendingFiles.get(key) === attempt) sendingFiles.delete(key); releaseFileScratch(scratch); }
 }
 
 async function receiveFileChunk(peer: string, id: string, index: number, chunk: Uint8Array, activeChat: ChatService): Promise<void> {
   if (chat !== activeChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
   const entry = sessionChats.byPeer[peer].messages.find((message) => message.id === id && message.direction === 'incoming');
-  const transfer = incomingFiles.get(fileTransferKey(peer, id));
-  if (!entry?.file || !transfer || entry.fileStatus !== 'receiving') return;
-  const stillReceiving = () => chat === activeChat && sessionChats.byPeer[peer]?.contact === 'accepted' &&
+  const key = fileTransferKey(peer,id), lease = receiveSlots.get(key);
+  const transfer = incomingFiles.get(key);
+  if (!entry?.file || !transfer || !lease || lease.owner !== activeChat || lease.phase !== 'receiving' || entry.fileStatus !== 'receiving') return;
+  const stillReceiving = () => receiveSlots.current(lease) && incomingFiles.get(key) === transfer && chat === activeChat && sessionChats.byPeer[peer]?.contact === 'accepted' &&
     sessionChats.byPeer[peer]?.messages.some(message => message.id === id && message.fileStatus === 'receiving' && !message.fileDeleted);
-  try { transfer.append(index, chunk); }
-  catch {
-    incomingFiles.delete(fileTransferKey(peer, id));
-    updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0, fileAccepted: false });
-    void persistLocalChats();
-    void activeChat.sendFileControl('cancel', id, peer).catch(() => {});
-    return;
-  }
-  if (transfer.nextIndex % 8 === 0 || transfer.received === entry.file.size)
-    updateFileEntry(peer, id, { fileProgress: transfer.received });
-  if (transfer.received !== entry.file.size) return;
-  incomingFiles.delete(fileTransferKey(peer, id));
-  const digest = await sha256Hex(transfer.bytes);
-  if (!stillReceiving()) return;
-  if (digest !== entry.file.sha256) {
-    updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0, fileAccepted: false });
-    void persistLocalChats();
-    void activeChat.sendFileControl('cancel', id, peer).catch(() => {});
-    return;
-  }
-  if (!stillReceiving()) return;
   try {
-    await storeFileBytes(peer, id, transfer.bytes);
-    if (!stillReceiving()) return;
-    updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: transfer.received });
-    if (await persistLocalChats()) { incomingNotification(peer); await activeChat.sendFileControl('received', id, peer); }
-    else updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0 });
-  } catch (e) {
-
-    if (stillReceiving()) {
-      updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0 });
+    const before = transfer.received;
+    try { transfer.append(index, chunk); if (transfer.received > before) lease.touched = Date.now(); }
+    catch {
+      releaseReceiveSlot(key,lease);
+      updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0, fileAccepted: false });
       void persistLocalChats();
+      void activeChat.sendFileControl('cancel', id, peer).catch(() => {});
+      return;
     }
+    if (transfer.nextIndex % 8 === 0 || transfer.received === entry.file.size)
+      updateFileEntry(peer, id, { fileProgress: transfer.received });
+    if (transfer.received !== entry.file.size) return;
+    lease.phase = 'committing';
+    const digest = await sha256Hex(transfer.bytes);
+    if (!stillReceiving()) return;
+    if (digest !== entry.file.sha256) {
+      updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0, fileAccepted: false });
+      void persistLocalChats();
+      void activeChat.sendFileControl('cancel', id, peer).catch(() => {});
+      return;
+    }
+    if (!stillReceiving()) return;
+    try {
+      await storeFileBytes(peer, id, transfer.bytes);
+      if (!stillReceiving()) return;
+      updateFileEntry(peer, id, { fileStatus: 'ready', fileProgress: transfer.received });
+      if (await persistLocalChats()) { incomingNotification(peer); await activeChat.sendFileControl('received', id, peer); }
+      else updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0 });
+    } catch (e) {
+
+      if (stillReceiving()) {
+        updateFileEntry(peer, id, { fileStatus: 'failed', fileProgress: 0 });
+        void persistLocalChats();
+      }
+    }
+  } finally {
+    if (lease.phase === 'committing') releaseReceiveSlot(key,lease);
+    if (!receiveSlots.current(lease)) releaseFileScratch(transfer.bytes);
   }
 }
 
@@ -3625,7 +3723,8 @@ async function downloadFile(peer: string, id: string): Promise<boolean> {
     anchor.href = url;
     anchor.download = entry.file.name;
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    downloadUrls.add(url);
+    setTimeout(() => { URL.revokeObjectURL(url); downloadUrls.delete(url); }, 60_000);
     return true;
   } catch (e) { if (generation === authGeneration) status = e instanceof Error ? e.message : 'Не удалось скачать файл.'; return false; }
 }
@@ -3814,7 +3913,8 @@ async function prepareMessageFile(peer: string, id: string, requireActiveChat = 
 function saveDownload(bytes: BlobPart, name: string): void {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  downloadUrls.add(url);
+  setTimeout(() => { URL.revokeObjectURL(url); downloadUrls.delete(url); }, 60_000);
 }
 async function copySelection():Promise<void>{
   const peer=sessionChats.activePeer,generation=authGeneration;
@@ -4189,7 +4289,7 @@ async function blockRequest(peer: string): Promise<void> {
   sessionChats = updateConversation(sessionChats, peer, (conversation) => ({
     ...conversation, contact: 'blocked', blockedFrom: 'pending', messages: [], unread: 0, draft: '',
   }));
-  for (const key of incomingFiles.keys()) if (key.startsWith(`${peer}:`)) incomingFiles.delete(key);
+  clearPeerFileWork(peer);
   if (!await persistLocalChats() && address === accountId) sessionChats = previous;
 }
 
@@ -4203,7 +4303,7 @@ async function blockContact(peer: string): Promise<void> {
   sessionChats = updateConversation(sessionChats, peer, (conversation) => ({
     ...conversation, blockedFrom: conversation.contact, contact: 'blocked', unread: 0,
   }));
-  for (const key of incomingFiles.keys()) if (key.startsWith(`${peer}:`)) incomingFiles.delete(key);
+  clearPeerFileWork(peer);
   for (const message of existing.messages) if (message.file) clearFileRetry(peer, message.id);
   if (!await persistLocalChats() && address === accountId) sessionChats = previous;
 }
@@ -4396,7 +4496,7 @@ async function initializeChat() {
   // the abandoned transport can retain a second signaling registration.
   const startVersion = ++chatStartVersion;
   if (address && screen === 'account') sessionChats = savedConversation(sessionChats, address);
-  if (memoryBusy || panicBusy || screen !== 'account') return;
+  if (memoryBusy || panicBusy || endingSession || screen !== 'account') return;
   if (!identity || !address) {
     throw new Error('identity_not_ready');
   }
@@ -4523,14 +4623,14 @@ async function initializeChat() {
           if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted' || sessionChats.byPeer[peer].deletedIds?.includes(offer.id)) throw new Error('attachment_contact_unavailable');
           const existing = sessionChats.byPeer[peer].messages.find(m => m.id === offer.id);
           if (existing?.file) {
-            if (existing.direction !== 'incoming' || JSON.stringify(existing.file) !== JSON.stringify(offer)) throw new Error('conflicting_message_id');
+            if (existing.direction !== 'incoming' || !sameFileOffer(existing.file,offer)) throw new Error('conflicting_message_id');
             updateFileEntry(peer, offer.id, { courierVia: courierAddress });
           } else sessionChats = receiveFileMessage(sessionChats, { id: offer.id, text: '', from: peer, timestamp, direction: 'incoming', file: offer,
             fileStatus: 'offered', fileProgress: 0, courierVia: courierAddress, ...(offer.details ? { details: offer.details } : {}) });
         },
         accepted: (peer, id) => {
           const m = sessionChats.byPeer[peer]?.messages.find(m => m.id === id);
-          return chat === nextChat && !!m && !m.fileDeleted && !['rejected', 'canceled'].includes(m.fileStatus ?? '') && (m.fileAccepted === true || m.fileStatus === 'ready');
+          return chat === nextChat && !!m && !m.fileDeleted && !['rejected', 'canceled'].includes(m.fileStatus ?? '') && (m.fileStatus === 'ready' || m.fileAccepted === true && m.fileStatus === 'receiving' && !receiveSlots.has(fileTransferKey(peer,id)));
         },
         progress: (peer, id, bytes, uploading) => {
           if (chat !== nextChat) return;
@@ -4696,7 +4796,7 @@ async function initializeChat() {
     if (sessionChats.byPeer[peer].deletedIds?.includes(offer.id)) { await nextChat.sendFileControl('reject', offer.id, peer); return; }
     const existing = sessionChats.byPeer[peer].messages.find((message) => message.id === offer.id);
     if (existing?.file) {
-      if (existing.direction !== 'incoming' || JSON.stringify(existing.file) !== JSON.stringify(offer)) return;
+      if (existing.direction !== 'incoming' || !sameFileOffer(existing.file,offer)) return;
       if (existing.fileStatus === 'ready') {
         await nextChat.sendFileControl('received', offer.id, peer);
       } else if (existing.fileStatus === 'rejected' || existing.fileStatus === 'canceled') {
@@ -4736,13 +4836,13 @@ async function initializeChat() {
       void persistLocalChats();
     } else if (action === 'reject' || action === 'cancel') {
       clearFileRetry(peer, id);
-      incomingFiles.delete(fileTransferKey(peer, id));
+      releaseReceiveSlot(fileTransferKey(peer,id));
       updateFileEntry(peer, id, { fileStatus: action === 'reject' ? 'rejected' : 'failed', fileProgress: 0 });
       void persistLocalChats();
     }
   });
   nextChat.onFileChunk(async (peer, id, index, chunk) => {
-    await receiveFileChunk(peer, id, index, chunk, nextChat);
+    await sessionTasks.track(receiveFileChunk(peer, id, index, chunk, nextChat));
   });
   nextChat.onPeerIdentity((accountId, verifiedPublicKey) => {
     if (chat !== nextChat || peerPublicKeys[accountId] === verifiedPublicKey) return;
@@ -4769,7 +4869,7 @@ async function initializeChat() {
       ...current,
       connection: event === 'joined' ? 'connected' : 'offline',
       error: '',
-      messages: event === 'left' ? current.messages.map(peerDisconnectedMessage) : current.messages,
+      messages: event === 'left' ? current.messages.map(m => m.direction === 'incoming' && m.fileStatus === 'receiving' && !receiveSlots.has(fileTransferKey(peer.address,m.id)) && courierState.incomingFiles.some(r=>r.job.body.id===m.id&&r.job.body.from===peer.address) ? m : peerDisconnectedMessage(m)) : current.messages,
     }));
     if (event === 'joined') {
       if (sessionChats.byPeer[peer.address]?.contact !== 'blocked') {
@@ -4785,7 +4885,7 @@ async function initializeChat() {
       }
       resumeConnectedPeer(peer.address, nextChat);
     } else {
-      for (const key of incomingFiles.keys()) if (key.startsWith(`${peer.address}:`)) incomingFiles.delete(key);
+      clearPeerFileWork(peer.address);
       peerReadConfirmed.delete(peer.address);
       void persistLocalChats();
       courierDelivery?.wake();
@@ -4943,7 +5043,7 @@ function pauseFileTransfers(): void {
   for (const timer of fileRetryTimers.values()) clearTimeout(timer);
   fileRetryTimers.clear(); fileRetryAttempts.clear();
   for (const receiver of incomingFiles.values()) receiver.bytes.fill(0);
-  incomingFiles.clear(); sendingFiles.clear(); outbox.reset(); clearMediaPreview();
+  incomingFiles.clear(); receiveSlots.clear(); receiveRetryAfter.clear(); sendingFiles.clear(); outbox.reset(); clearMediaPreview();
   for (const peer of sessionChats.order) sessionChats = updateConversation(sessionChats, peer, conversation => ({
     ...conversation, connection: 'offline', sending: false,
     messages: conversation.messages.map(message => ({ ...message,
@@ -5025,7 +5125,7 @@ function discardAllOpenData(): void {
   void oldChat?.disconnect().catch(() => {});
   pauseFileTransfers();
   for (const bytes of sessionFiles.values()) bytes.fill(0);
-  if (lockedSession) for (const bytes of lockedSession.files.values()) bytes.fill(0);
+  discardLockedSession(lockedSession);
   lockedSession = null;
   forgetOpenAccount('logout');
   appUpdater?.dispose(); appUpdater = null;
@@ -5149,9 +5249,12 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
   for (const timer of fileRetryTimers.values()) clearTimeout(timer);
   fileRetryTimers.clear();
   fileRetryAttempts.clear();
+  for (const bytes of sessionFiles.values()) bytes.fill(0);
   sessionFiles.clear();
-  automaticFileBytes = 0;
-  incomingFiles.clear();
+  for (const url of downloadUrls) URL.revokeObjectURL(url); downloadUrls.clear();
+  pastedFiles = []; receivedPack = null;
+  automaticFileBytes = 0; automaticFileIds.clear();
+  incomingFiles.clear(); receiveSlots.clear(); receiveRetryAfter.clear();
   sendingFiles.clear();
   outbox.reset();
   clearSensitiveData();
@@ -5187,7 +5290,7 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
   peerPublicKeys = {};
   aliasDraft = '';
   if (mode === 'logout') {
-    lockedSession = null;
+    discardLockedSession(lockedSession); lockedSession = null;
     trustedReadReceiptsPreference = true;
   }
   trustedDeviceChoice = mode === 'lock' ? trustedSession : false;
@@ -5196,52 +5299,52 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
 }
 
 async function endSession(mode: 'lock' | 'logout', deleteHistory: boolean): Promise<void> {
-  // Locking waits for the queued atomic media write below, rather than dropping
-  // an automatic lock request merely because a library import is saving.
-  if (endingSession || switchingTrust || memoryBusy || screen !== 'account') return;
-  endingSession = true;
-  audioTrack = null;
-  const activeChat = chat;
-  chat = null;
-  const stoppingOffline = stopOfflineDelivery();
-
+  if (endingSession || switchingTrust || memoryBusy || panicBusy || authBusy || profileSwitchBusy || screen !== 'account') return;
+  endingSession = true; ++chatStartVersion;
+  const generation = authGeneration, accountId = address, epoch = storageEpoch();
+  const guard = () => { requireStorageEpoch(epoch); if (generation !== authGeneration || address !== accountId) throw Error('session_changed'); };
   try {
-    await activeChat?.disconnect();
-    await stoppingOffline;
-  } catch (e) {
-
-  }
-
-  try {
-    await historyWrites.settled();
-    await Promise.allSettled([...pendingFileWrites]);
+    // Already admitted attachments finish staging before their sender is detached.
+    await attachmentTasks.settled(); guard();
+    audioTrack = null;
+    const activeChat = chat; chat = null;
+    const stopping = stopOfflineDelivery();
+    const stopped = await Promise.allSettled([activeChat?.disconnect(), stopping]); guard();
+    if (stopped.some(result => result.status === 'rejected')) throw Error('session_stop_failed');
+    const drain = async () => {
+      await sessionTasks.settled();
+      await stickerStorageChain.catch(() => {});
+      await historyWrites.settled();
+      await Promise.allSettled([...pendingFileWrites]);
+      disconnectRadio(); await radioClosing;
+      guard(); pauseFileTransfers();
+    };
     const action = historyAction(mode, trustedSession, deleteHistory);
     if (mode === 'lock') {
-      lockedSession = { accountId: address, data: chatSnapshot(), files: new Map(sessionFiles), trusted: trustedSession };
-      if (action === 'save') {
-        if (!chatStoreKey) throw new Error('chat_store_unavailable');
-        await saveLocalChatData(chatStoreKey, address, lockedSession.data);
-      }
-    } else if (action === 'delete') {
-      await deleteLocalChatData(address);
-    } else {
-      if (!chatStoreKey) throw new Error('chat_store_unavailable');
-      await saveLocalSessionData(chatStoreKey, address, chatSnapshot(), sessionFiles);
-    }
-
-    forgetOpenAccount(mode);
-  } catch (e) {
-
-    if (mode === 'lock' && lockedSession) {
+      if (!chatStoreKey) throw Error('chat_store_unavailable');
+      const key = chatStoreKey;
+      const result = await prepareSessionLock({ key, accountId, trusted: trustedSession, guard, drain,
+        capture: () => ({ data: chatSnapshot(), files: sessionFiles }),
+        save: (data, files) => saveLocalSessionData(key, accountId, data, files) });
+      guard(); lockedSession = result.session;
       forgetOpenAccount('lock');
-      status = 'Сеанс заблокирован, но не удалось завершить операцию с историей браузера.';
+      if (result.persistenceFailed) status = 'Сеанс заблокирован. Не закрывайте вкладку: сохранение в браузере не завершено. Разблокируйте приложение и повторите сохранение.';
     } else {
-      status = 'Не удалось завершить сеанс: проверьте хранилище браузера и повторите.';
-      if (identity) await initializeChat();
+      await drain();
+      if (action === 'delete') await deleteLocalChatData(accountId);
+      else {
+        if (!chatStoreKey) throw Error('chat_store_unavailable');
+        await saveLocalSessionData(chatStoreKey, accountId, chatSnapshot(), sessionFiles);
+      }
+      guard(); forgetOpenAccount('logout');
     }
-  } finally {
+  } catch {
+    if (generation !== authGeneration || address !== accountId) return;
+    status = 'Не удалось завершить сеанс: проверьте хранилище браузера и повторите.';
+    // Sealing failure keeps the original open data available for retry.
     endingSession = false;
-  }
+    if (identity && !chat) await initializeChat();
+  } finally { endingSession = false; }
 }
 
 async function changePassword(): Promise<void> {
@@ -5965,7 +6068,7 @@ async function changePassword(): Promise<void> {
   {/if}
   <div class="chat-layout" class:show-chat={mobilePane === 'chat'} class:show-list={mobilePane === 'list'}>
     <nav class="conversation-list" aria-label={$i18n.text("Личные чаты")}>
-      <ContactSearch bind:query={chatSearch} ownId={address} onOpen={(peer, route) => void addConversation(peer, route)} />
+      <ContactSearch bind:query={chatSearch} ownId={address} knownIds={sessionChats.order} onOpen={(peer, route) => void addConversation(peer, route)} />
       <div class="conversation-items">
       {#each conversationItems as item (`${item.kind}:${item.id}`)}
         {#if item.kind==='radio'}{@const c=item.channel}{@const last=c.messages.at(-1)}
@@ -5977,7 +6080,7 @@ async function changePassword(): Promise<void> {
         {/if}
       {/each}
       {#if meshtastic.enabled&&meshtastic.channels.some(c=>!nativeLive.includes(nativeToken(c))&&c.messages.length)}<label class="native-saved-toggle"><input type="checkbox" checked={meshtastic.showAll} onchange={e=>void setNativePreferences({showAll:e.currentTarget.checked}).catch(error=>status=error.message)}/>{$i18n.text('Все сохранённые радиоканалы')}</label>{/if}
-      {#if !conversationItems.length}<p>{$i18n.text(chatSearch?'Ничего не найдено.':'Пока нет собеседников.')}</p>{/if}
+      {#if !conversationItems.length && !typedContact}<p>{$i18n.text(chatSearch?'Ничего не найдено.':'Пока нет собеседников.')}</p>{/if}
       </div>
     </nav>
 
@@ -6010,7 +6113,7 @@ async function changePassword(): Promise<void> {
           <ConnectionNotice text={activeConversation.error} onRetry={() => void openDirectChat(activeConversation.peerAddress)} />
         {/if}
         {#if activeConversation.peerAddress !== address && activeConversation.contact === 'accepted'}
-          <ChatNotificationMenu muted={chatNotificationsMuted(notificationState,activeConversation.peerAddress,keyBudgetNow)} until={notificationState.muted?.[activeConversation.peerAddress]}
+          <ChatNotificationMenu enabled={notificationState.enabled && trustedSession && profileNetwork} now={keyBudgetNow} durationHours={notificationState.muteDurations?.[activeConversation.peerAddress]} muted={chatNotificationsMuted(notificationState,activeConversation.peerAddress,keyBudgetNow)} until={notificationState.muted?.[activeConversation.peerAddress]}
             disabled={navigationBusy()} onChange={duration=>changeChatNotificationMute(activeConversation.peerAddress,duration)} />
         {/if}
         {#if activeConversation.peerAddress !== address && activeConversation.contact === 'accepted'}
@@ -6024,7 +6127,9 @@ async function changePassword(): Promise<void> {
         {/if}
         </div>
         {#if chatSearchOpen}<ChatSearch messages={activeMessages} onJump={jumpToMessage} onClose={toggleChatSearch} />{/if}
-        {#key activeConversation.peerAddress}<ChatActivity messages={activeConversation.messages} onJump={jumpToMessage} onClear={()=>void clearQueueCounters(activeConversation.peerAddress)} />{/key}
+        {#key activeConversation.peerAddress}<ChatActivity messages={activeConversation.messages} onJump={jumpToMessage} onClear={()=>void clearQueueCounters(activeConversation.peerAddress)}
+          onRemind={awaitingSender(activeConversation.peerAddress)?()=>void remindSender(activeConversation.peerAddress):undefined} reminderBusy={reminderBusy} reminderNote={reminderNote}
+          reminderDisabled={!notificationState.enabled||!notificationController||navigationBusy()} />{/key}
         {#if activeConversation.error && !isRoutineConnectionNotice(activeConversation.error)}
           <p role="alert">{$i18n.text(activeConversation.error)}</p>
         {/if}
@@ -6126,6 +6231,7 @@ async function changePassword(): Promise<void> {
               {#if message.file}
                 {@const compactMedia = autoReceiveFilesEnabled && mediaCanOpen(message) && inlineMediaFor(message.file) !== null}
                 {#if !compactMedia&&!(message.details?.media?.kind==='sticker-pack'&&mediaCanOpen(message))}<strong>📎 {message.file.name}</strong> {$i18n("m_f8c74e7edc56", {v0: ((message.file.size / 1024).toFixed(1))})}{/if}
+                {#if !message.fileDeleted && !mediaCanOpen(message) && message.details?.imagePreview && !message.details.ephemeral}<ImagePlaceholder preview={message.details.imagePreview}/>{/if}
                 {#if message.fileDeleted}
                   <br /><small>{$i18n.text("Файл удалён с этого устройства")}</small>
                 {:else if message.direction === 'incoming' && (message.fileStatus === 'offered' || message.fileStatus === 'failed')}
@@ -6140,13 +6246,13 @@ async function changePassword(): Promise<void> {
                     aria-label={$i18n("m_931b83c229d4", {v0: (message.file.name)})}
                     class="message-image" class:message-sticker={message.details?.media?.kind === 'sticker'}>
                     {#if imageUrls[fileTransferKey(activeConversation.peerAddress, message.id)] && !imageErrors[fileTransferKey(activeConversation.peerAddress, message.id)]}
-                      <img src={imageUrls[fileTransferKey(activeConversation.peerAddress, message.id)]}
+                      <img width={message.details?.imagePreview?.width} height={message.details?.imagePreview?.height} src={imageUrls[fileTransferKey(activeConversation.peerAddress, message.id)]}
                         alt={message.file.name} loading="lazy"
                         onerror={() => imageErrors = { ...imageErrors, [fileTransferKey(activeConversation.peerAddress, message.id)]: true }}
                         />
                     {:else if imageErrors[fileTransferKey(activeConversation.peerAddress, message.id)]}
                       {$i18n.text("Не удалось показать миниатюру")}
-                    {:else}
+                    {:else if message.details?.imagePreview && !message.details.ephemeral}<ImagePlaceholder preview={message.details.imagePreview}/>{:else}
                       {$i18n.text("🖼️ Открыть изображение")}
                     {/if}
                   </button>

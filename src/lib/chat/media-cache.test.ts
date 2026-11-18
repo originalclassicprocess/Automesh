@@ -1,10 +1,12 @@
 import{describe,it,expect,beforeEach,afterEach,vi}from'vitest';
+import { preserveSnapshotMediaRefs } from './snapshot-media';
+import { SerializedWrites } from '../application/serialized-writes';
 import{IDBFactory,IDBKeyRange}from'fake-indexeddb';
 import{encodeAccountId}from'../addressing/bech32m';
 import{prepareMedia,cacheMedia,emptyMediaLibrary,addMedia,makePack,editMediaPack,libraryFileId,pruneMedia}from'./media-library';
 import{linkCachedMedia,retainMessageMedia,rebaseMediaLibrary,reusableMedia,packRequested,packRequestAnswered}from'./media-cache';
 import{emptySessionChats,ensureConversation,recordSentMessage,saveChats,restoreChats,type ChatEntry}from'./session-chats';
-import{deriveChatStoreKey,normalizeLocalChatData,saveLocalSessionData,loadLocalFileData,inspectChatStorage,saveLocalChatData}from'./local-store';
+import{deriveChatStoreKey,normalizeLocalChatData,saveLocalSessionData,loadLocalFileData,inspectChatStorage,saveLocalChatData,loadLocalChatData,deleteLocalFiles}from'./local-store';
 import{validateBackupProfiles,referencedBackupFiles}from'../backup/full-backup';
 import{captureDeviceHistory}from'../devices/history-data';
 const gif=Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'),c=>c.charCodeAt(0));
@@ -19,6 +21,30 @@ async function fixture(){
  const data=normalizeLocalChatData({mediaLibrary:library,chats:saveChats(linked.chats)});return{f,file,chats:linked.chats,library,key,data};
 }
 describe('profile-local sticker content references',()=>{
+ it('preserves a queued snapshot after cache commit and duplicate removal, including encrypted reload',async()=>{
+  const f=await fixture(),old=structuredClone(f.data),row=old.chats.byPeer[peer].messages[0];
+  for(const message of old.chats.byPeer[peer].messages)delete message.mediaRef;
+  old.mediaLibrary=emptyMediaLibrary();
+  const logical=peer+':'+row.id;
+  await saveLocalSessionData(f.key,owner,old,new Map([[logical,gif]]));
+  const writes=new SerializedWrites();
+  const cacheCommit=writes.enqueue(async()=>{
+   await saveLocalSessionData(f.key,owner,f.data,new Map([[libraryFileId(f.f.asset.id),gif]]));
+   await deleteLocalFiles(owner,[logical]);
+  });
+  const staleWrite=writes.enqueue(()=>{
+   old.mediaLibrary=f.library;
+   preserveSnapshotMediaRefs(old.chats,f.chats);
+   return saveLocalChatData(f.key,owner,old);
+  });
+  await Promise.all([cacheCommit,staleWrite]);
+  expect((await inspectChatStorage(owner)).files).toHaveLength(1);
+  const reloaded=await loadLocalChatData(f.key,owner);
+  expect(reloaded?.chats.byPeer[peer].messages.map(m=>m.delivery)).toEqual(['delivered','delivered']);
+  expect(reloaded?.chats.byPeer[peer].messages.every(m=>m.mediaRef===f.f.asset.id)).toBe(true);
+  expect(await loadLocalFileData(f.key,owner,logical)).toEqual(gif);
+ });
+
  it('rebases a stale pack edit onto a concurrently received canonical copy',async()=>{
   const f=await fixture(),baseline=emptyMediaLibrary(),incoming=f.library;
   const imported={...f.f,asset:{...f.f.asset,id:crypto.randomUUID()}},pack=await makePack('imported',[imported]);

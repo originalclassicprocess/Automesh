@@ -27,6 +27,38 @@ async function fixture(options={}){
   return {service,sent,call,register,origin,settle,advance:n=>{t+=n;},time:()=>t};
 }
 describe('isolated Web Push provider',()=>{
+  it('delivers an authenticated manual return after a live sender locks, without an initial push',async()=>{
+    const f=await fixture(),a=await person(),b=await person();await f.register(a,[b]);await f.register(b,[a]);
+    await f.call(b,'policy',{muted:{},viewing:a.account});
+    const t=token(),route={provider:f.origin+'/api/notifications',device:a.device,token:t,expires:f.time()+3600000};
+    await f.call(a,'waiting',{peer:b.account,token:t,pending:true});
+    expect((await f.call(a,'return-route',{to:b.account,route})).status).toBe(200);
+    await f.settle();expect(f.sent).toHaveLength(0);
+    await f.call(b,'policy',{muted:{},viewing:a.account});
+    // Old clients query ready without a peer and must not auto-consume a manual capability.
+    expect((await f.call(b,'ready',{node:false})).body.tickets).toEqual([]);
+    const tickets=(await f.call(b,'ready',{node:false,peer:a.account})).body.tickets;
+    expect(tickets).toHaveLength(1);expect(tickets[0]).toMatchObject({peer:a.account,manual:true,token:t});
+    await f.call(a,'view-close',{});
+    await f.call(b,'notify',{to:a.account,kind:'return',event:t,returnRoute:null});await f.settle();
+    expect(f.sent).toHaveLength(1);expect(f.sent[0].payload.kind).toBe('return');
+    await f.call(b,'notify',{to:a.account,kind:'return',event:t,returnRoute:null});await f.settle();expect(f.sent).toHaveLength(1);
+  });
+  it('rejects ungranted, stale, blocked or node-backed manual return requests',async()=>{
+    for(const mode of ['no-ticket','wrong-token','finished','sender-node','recipient-node','blocked']){
+      const f=await fixture(),a=await person(),b=await person();await f.register(a,mode==='blocked'?[]:[b],mode==='sender-node');await f.register(b,mode==='blocked'?[]:[a],mode==='recipient-node');
+      const t=token(),route={provider:f.origin+'/api/notifications',device:a.device,token:t,expires:f.time()+3600000};
+      if(mode!=='no-ticket')await f.call(a,'waiting',{peer:b.account,token:t,pending:true});
+      await f.call(a,'return-route',{to:b.account,route});
+      if(mode==='recipient-node'||mode==='blocked')expect((await f.call(b,'ready',{node:mode==='recipient-node',peer:a.account})).body.tickets).toEqual([]);
+      if(mode==='finished')await f.call(a,'waiting',{peer:b.account,token:t,pending:false});
+      await f.call(a,'view-close',{});
+      // A recipient backed by a node receives no capability and cannot issue a
+      // reverse nudge in the normal client. Other cases test sender enforcement.
+      await f.call(b,'notify',{to:a.account,kind:'return',event:mode==='wrong-token'?token():t,returnRoute:null});
+      f.advance(91000);await f.settle();expect(f.sent,mode).toHaveLength(0);
+    }
+  });
   it('enforces permanent/timed mute on the provider while the receiving browser is closed',async()=>{
     const f=await fixture(),a=await person(),b=await person();await f.register(b,[a]);
     expect((await f.call(b,'policy',{muted:{[a.account]:-1},viewing:''})).body.updated).toBe(true);
