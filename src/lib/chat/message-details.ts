@@ -1,3 +1,4 @@
+import {isReactionEmoji} from './reactions';
 import { normalizeImagePreview, type ImagePreview } from './image-preview';
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 export const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,7 +40,7 @@ export function normalizeMessageDetails(raw: unknown): MessageDetails | null {
     const kind=value.edit!==undefined?'edit':'reaction',control=value[kind] as Record<string,unknown>;
     if(Object.keys(value).length!==1||!control||typeof control!=='object'||Array.isArray(control)||typeof control.targetId!=='string'||!MESSAGE_ID.test(control.targetId)||!Number.isSafeInteger(control.revision)||(control.revision as number)<1||Object.keys(control).some(k=>!(kind==='edit'?['targetId','revision']:['targetId','revision','emoji']).includes(k)))return null;
     if(kind==='edit')return{edit:{targetId:control.targetId,revision:control.revision as number}};
-    if(control.emoji!==null&&!['👍','❤️','😂','😮','😢','🔥'].includes(control.emoji as string))return null;
+    if(control.emoji!==null&&!isReactionEmoji(control.emoji))return null;
     return{reaction:{targetId:control.targetId,revision:control.revision as number,emoji:control.emoji as string|null}};
   }
   if (value.ephemeralOpened !== undefined) {

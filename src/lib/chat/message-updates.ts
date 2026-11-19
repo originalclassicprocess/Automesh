@@ -1,7 +1,8 @@
 import type {ChatEntry} from './session-chats';
 import {MESSAGE_ID} from './message-details';
 import type {MessageDetails} from './message-details';
-export const REACTIONS=['👍','❤️','😂','😮','😢','🔥'] as const;
+import {REACTIONS} from './reactions';
+export {REACTIONS} from './reactions';
 export type ReactionView={emoji:string;actors:string[]};
 export type PresentedMessage=ChatEntry&{edited?:boolean;editControl?:ChatEntry;reactions?:ReactionView[]};
 export const isMessageUpdate=(m:ChatEntry)=>!!(m.details?.edit||m.details?.reaction);

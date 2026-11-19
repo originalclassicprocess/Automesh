@@ -321,7 +321,7 @@
                 </div>
                 {#if message.details?.reply}<div class="reply-preview"><small>{$i18n.text("↩ Ответ")}</small><span>{message.details.reply.preview}</span></div>{/if}
                 <MessageText text={message.text} />
-                {#if message.edited}<small>{$i18n.text('изменено')}</small>{/if}
+                {#if message.edited}<small class="edit-note">{$i18n.text('изменено')}</small>{/if}
                 {#if message.reactions}<MessageReactions reactions={message.reactions} self={owner}/>{/if}
                 {#if message.file}<HistoryAttachment file={message.file} available={message.fileStatus === 'ready'} deleted={message.fileDeleted} load={() => historyFile(message)}
                   timestamp={message.timestamp} sender={message.from === owner ? 'Вы' : name(message.from)} senderAddress={message.from}

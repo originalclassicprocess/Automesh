@@ -1,23 +1,33 @@
 <script lang="ts">
   import { tr as i18n } from '$lib/i18n/language';
   import type { Snippet } from 'svelte';
+  import ChatIcon from './ChatIcon.svelte';
   import { selectionGesture } from './message-selection-gesture';
-  let { children, outgoing = false, sticker = false, selecting = false, selected = false, highlighted = false, busy = false, preview, onSelect, onBeginSelect }:
-    { children: Snippet; outgoing?: boolean; sticker?: boolean; selecting?: boolean; selected?: boolean; highlighted?: boolean; busy?: boolean; preview: string; onSelect: () => void; onBeginSelect?: () => void } = $props();
+  let { children, outgoing = false, sticker = false, selecting = false, selected = false, highlighted = false, busy = false, preview, onSelect, onBeginSelect,onReaction,reactionBusy=false,reactionOpen=false }:
+    { children: Snippet; outgoing?: boolean; sticker?: boolean; selecting?: boolean; selected?: boolean; highlighted?: boolean; busy?: boolean; preview: string; onSelect: () => void; onBeginSelect?: () => void;onReaction?:()=>void;reactionBusy?:boolean;reactionOpen?:boolean } = $props();
 </script>
-<div class="chat-message" use:selectionGesture={{canBegin:()=>!selecting&&!busy&&!!onBeginSelect,onBegin:()=>onBeginSelect?.()}} class:outgoing class:sticker class:touch-selectable={!!onBeginSelect} class:selectable={selecting} class:selected class:highlighted>
+<div class="chat-message" use:selectionGesture={{canBegin:()=>!selecting&&!busy&&!!onBeginSelect,onBegin:()=>onBeginSelect?.()}} class:outgoing class:sticker class:has-reaction={!!onReaction&&!selecting} class:touch-selectable={!!onBeginSelect} class:selectable={selecting} class:selected class:highlighted>
   {#if selecting}
     <button type="button" class="message-select" aria-label={$i18n("m_8c7a74e7de74", {v0: (preview)})} aria-pressed={selected} disabled={busy} onclick={onSelect}>
       <span aria-hidden="true">{selected ? '✓' : ''}</span>
     </button>
   {/if}
   <div class="message-content" inert={selecting}>{@render children()}</div>
+  {#if onReaction&&!selecting}<button type="button" class="quick-reaction" disabled={busy||reactionBusy} aria-label={$i18n.text('Реакция на сообщение')} title={$i18n.text('Реакция на сообщение')} aria-haspopup="dialog" aria-expanded={reactionOpen} onclick={onReaction}><ChatIcon name="emoji"/></button>{/if}
 </div>
 <style>
-  .chat-message { position:relative; width:fit-content; max-width:85%; min-width:125px; margin:0 0 12px; padding:10px 12px; border:1px solid var(--line); border-radius:12px 12px 12px 3px; background:var(--surface); overflow-wrap:anywhere; }
+  .chat-message { position:relative; width:fit-content; max-width:85%; min-width:125px; margin:0 0 8px; padding:7px 10px; border:1px solid var(--line); border-radius:12px 12px 12px 3px; background:var(--surface); overflow-wrap:anywhere; }
   .outgoing { margin-left:auto; background:var(--outgoing); border-color:var(--outgoing-line); border-radius:12px 12px 3px 12px; }
+  .has-reaction{max-width:min(85%,calc(100% - 42px))}
+  .quick-reaction{position:absolute;right:-42px;bottom:0;display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:50%}
+  .outgoing .quick-reaction{right:auto;left:-42px}
+  .quick-reaction:hover:not(:disabled),.quick-reaction[aria-expanded=true]{color:var(--accent);background:var(--surface-alt)}
+  .quick-reaction :global(svg){width:19px;height:19px}
   .sticker { background:transparent; border-color:transparent; }
   .message-content > :global(small) { color:var(--muted); font-size:11px; }
+  .message-content > :global(.edit-note){margin-left:4px}
+  .message-content > :global(.edit-note.pending-edit){color:var(--warning)}
+  .message-content > :global(.edit-note.error-edit){color:var(--danger)}
   .message-content > :global(small img) { width:16px; height:16px; }
   .highlighted { background:var(--highlight); border-color:var(--highlight-line); }
   .selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
@@ -26,6 +36,6 @@
   .message-select:hover:not(:disabled), .message-select[aria-pressed="true"] { background:transparent; }
   .message-select span { width:20px; height:20px; border:1px solid var(--muted); border-radius:5px; background:var(--surface); color:var(--accent); font-weight:700; display:grid; place-items:center; }
   .message-select[aria-pressed="true"] span { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
-  @media(max-width:700px) { .chat-message { max-width:94%; padding:9px 10px; } }
+  @media(max-width:700px) { .chat-message { max-width:94%; padding:7px 9px; } .has-reaction{max-width:min(94%,calc(100% - 42px)) } }
   @media(pointer:coarse) { .touch-selectable { -webkit-touch-callout:none; user-select:none; } .touch-selectable :global(a) { -webkit-touch-callout:default; user-select:text; } }
 </style>

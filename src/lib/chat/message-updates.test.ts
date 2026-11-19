@@ -5,11 +5,27 @@ import{unreadMessageCount,type ChatEntry}from'./session-chats';
 import{normalizeFileOffer}from'./file-transfer';
 import{normalizeLocalChatData}from'./local-store';
 import{encodeAccountId}from'../addressing/bech32m.js';
+import{REACTIONS,LEGACY_REACTIONS,isExtendedReaction,reactionChoices}from'./reactions';
 const self='alice',peer='bob',target='11111111-1111-4111-8111-111111111111';
 const original:ChatEntry={id:target,from:self,direction:'outgoing',timestamp:1,text:'original',delivery:'delivered'};
 const edit=(revision:number,text='new',from=self):ChatEntry=>({id:crypto.randomUUID(),from,direction:from===self?'outgoing':'incoming',timestamp:2,text,details:{edit:{targetId:target,revision}}});
 const react=(revision:number,emoji:string|null='👍',from=peer):ChatEntry=>({id:crypto.randomUUID(),from,direction:from===self?'outgoing':'incoming',timestamp:3,text:'',details:{reaction:{targetId:target,revision,emoji}}});
 describe('authenticated message update projection',()=>{
+ it('round-trips every supported reaction, including negative emoji, without changing message text or receipts',()=>{
+  expect(new Set(REACTIONS).size).toBe(36);
+  expect(reactionChoices(false)).toEqual(LEGACY_REACTIONS);expect(reactionChoices(true)).toEqual(REACTIONS);
+  for(const emoji of REACTIONS){
+   const event=react(1,emoji),decoded=decodeChatContent(encodeChatContent('',event.details));
+   expect(decoded?.details?.reaction?.emoji).toBe(emoji);
+   const shown=presentMessages([original,{...event,details:decoded!.details}],self,peer)[0];
+   expect(shown.reactions).toEqual([{emoji,actors:[peer]}]);expect(shown.text).toBe('original');expect(shown.delivery).toBe('delivered');
+   expect(presentMessages([original,event,react(2,null)],self,peer)[0].reactions).toBeUndefined();
+  }
+  expect(isExtendedReaction('👎')).toBe(true);expect(isExtendedReaction('❤️')).toBe(false);
+  for(const emoji of ['',undefined,'👎👎','<img>','x'.repeat(10000)])expect(normalizeMessageDetails({reaction:{targetId:target,revision:1,emoji}})).toBeNull();
+  // The additional capability is not a chat row, including for older decoders.
+  expect(decodeChatContent('\u0000mesh-reactions-v2')).toBeNull();
+ });
  it('retries the latest canceled update with a newer revision and never rolls later changes back',()=>{
   const first=edit(1),later=edit(2,'latest');const retry=retryMessageUpdate([original,first],first,self)!;
   expect(retry.details.edit?.revision).toBe(2);expect(retryMessageUpdate([original,first,later],first,self)).toBeNull();expect(retryMessageUpdate([first],first,self)).toBeNull();

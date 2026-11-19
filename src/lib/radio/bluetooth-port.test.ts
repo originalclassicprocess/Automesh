@@ -141,3 +141,78 @@ it('cancels a delayed Bluetooth connection on lock before discovering or writing
   await wait(()=>connecting);await radio.close();release(await original());await rejected;
   expect(f.writes).toEqual([]);expect(f.device.gatt!.connected).toBe(false);
 });
+
+it('closes the failed write session and does not leave a falsely ready board or replay the packet',async()=>{
+  const f=fixture(),radio=new SerialRadio(),errors:string[]=[];radio.onError=code=>errors.push(code);
+  try{
+    await radio.open(new BluetoothRadioPort(f.device));const before=f.writes.length;
+    f.to.writeValueWithResponse=async()=>{throw {name:'NetworkError',message:'native bridge disconnected'};};
+    await expect(radio.sendChannelText(0,123,'do not replay')).rejects.toThrow('radio_bluetooth_write_failed');
+    await wait(()=>errors.includes('radio_bluetooth_write_failed'));
+    expect(radio.ready).toBe(false);expect(f.writes).toHaveLength(before);
+    await radio.close();await radio.open(new BluetoothRadioPort(fixture('fresh').device));
+    expect(radio.ready).toBe(true);
+  }finally{await radio.close();}
+});
+
+it('releases a hung native write immediately on lock instead of waiting for the GATT timeout',async()=>{
+  const f=fixture(),radio=new SerialRadio();let writing=false;
+  try{
+    await radio.open(new BluetoothRadioPort(f.device));
+    f.to.writeValueWithResponse=()=>{writing=true;return new Promise(()=>{});};
+    const sending=radio.sendChannelText(0,123,'pending'),rejected=expect(sending).rejects.toThrow('radio_closed');
+    await wait(()=>writing);await radio.close();await rejected;
+    expect(f.device.gatt!.connected).toBe(false);expect(radio.ready).toBe(false);
+  }finally{await radio.close();}
+});
+
+it('cleans up native connect resolving after the timeout without reading or writing configuration',async()=>{
+  vi.useFakeTimers();const f=fixture(),port=new BluetoothRadioPort(f.device);let release!:(server:Awaited<ReturnType<NonNullable<BleDevice['gatt']>['connect']>>)=>void;
+  const original=f.device.gatt!.connect;
+  f.device.gatt!.connect=()=>new Promise(resolve=>release=resolve);
+  try{
+    const opening=port.open({baudRate:115200}),rejected=expect(opening).rejects.toThrow('radio_bluetooth_timeout');
+    await vi.advanceTimersByTimeAsync(20001);await rejected;
+    release(await original());await Promise.resolve();await Promise.resolve();
+    expect(f.device.gatt!.connected).toBe(false);expect(f.writes).toEqual([]);
+  }finally{await port.close();vi.useRealTimers();}
+});
+
+it('keeps a newer connection alive when a cancelled native connect resolves late',async()=>{
+  const f=fixture(),old=new BluetoothRadioPort(f.device),current=new SerialRadio();let release!:(server:Awaited<ReturnType<NonNullable<BleDevice['gatt']>['connect']>>)=>void;
+  const original=f.device.gatt!.connect;
+  f.device.gatt!.connect=()=>new Promise(resolve=>release=resolve);
+  try{
+    const opening=old.open({baudRate:115200}),rejected=expect(opening).rejects.toThrow('radio_closed');
+    await wait(()=>!!release);await old.close();await rejected;
+    f.device.gatt!.connect=original;const openingNew=current.open(new BluetoothRadioPort(f.device));
+    await wait(()=>f.listeners.get('gattserverdisconnected')?.size===1);
+    release(await original());await openingNew;
+    expect(current.ready).toBe(true);await current.sendChannelText(0,222,'new session');
+  }finally{await old.close();await current.close();}
+});
+
+it('recognises permission errors returned as plain bridge objects and supports legacy acknowledged writes',async()=>{
+  const f=fixture(),port=new BluetoothRadioPort(f.device);
+  f.device.gatt!.connect=async()=>{throw {name:'NotAllowedError',message:'private native details'};};
+  await expect(port.open({baudRate:115200})).rejects.toThrow('radio_bluetooth_permission');
+  expect(port.connected).toBe(false);
+  const legacy=fixture('legacy'),radio=new SerialRadio();legacy.to.writeValue=legacy.to.writeValueWithResponse;delete legacy.to.writeValueWithResponse;
+  try{await radio.open(new BluetoothRadioPort(legacy.device));await radio.sendChannelText(0,333,'legacy');expect(radio.ready).toBe(true);}finally{await radio.close();}
+});
+
+it('gives a reconnect its own operation timeout after waiting for an older native call to settle',async()=>{
+  vi.useFakeTimers();const f=fixture(),old=new BluetoothRadioPort(f.device),current=new BluetoothRadioPort(f.device);
+  let release!:(server:Awaited<ReturnType<NonNullable<BleDevice['gatt']>['connect']>>)=>void;
+  const original=f.device.gatt!.connect;
+  f.device.gatt!.connect=()=>new Promise(resolve=>release=resolve);
+  try{
+    const opening=old.open({baudRate:115200}),rejected=expect(opening).rejects.toThrow('radio_closed');
+    await vi.advanceTimersByTimeAsync(0);await old.close();await rejected;
+    f.device.gatt!.connect=async()=>{await new Promise(r=>setTimeout(r,2000));return original();};
+    const replacement=current.open({baudRate:115200});
+    await vi.advanceTimersByTimeAsync(19000);release(await original());
+    await vi.advanceTimersByTimeAsync(2001);await replacement;
+    expect(current.connected).toBe(true);expect(f.writes).toEqual([]);
+  }finally{await old.close();await current.close();vi.useRealTimers();}
+});

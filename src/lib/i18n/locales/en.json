@@ -3091,5 +3091,8 @@
   "m_4a01d12b1fab": "edited",
   "m_2b1ca67fe0e0": "The edit was saved.",
   "m_5705c040e91b": "Could not send the edit",
-  "m_6c4d833cf372": "Edit was not sent"
+  "m_6c4d833cf372": "Edit was not sent",
+  "m_9e0c6f39c3e9": "Could not read data from the Bluetooth board. The connection is closed; the queue is saved. Reconnect the board.",
+  "m_2f91bb1823a2": "Could not complete the write to the Bluetooth board. Delivery is unconfirmed; reconnect and check the sending status.",
+  "m_a7e956c99370": "The browser cannot write to the Bluetooth board. Update your Bluetooth browser and reconnect the board."
 }

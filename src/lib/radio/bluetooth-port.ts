@@ -30,6 +30,24 @@ async function bounded<T>(work: Promise<T>): Promise<T> {
   try { return await Promise.race([work,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('radio_bluetooth_timeout')),20000);})]); }
   finally { clearTimeout(timer!); }
 }
+async function interruptible<T>(work:Promise<T>,signal:AbortSignal):Promise<T>{
+  let cancel=()=>{};
+  try { return await Promise.race([work,new Promise<never>((_,reject)=>{
+    cancel=()=>reject(Error('radio_closed'));
+    signal.addEventListener('abort',cancel,{once:true});
+    if(signal.aborted)cancel();
+  })]); }
+  finally { signal.removeEventListener('abort',cancel); }
+}
+// Native Web Bluetooth bridges may reject with a DOMException or a plain object.
+// Keep only our bounded error vocabulary; never display arbitrary bridge text.
+function bluetoothError(error:unknown,fallback:string):Error {
+  const value=error&&typeof error==='object'?error as {message?:unknown;name?:unknown}:undefined;
+  const code=typeof value?.message==='string'?value.message:typeof error==='string'?error:'';
+  if(/^radio_[a-z0-9_]+$/.test(code))return Error(code);
+  if(value?.name==='NotAllowedError'||value?.name==='SecurityError')return Error('radio_bluetooth_permission');
+  return Error(fallback);
+}
 export class BluetoothRadioPort implements SerialPortLike {
   readonly framing = 'protobuf' as const;
   readonly transport = 'bluetooth' as const;
@@ -42,6 +60,7 @@ export class BluetoothRadioPort implements SerialPortLike {
   private fromRadio: BleCharacteristic | null = null;
   private fromNum: BleCharacteristic | null = null;
   private generation = 0;
+  private cancellation = new AbortController();
   private closed = true;
   private draining = false;
   private wanted = false;
@@ -63,8 +82,11 @@ export class BluetoothRadioPort implements SerialPortLike {
   private operation<T>(work:()=>Promise<T>,generation=this.generation):Promise<T> {
     const next=(operations.get(this.device)??Promise.resolve()).catch(()=>{}).then(()=>{
       if(this.closed||generation!==this.generation||owners.get(this.device)!==this)throw Error('radio_closed');
+      // Keep the native operation in the device queue until it settles (or
+      // times out), even when its caller cancels. A new session must not overlap
+      // a still-completing read/write from the previous session.
       return bounded(work());
-    });operations.set(this.device,next);return next;
+    });operations.set(this.device,next);return interruptible(next,this.cancellation.signal);
   }
   private notify=()=>{void this.drain();};
   private disconnected=()=>this.fail();
@@ -75,13 +97,19 @@ export class BluetoothRadioPort implements SerialPortLike {
     void this.close();
   }
   async open(_options: {baudRate:number}) {
-    await this.close();const generation=++this.generation;this.closed=false;
+    await this.close();const generation=++this.generation;this.closed=false;this.cancellation=new AbortController();
     owners.set(this.device,this);
     const active=()=>{if(generation!==this.generation||this.closed||owners.get(this.device)!==this)throw Error('radio_closed');};
     try {
       const gatt=this.device.gatt;if(!gatt)throw Error('radio_bluetooth_unsupported');
       this.device.addEventListener('gattserverdisconnected',this.disconnected);
-      const server=await this.operation(()=>gatt.connect(),generation);
+      const server=await this.operation(()=>{
+        const connecting=gatt.connect();
+        // Cancellation cannot cancel a native promise. Release a late connection
+        // only if nobody has since claimed this device for a newer session.
+        void connecting.then(()=>{if((this.closed||generation!==this.generation)&&!owners.has(this.device))gatt.disconnect();},()=>{});
+        return connecting;
+      },generation);
       active();
       const service=await this.operation(()=>server.getPrimaryService(MESHTASTIC_BLE.service),generation);
       active();
@@ -95,12 +123,18 @@ export class BluetoothRadioPort implements SerialPortLike {
       this.readable=new ReadableStream({start:controller=>{this.input=controller;},cancel:()=>this.close()},{highWaterMark:64});
       this.writable=new WritableStream({write:async bytes=>{
         if(!bytes.length||bytes.length>512)throw Error('radio_usb_frame_too_large');
-        await this.operation(async()=>{
-          if(!this.connected)throw Error('radio_bluetooth_disconnected');
-          if(to.writeValueWithResponse)await to.writeValueWithResponse(bytes.slice());
-          else if(to.writeValue)await to.writeValue(bytes.slice());
-          else throw Error('radio_bluetooth_write_unsupported');
-        },generation);
+        try {
+          await this.operation(async()=>{
+            if(!this.connected)throw Error('radio_bluetooth_disconnected');
+            if(to.writeValueWithResponse)await to.writeValueWithResponse(bytes.slice());
+            else if(to.writeValue)await to.writeValue(bytes.slice());
+            else throw Error('radio_bluetooth_write_unsupported');
+          },generation);
+        } catch(error) {
+          const failure=bluetoothError(error,'radio_bluetooth_write_failed');
+          if(generation===this.generation)this.fail(failure.message);
+          throw failure;
+        }
         this.readyToRead=true;
         void this.drain();
       }});
@@ -111,7 +145,7 @@ export class BluetoothRadioPort implements SerialPortLike {
       // An empty FromRadio read can block during setup on some firmware.
       // Let SerialRadio write want_config first, before draining its replies.
       this.poll=setInterval(()=>void this.drain(),1000);
-    } catch(error) {if(generation===this.generation)await this.close();else if(this.closed&&(!owners.has(this.device)||owners.get(this.device)===this))this.device.gatt?.disconnect();throw error instanceof Error&&error.message.startsWith('radio_')?error:Error('radio_bluetooth_connect_failed');}
+    } catch(error) {if(generation===this.generation)await this.close();else if(this.closed&&(!owners.has(this.device)||owners.get(this.device)===this))this.device.gatt?.disconnect();throw bluetoothError(error,'radio_bluetooth_connect_failed');}
   }
   async resume():Promise<void> {
     const generation=this.generation;
@@ -124,8 +158,9 @@ export class BluetoothRadioPort implements SerialPortLike {
       if(!this.connected||generation!==this.generation)throw Error('radio_bluetooth_disconnected');
       void this.drain();
     } catch(error) {
-      if(generation===this.generation)this.fail(error instanceof Error&&error.message==='radio_bluetooth_timeout'?error.message:undefined);
-      throw error;
+      const failure=bluetoothError(error,'radio_bluetooth_disconnected');
+      if(generation===this.generation)this.fail(failure.message);
+      throw failure;
     }
   }
   private async drain() {
@@ -147,11 +182,11 @@ export class BluetoothRadioPort implements SerialPortLike {
           this.input?.enqueue(new Uint8Array(value.buffer,value.byteOffset,value.byteLength).slice());
         }
       }
-    } catch(error) {if(generation===this.generation)this.fail(error instanceof Error&&error.message==='radio_bluetooth_timeout'?error.message:undefined);}
+    } catch(error) {if(generation===this.generation)this.fail(bluetoothError(error,'radio_bluetooth_read_failed').message);}
     finally {this.draining=false;}
   }
   async close() {
-    this.closed=true;++this.generation;this.wanted=false;this.readyToRead=false;
+    this.closed=true;++this.generation;this.cancellation.abort();this.wanted=false;this.readyToRead=false;
     if(this.poll)clearInterval(this.poll);this.poll=null;
     this.fromNum?.removeEventListener('characteristicvaluechanged',this.notify);
     this.device.removeEventListener('gattserverdisconnected',this.disconnected);
