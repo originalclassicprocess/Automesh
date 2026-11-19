@@ -5,7 +5,7 @@
   import type { ChatEntry } from './session-chats';
   import { canDownloadMessage, canStopFile, type MessageStatus } from './message-presentation';
   import HelpInfo from '$lib/application/HelpInfo.svelte';
-  import {REACTIONS} from './message-updates';
+  import {LEGACY_REACTIONS as REACTIONS} from './reactions';
   type View = 'menu' | 'status' | 'route' | 'share';
   let { message, status, recipient, courier, shareText, openView, disabled = false, canReply, onOpen, onClose,
     onReply, onForward, onSelect, onStop, onDownload, onDelete, onPin, pinned = false, canPin = true, canForward = true, canSelect = true, loadShareFile, onCancelNode, onRetryNode, onRetryRadio, channelMode=false, onCopy, onRetryChannel,onReact,onEdit }: {

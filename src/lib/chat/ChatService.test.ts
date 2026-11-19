@@ -133,19 +133,22 @@ async function signedFrame(identity: Awaited<ReturnType<typeof createIdentity>>,
 
 describe('identity and signed chat messages', () => {
   it('negotiates updates as an authenticated control without chat rows or receipts',async()=>{
-    const p=await connectedPair(),received=vi.fn(),a=vi.fn(),b=vi.fn();p.sender.onMessageFeatures(a);p.receiver.onMessageFeatures(b);p.receiver.onMessage(received);
+    const p=await connectedPair(),received=vi.fn(),a=vi.fn(),b=vi.fn(),ar=vi.fn(),br=vi.fn(),receipt=vi.fn();p.sender.onMessageFeatures(a);p.receiver.onMessageFeatures(b);p.receiver.onMessage(received);
+    p.sender.onReactionFeatures(ar);p.receiver.onReactionFeatures(br);p.receiver.onReceipt(receipt);
     try{await p.sender.sendMessageFeatures(p.receiverIdentity.address);await vi.waitFor(()=>{expect(a).toHaveBeenCalledOnce();expect(b).toHaveBeenCalledOnce();});
-      expect(a).toHaveBeenCalledWith(p.receiverIdentity.address);expect(b).toHaveBeenCalledWith(p.senderIdentity.address);expect(received).not.toHaveBeenCalled();
-      await p.sender.sendMessageFeatures(p.receiverIdentity.address);await p.receiver.sendMessageFeatures(p.senderIdentity.address);expect(a).toHaveBeenCalledOnce();expect(b).toHaveBeenCalledOnce();
+      await vi.waitFor(()=>{expect(ar).toHaveBeenCalledOnce();expect(br).toHaveBeenCalledOnce();});
+      expect(a).toHaveBeenCalledWith(p.receiverIdentity.address);expect(b).toHaveBeenCalledWith(p.senderIdentity.address);expect(received).not.toHaveBeenCalled();expect(receipt).not.toHaveBeenCalled();
+      expect(ar).toHaveBeenCalledWith(p.receiverIdentity.address);expect(br).toHaveBeenCalledWith(p.senderIdentity.address);
+      await p.sender.sendMessageFeatures(p.receiverIdentity.address);await p.receiver.sendMessageFeatures(p.senderIdentity.address);expect(a).toHaveBeenCalledOnce();expect(b).toHaveBeenCalledOnce();expect(ar).toHaveBeenCalledOnce();expect(br).toHaveBeenCalledOnce();
     }finally{await p.sender.disconnect();await p.receiver.disconnect();}
   });
   it('authenticates v4 edits/reactions through the existing encrypted queue and still delivers normal messages',async()=>{
     const p=await connectedPair(),received:ChatMessage[]=[],receipts:string[]=[];p.receiver.onMessage(m=>{received.push(m);});p.sender.onReceipt((_peer,id)=>receipts.push(id));
     const target=crypto.randomUUID(),update=crypto.randomUUID(),reaction=crypto.randomUUID(),ordinary=crypto.randomUUID();
     try{await p.sender.send('original',p.receiverIdentity.address,target);await p.sender.send('changed',p.receiverIdentity.address,update,{edit:{targetId:target,revision:1}});
-      await p.sender.send('',p.receiverIdentity.address,reaction,{reaction:{targetId:target,revision:1,emoji:'👍'}});await p.sender.send('ordinary after update',p.receiverIdentity.address,ordinary);
+      await p.sender.send('',p.receiverIdentity.address,reaction,{reaction:{targetId:target,revision:1,emoji:'👎'}});await p.sender.send('ordinary after update',p.receiverIdentity.address,ordinary);
       await vi.waitFor(()=>expect(receipts).toHaveLength(4));expect(received.map(m=>m.id)).toEqual([target,update,reaction,ordinary]);expect(received.every(m=>m.verified)).toBe(true);
-      expect(received[0].text).toBe('original');expect(received[1].details?.edit?.targetId).toBe(target);expect(received[2].details?.reaction?.emoji).toBe('👍');
+      expect(received[0].text).toBe('original');expect(received[1].details?.edit?.targetId).toBe(target);expect(received[2].details?.reaction?.emoji).toBe('👎');
     }finally{await p.sender.disconnect();await p.receiver.disconnect();}
   });
   it('dispatches history only through authenticated control, never as a chat message or delivery receipt', async () => {

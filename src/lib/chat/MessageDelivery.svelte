@@ -11,7 +11,7 @@
   </button>
 </span>
 <style>
-  .delivery-summary{display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-left:auto;margin-top:6px;font-size:11px;color:var(--muted)}
+  .delivery-summary{display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-left:auto;margin-top:0;font-size:11px;color:var(--muted)}
   .delivery-status{border:0;background:transparent;color:var(--muted);font-size:11px;padding:2px 0;text-align:right;min-height:24px}
   .delivery-status.confirmed{color:var(--success)}.delivery-status.failed{color:var(--danger)}.delivery-status.warning{color:var(--warning)}.copy-note{cursor:help}
 </style>

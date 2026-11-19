@@ -81,6 +81,7 @@ export class ChatService {
   private deviceHandlers: Array<(peer: string, kind: DeviceControlKind, value: unknown) => unknown> = [];
   private contactAcceptedHandlers: Array<(peer: string) => void> = [];
   private readPreferenceHandlers: Array<(peer: string, enabled: boolean) => void> = [];
+  private reactionFeatureHandlers:Array<(peer:string)=>void>=[];
   private messageFeatureHandlers:Array<(peer:string)=>void>=[];
   private messageFeaturesAnnounced=new Set<string>();
   private readReceiptHandlers: Array<(peer: string, messageId: string) => void> = [];
@@ -329,8 +330,13 @@ export class ChatService {
     if(this.messageFeaturesAnnounced.has(peer))return;
     const generation=this.generation,epoch=this.peerEpochs.get(peer)??0;
     this.messageFeaturesAnnounced.add(peer);
-    try{await this.sendPayload('\u0000mesh-message-updates-v1',peer);}catch(error){if(this.generation===generation&&(this.peerEpochs.get(peer)??0)===epoch)this.messageFeaturesAnnounced.delete(peer);throw error;}
+    try{
+      await this.sendPayload('\u0000mesh-message-updates-v1',peer);
+      if(this.generation!==generation||(this.peerEpochs.get(peer)??0)!==epoch)return;
+      await this.sendPayload('\u0000mesh-reactions-v2',peer);
+    }catch(error){if(this.generation===generation&&(this.peerEpochs.get(peer)??0)===epoch)this.messageFeaturesAnnounced.delete(peer);throw error;}
   }
+  onReactionFeatures(handler:(peer:string)=>void):void{this.reactionFeatureHandlers.push(handler);}
   onMessageFeatures(handler:(peer:string)=>void):void{this.messageFeatureHandlers.push(handler);}
 
   async sendReadReceipt(messageId: string, toPeerAddress: string): Promise<void> {
@@ -516,6 +522,9 @@ export class ChatService {
       if (content === '\u0000mesh-read-preference-v1:1' || content === '\u0000mesh-read-preference-v1:0') {
         for (const handler of this.readPreferenceHandlers) handler(from, content.endsWith(':1'));
         return;
+      }
+      if(content==='\u0000mesh-reactions-v2'){
+        for(const handler of this.reactionFeatureHandlers)handler(from);return;
       }
       if(content==='\u0000mesh-message-updates-v1'){
         for(const handler of this.messageFeatureHandlers)handler(from);

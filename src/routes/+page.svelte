@@ -56,6 +56,8 @@ import { messageStatus } from '$lib/chat/message-presentation';
 import { messagePins, nextPinRevision, visibleChatMessages } from '$lib/chat/message-pins';
 import {presentMessages,editableText,nextUpdateRevision,reactionAllowed,retryMessageUpdate} from '$lib/chat/message-updates';
 import MessageReactions from '$lib/chat/MessageReactions.svelte';
+import ReactionPicker from '$lib/chat/ReactionPicker.svelte';
+import {reactionChoices,isExtendedReaction} from '$lib/chat/reactions';
 import EditMessageDialog from '$lib/chat/EditMessageDialog.svelte';
 import { offlineKeyBudget } from '$lib/chat/offline-key-budget';
 import SettingsMenu from '$lib/application/SettingsMenu.svelte';
@@ -284,6 +286,7 @@ import { SerialRadio, type RadioSnapshot, type RadioDiagnostics, type SerialPort
 import { networkId, networkInvite } from '$lib/radio/network';
 import { automaticBoardName } from '$lib/radio/board-name';
 import MeshtasticChannels from '$lib/radio/MeshtasticChannels.svelte';
+import {forwardActivity,recentForwardTargets} from '$lib/chat/forward-targets';
 import TextForwardDialog, {type ForwardText,type ForwardTarget} from '$lib/chat/TextForwardDialog.svelte';
 import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
 import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,channelMessageStatus,channelSignature,nativeHistoryLimit,nativeMessageKey,nativeMessageStatus,removeNativeMessages,mergeNativeHistory,visibleNativeChannels,type ChannelMessage,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
@@ -711,7 +714,7 @@ let copiedMessageId = $state(''); let pinBusy = $state(false);
 let actionBusy = $state(false); let actionError = $state('');
 let actionPeer = ''; let highlightedMessage = $state('');
 let allowForwardAttribution = $state(true);
-let actionRows = $derived(sessionChats.order.map(id => ({ id, name: id === address ? 'Вы (Сохранённые)' : contactName(id) })));
+let actionRows = $derived(recentForwardTargets(sessionChats.order.map(id => ({ id, name: id === address ? 'Вы (Сохранённые)' : contactName(id), photo:contactPhoto(id), activity:forwardActivity(sessionChats.byPeer[id].messages) }))));
 let attachmentInput = $state<HTMLInputElement>();
 let pastedFiles = $state<File[]>([]), composerSending = $state(false), stagedPreview=$state<number|null>(null);
 let pastedScope = '';
@@ -753,7 +756,10 @@ let trustedReadReceiptsPreference = true;
 let autoLockMinutes = $state(DEFAULT_AUTO_LOCK_MINUTES);
 let peerReadPreferences = $state<Record<string, boolean>>({});
 const canUpdateActive=$derived(canUseMessageUpdates(activeConversation?.peerAddress??''));
+const activeReactionChoices=$derived(availableReactions(activeConversation?.peerAddress??''));
 let peerMessageFeatures=$state<Record<string,boolean>>({});
+let peerReactionFeatures=$state<Record<string,boolean>>({});
+let reactionTarget=$state<{peer:string;id:string}|null>(null);
 let editDraft=$state<{peer:string;id:string;text:string;revision:number}|null>(null);
 let nicknameDraft = $state('');
 let aliases = $state<Record<string, string>>({});
@@ -783,7 +789,7 @@ function rootRoute(screen: Screen): PageRoute {
   return { screen, layer: '', view: 'chats', peer: '', card: '', pane: 'list', settings: 'account', connection: 'direct', gallery: '' };
 }
 function currentPageRoute(): PageRoute {
-  const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : editDraft ? 'message-edit' : stagedPreview!==null ? 'attachment-preview' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
+  const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : editDraft ? 'message-edit' : reactionTarget ? 'reaction-picker' : stagedPreview!==null ? 'attachment-preview' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
     backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
@@ -928,10 +934,10 @@ const conversationItems=$derived([
   ...listedPeers.map(peer=>({kind:'chat' as const,id:peer,time:peer===address?Number.MAX_SAFE_INTEGER:sessionChats.byPeer[peer]?.messages.at(-1)?.timestamp??0})),
   ...nativeListed.map(channel=>({kind:'radio' as const,id:nativeToken(channel),channel,time:channel.messages.at(-1)?.timestamp??0}))
 ].sort((a,b)=>b.time-a.time));
-const textForwardTargets=$derived<ForwardTarget[]>([
-  ...sessionChats.order.filter(peer=>['new','accepted'].includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false})),
-  ...(meshtastic.enabled&&radioConnection==='connected'?meshtastic.channels.filter(c=>nativeLive.includes(nativeToken(c))).map(c=>({id:'radio:'+nativeToken(c),name:`${c.name||'Meshtastic'} · ${c.boardName||radioBoardLabel}`,radio:true,signatureBytes:c.signature?new TextEncoder().encode('\n'+channelSignature(contactLink(address))).length:0})):[])
-]);
+const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
+  ...sessionChats.order.filter(peer=>['new','accepted'].includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false,accountId:peer,photo:contactPhoto(peer),activity:forwardActivity(sessionChats.byPeer[peer].messages)})),
+  ...(meshtastic.enabled&&radioConnection==='connected'?meshtastic.channels.filter(c=>nativeLive.includes(nativeToken(c))).map(c=>({id:'radio:'+nativeToken(c),name:`${c.name||'Meshtastic'} · ${c.boardName||radioBoardLabel}`,radio:true,node:c.node,activity:forwardActivity(c.messages),signatureBytes:c.signature?new TextEncoder().encode('\n'+channelSignature(contactLink(address))).length:0})):[])
+]));
 
 function disconnectRadio() {
   radioOverviewOpen=false;
@@ -993,7 +999,7 @@ async function connectRadio(automatic=false,requestedNode?:number,kind?:'usb'|'b
   usb.onError = code => {
     if (radioEpoch !== epoch || radioUsb !== usb) return;
     radioErrorText = radioError(code);
-    if (['radio_usb_disconnected','radio_serial_error','radio_bluetooth_disconnected','radio_bluetooth_timeout','radio_device_restarted'].includes(code)) disconnectRadio();
+    if (['radio_usb_disconnected','radio_serial_error','radio_bluetooth_disconnected','radio_bluetooth_timeout','radio_bluetooth_read_failed','radio_bluetooth_write_failed','radio_bluetooth_write_unsupported','radio_bluetooth_permission','radio_device_restarted'].includes(code)) disconnectRadio();
   };
   try {
     const target=requestedNode?(radioState.boards??[]).find(b=>b.node===requestedNode):automatic?preferredConnection(radioState):radioState.connection;
@@ -1875,6 +1881,7 @@ function saveContactAlias(): boolean {
 
 function restorePageRoute(route: PageRoute): void {
   if(route.layer!=='message-edit'&&!pinBusy)editDraft=null;
+  if(route.layer!=='reaction-picker')reactionTarget=null;
   if(route.layer!=='attachment-preview')stagedPreview=null;
   chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; closeEphemeral();
   panicOpen = false; memoryConfirmation = null; pendingExit = null; nodeScannerOpen = false;
@@ -1922,6 +1929,7 @@ function backWithinApp(): void {
   if (chatSearchOpen) { toggleChatSearch(); return; }
   if (audioControls?.dismissOverlay()) return;
   if (mediaOpen || receivedPack) { mediaOpen = false; receivedPack = null; return; }
+  if(reactionTarget){reactionTarget=null;return;}
   if (messageTools) { messageTools = null; return; }
   if (screen === 'account' && accountView === 'profile' && !openHelp && !pendingExit && !backupOpen && !panicOpen && !memoryConfirmation && !nodeScannerOpen && !networkSummaryOpen && !nodeBudgetOpen) {
     const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane};
@@ -2370,7 +2378,7 @@ async function readSessionProfiles(root: Uint8Array, owner: string, trusted: boo
 }
 
 function adoptProfileContext(context: ProfileChatContext): void {
-  peerMessageFeatures={};editDraft=null;returnFromChatSearch=undefined;
+  peerMessageFeatures={};peerReactionFeatures={};reactionTarget=null;editDraft=null;returnFromChatSearch=undefined;
   manageChatScroll.clear();
   audioTrack = null;
   const backupVerified = seedBackupVerified;
@@ -3765,7 +3773,7 @@ function resumeConnectedPeer(peer: string, active: ChatService, refreshKeys = fa
 }
 
 async function openConversation(peer: string) {
-  if(!pinBusy)editDraft=null;
+  if(!pinBusy)editDraft=null;reactionTarget=null;
   if (ephemeralOpening || actionBusy) return;
   // Keep an unconfirmed recording with its original chat.
   if (voiceBusy && sessionChats.activePeer !== peer) return;
@@ -3904,6 +3912,15 @@ async function copyMessage(message: ChatEntry): Promise<void> {
 }
 function messagesForActions(peer:string){return presentMessages(sessionChats.byPeer[peer]?.messages??[],address,peer);}
 function canUseMessageUpdates(peer:string):boolean{return sessionChats.byPeer[peer]?.contact==='accepted'&&(peer===address||peerMessageFeatures[peer]===true||sessionChats.byPeer[peer].messages.some(m=>m.direction==='incoming'&&m.from===peer&&!!(m.details?.edit||m.details?.reaction)));}
+function availableReactions(peer:string):readonly string[]{
+  const extended=peer===address||peerReactionFeatures[peer]===true||sessionChats.byPeer[peer]?.messages.some(m=>m.direction==='incoming'&&m.from===peer&&isExtendedReaction(m.details?.reaction?.emoji));
+  return reactionChoices(!!extended);
+}
+function openReactionPicker(id:string):void{
+  const message=activeMessages.find(m=>m.id===id);
+  if(navigationBusy()||pinBusy||!canUpdateActive||!message||!reactionAllowed(message))return;
+  messageTools=null;reactionTarget={peer:sessionChats.activePeer,id};
+}
 function beginMessageEdit(id:string):void{
   const peer=sessionChats.activePeer,m=messagesForActions(peer).find(m=>m.id===id);
   if(navigationBusy()||pinBusy||!canUseMessageUpdates(peer)||!m||m.from!==address||m.direction!=='outgoing'||!editableText(m))return;
@@ -3920,7 +3937,9 @@ async function saveMessageEdit(text:string):Promise<void>{
 async function reactToMessage(id:string,emoji:string):Promise<void>{
   const peer=sessionChats.activePeer,generation=authGeneration,m=messagesForActions(peer).find(m=>m.id===id);
   if(navigationBusy()||pinBusy||!canUseMessageUpdates(peer)||!m||!reactionAllowed(m))return;
-  const remove=m.reactions?.some(r=>r.emoji===emoji&&r.actors.includes(address));pinBusy=true;
+  const remove=m.reactions?.some(r=>r.emoji===emoji&&r.actors.includes(address));
+  if(!remove&&!availableReactions(peer).includes(emoji))return;
+  pinBusy=true;
   try{await queueRichMessage(peer,'',{reaction:{targetId:id,revision:nextUpdateRevision(sessionChats.byPeer[peer].messages,address,id,'reaction'),emoji:remove?null:emoji}});}
   catch{if(generation===authGeneration)status='Не удалось сохранить реакцию.';}finally{if(generation===authGeneration)pinBusy=false;}
 }
@@ -4792,6 +4811,7 @@ async function initializeChat() {
     scanVisibleMessages();
   };
   nextChat.onContactAccepted(peer => { void acceptAuthenticatedContact(peer).catch(() => {}); });
+  nextChat.onReactionFeatures(peer=>{if(chat===nextChat&&sessionChats.byPeer[peer]?.contact==='accepted')peerReactionFeatures={...peerReactionFeatures,[peer]:true};});
   nextChat.onMessageFeatures(peer=>{if(chat===nextChat&&sessionChats.byPeer[peer]?.contact==='accepted')peerMessageFeatures={...peerMessageFeatures,[peer]:true};});
   nextChat.onReadPreference((peer, enabled) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
@@ -5268,7 +5288,7 @@ async function switchTrustMode(): Promise<void> {
 }
 
 function forgetOpenAccount(mode: 'lock' | 'logout'): void {
-  peerMessageFeatures={};editDraft=null;returnFromChatSearch=undefined;
+  peerMessageFeatures={};peerReactionFeatures={};reactionTarget=null;editDraft=null;returnFromChatSearch=undefined;
   manageChatScroll.clear();
   mediaLibrary = emptyMediaLibrary(); mediaOpen = false; receivedPack = null;
   lockedProfileId = mode === 'lock' ? activeProfileId : '';
@@ -6220,7 +6240,7 @@ async function changePassword(): Promise<void> {
                 <CallHistoryCard record={message.localCall} disabled={callBusy || voiceBusy || navigationBusy() || activeConversation.connection !== 'connected' || activeConversation.contact !== 'accepted'}
                   onCall={() => void startCall(activeConversation.peerAddress)} onDelete={() => messageAction(message, 'delete')} />
               {:else}
-              <MessageCard outgoing={message.direction === 'outgoing'} sticker={message.details?.media?.kind === 'sticker' && mediaCanOpen(message)} selecting={selecting} highlighted={highlightedMessage === message.id} selected={selectedMessages.includes(message.id)} busy={actionBusy || ephemeralOpening} preview={messagePreview(message)} onSelect={() => toggleMessage(message.id)} onBeginSelect={() => messageAction(message, 'select')}>
+              <MessageCard onReaction={canUpdateActive&&reactionAllowed(message)?()=>openReactionPicker(message.id):undefined} reactionOpen={reactionTarget?.id===message.id} reactionBusy={pinBusy||actionBusy||navigationBusy()} outgoing={message.direction === 'outgoing'} sticker={message.details?.media?.kind === 'sticker' && mediaCanOpen(message)} selecting={selecting} highlighted={highlightedMessage === message.id} selected={selectedMessages.includes(message.id)} busy={actionBusy || ephemeralOpening} preview={messagePreview(message)} onSelect={() => toggleMessage(message.id)} onBeginSelect={() => messageAction(message, 'select')}>
               {@const deliveryView = messageStatus(message, activeConversation.peerAddress === address, readReceiptsEnabled && peerReadPreferences[activeConversation.peerAddress] === true && activeConversation.contact === 'accepted')}
               {#if message.details?.ephemeral}
                 {@const viewed = activeEphemeralStates.get(message.id)}
@@ -6336,8 +6356,8 @@ async function changePassword(): Promise<void> {
                 </div>
               {:else}
                 <MessageText text={message.text} />
-                {#if message.edited&&message.editControl}{@const editStatus=messageStatus(message.editControl,activeConversation.peerAddress===address)}<small class:pending-edit={editStatus.tone==='waiting'} class:error-edit={editStatus.tone==='error'} title={$i18n.system(editStatus.detail)}>{$i18n.text(editStatus.tone==='error'?'Не удалось отправить изменение':message.editControl.direction==='outgoing'&&!['delivered','read','stored'].includes(message.editControl.delivery??'')?message.editControl.nodeQueue==='canceled'?'Изменение не отправлено':'Изменение отправляется':'изменено')}</small>{/if}
-                {#if message.reactions}<MessageReactions reactions={message.reactions} self={address} disabled={pinBusy||actionBusy||navigationBusy()} onReact={canUpdateActive?emoji=>void reactToMessage(message.id,emoji):undefined}/>{/if}
+                {#if message.edited&&message.editControl}{@const editStatus=messageStatus(message.editControl,activeConversation.peerAddress===address)}<small class="edit-note" class:pending-edit={editStatus.tone==='waiting'} class:error-edit={editStatus.tone==='error'} title={$i18n.system(editStatus.detail)}>{$i18n.text(editStatus.tone==='error'?'Не удалось отправить изменение':message.editControl.direction==='outgoing'&&!['delivered','read','stored'].includes(message.editControl.delivery??'')?message.editControl.nodeQueue==='canceled'?'Изменение не отправлено':'Изменение отправляется':'изменено')}</small>{/if}
+
                 {#if message.details?.media?.kind === 'pack-request' && message.direction === 'incoming'}
                   {@const requestedPack = mediaLibrary.packs.find(p=>p.id===message.details?.media?.packId||p.previousIds?.includes(message.details?.media?.packId??''))}
                   {#if requestedPack&&!packRequestAnswered(activeConversation.messages,message)}<button disabled={mediaBusy || attachingFiles} onclick={()=>void answerPackRequest(requestedPack,activeConversation.peerAddress,message)}>{$i18n.text("Отправить набор")}</button>
@@ -6348,6 +6368,7 @@ async function changePassword(): Promise<void> {
               {/if}
               {#if message.radioReception}<RadioReception reception={message.radioReception}/>{/if}
               <div class="message-actions">
+                {#if message.reactions}<MessageReactions reactions={message.reactions} self={address} disabled={pinBusy||actionBusy||navigationBusy()} onReact={canUpdateActive?emoji=>void reactToMessage(message.id,emoji):undefined}/>{/if}
                 {#if replyCount(activeConversation.messages, message.id)}<small title={$i18n.text("Ответы в этой переписке")}>↩ {replyCount(activeConversation.messages, message.id)}</small>{/if}
                 {#if message.forwardedTo?.length}<small title={$i18n.text("Число чатов, куда вы сами переслали сообщение")}>↪ {message.forwardedTo.length}</small>{/if}
                 {#if message.direction === 'outgoing' || message.file}
@@ -6394,6 +6415,10 @@ async function changePassword(): Promise<void> {
         {#snippet textComposer(microphone?: Snippet)}
         {#if sendOptionsOpen}<SendOptions value={sendRule} onSave={value => { sendRule = value; sendOptionsOpen = false; }} onClose={() => sendOptionsOpen = false} />{/if}
         {#if ephemeralView && ephemeralView.account === address && screen === 'account'}<EphemeralViewer message={ephemeralView.message} url={ephemeralView.url} deadline={ephemeralView.deadline} onClose={closeEphemeral} onDownload={downloadEphemeral} />{/if}
+        {#if reactionTarget&&reactionTarget.peer===activeConversation.peerAddress}
+          {@const reacting=activeMessages.find(m=>m.id===reactionTarget?.id)}
+          {#if reacting&&canUpdateActive&&reactionAllowed(reacting)}<ReactionPicker options={activeReactionChoices} selected={reacting.reactions?.find(r=>r.actors.includes(address))?.emoji??''} onClose={()=>reactionTarget=null} onSelect={emoji=>{const id=reactionTarget?.id;reactionTarget=null;if(id)void reactToMessage(id,emoji);}}/>{/if}
+        {/if}
         {#if editDraft}<EditMessageDialog text={editDraft.text} onSave={saveMessageEdit} onClose={()=>editDraft=null}/>{/if}
         <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
         {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false}
