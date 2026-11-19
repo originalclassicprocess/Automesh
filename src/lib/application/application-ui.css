@@ -101,6 +101,7 @@ img, video { border-radius:6px; }
   .peer-heading { flex:1; min-height:44px; padding:0; }
   .select-messages-button { display:grid; place-items:center; min-width:44px; min-height:44px; padding:6px; }
   .message-scroll { border:1px solid var(--line); border-radius:12px; background:var(--surface-alt); padding:14px; flex:1; min-height:60px; overflow:auto; overscroll-behavior:contain; }
+  .message-scroll { overflow-anchor:none; }
   .conversation-pane > p { margin:5px 0 8px; font-size:13px; color:var(--muted); }
   .audio-track-button { display:flex; align-items:center; gap:10px; max-width:100%; overflow-wrap:anywhere; text-align:left; padding:10px 14px; margin-top:6px; }
   .audio-track-button>span { font-size:22px; color:var(--accent); }
@@ -114,6 +115,7 @@ img, video { border-radius:6px; }
   .selection-count { font-size:14px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .selection-count small { font-size:12px; color:var(--muted); }
   .message-text { white-space:pre-wrap; }
+  .pending-edit { color:var(--warning); } .error-edit { color:var(--danger); }
   .message-header { position:relative; display:flex; align-items:center; gap:5px; margin:-3px -4px 5px 0; color:var(--muted); font-size:11px; }
   .message-header img { flex-shrink:0; border-radius:3px; }
   .message-author { color:var(--text); font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:160px; }
@@ -161,6 +163,7 @@ img, video { border-radius:6px; }
   .emoji-toggle { position:absolute; bottom:4px; right:3px; display:grid; place-items:center; padding:4px; width:34px; height:36px; border:0; background:transparent; color:var(--muted); }
   .message-history { position:relative; display:flex; flex:1; min-height:60px; }
   .jump-down { position:absolute; bottom:12px; right:24px; z-index:3; border-radius:50%; width:44px; height:44px; padding:10px; background:var(--surface); color:var(--accent); box-shadow:0 2px 8px var(--line); }
+  .jump-count { position:absolute; top:-5px; right:-5px; display:grid; place-items:center; min-width:20px; height:20px; padding:0 4px; border-radius:10px; background:var(--accent); color:var(--on-accent); font-size:10px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
   .notice-stack { position:fixed; top:max(12px,env(safe-area-inset-top)); left:12px; right:12px; max-width:520px; max-height:40dvh; overflow:auto; margin:auto; display:flex; flex-direction:column; gap:8px; z-index:100; pointer-events:none; }
   .composer textarea { flex:1; min-width:0; resize:none; min-height:44px; max-height:120px; padding:9px 10px; }
   .send-button { display:grid; place-items:center; min-width:44px; width:44px; min-height:44px; padding:6px; flex-shrink:0; }

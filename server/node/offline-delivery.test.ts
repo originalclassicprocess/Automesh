@@ -14,6 +14,8 @@ import { signedNodeRequest } from '../../src/lib/node/client';
 import { emptySessionChats, ensureConversation, receiveMessage, recordSentMessage, setContactState, setDeliveryStatus, type SessionChats } from '$lib/chat/session-chats';
 import { deriveChatStoreKey, sealChatData, openSealedChatData, type LocalChatData } from '$lib/chat/local-store';
 import type { Bundle, NodeAddress } from '../../src/lib/node/offline-crypto';
+import type {MessageDetails} from '$lib/chat/message-details';
+import{presentMessages}from'$lib/chat/message-updates';
 
 const nativeFetch = globalThis.fetch;
 let directory = ''; let server: Awaited<ReturnType<typeof createHomeNode>> | undefined;
@@ -43,8 +45,8 @@ function client(who: Awaited<ReturnType<typeof account>>, peer: string, node: No
   }); workers.push(worker);
   return { worker, state: () => state, disk: () => disk, chats: () => chats, bundle: () => bundle,
     connect: (other: OfflineController) => { peerWorker = other; }, failSave: (value: boolean) => { failSave = value; },
-    send: (text: string) => { const id = crypto.randomUUID(); chats = recordSentMessage(chats, peer, { id, text,
-      from: who.address, timestamp: Date.now(), direction: 'outgoing', delivery: 'queued' }); return id; },
+    send: (text: string,details?:MessageDetails,id=crypto.randomUUID()) => { chats = recordSentMessage(chats, peer, { id, text,
+      from: who.address, timestamp: Date.now(), direction: 'outgoing', delivery: 'queued',...(details?{details}:{}) }); return id; },
     reload: () => { state = restoreOfflineState(disk); },
     restore: (saved: OfflineState, savedChats: SessionChats) => { state = restoreOfflineState(saved); chats = savedChats; },
     configure: () => worker.configure(node, true) };
@@ -53,6 +55,21 @@ afterEach(async () => { for (const worker of workers.splice(0)) worker.stop(); a
   if (directory) await rm(directory, { recursive: true, force: true }); directory = ''; vi.unstubAllGlobals(); });
 
 describe('offline delivery with a real authenticated persistent node', () => {
+  it('retains edits and reactions through node restart without replacing originals or blocking later text',async()=>{
+    vi.stubGlobal('fetch',(url:string,init?:RequestInit)=>nativeFetch(url.replace(/^https:/,'http:'),init));
+    const [alice,bob]=await Promise.all([account(),account()]);let {node,port}=await start();
+    const control=server!.control;control.listen(0,'127.0.0.1');await once(control,'listening');const admin=`http://127.0.0.1:${(control.address()as{port:number}).port}`;
+    for(const who of [alice,bob]){const code=(await(await nativeFetch(`${admin}/pair-code`,{method:'POST',headers:{Authorization:`Bearer ${'a'.repeat(64)}`}})).json()).pairCode;
+      await signedNodeRequest(node.url,node.nodeId,who.identity,who.address,'/node/join',{code},new AbortController().signal);}
+    const a=client(alice,bob.address,node),b=client(bob,alice.address,node);a.connect(b.worker);b.connect(a.worker);await a.configure();await b.configure();await a.worker.publish(bob.address);await b.worker.publish(alice.address);
+    const id=crypto.randomUUID();a.send('corrected',{edit:{targetId:id,revision:1}});a.send('original',undefined,id);a.send('',{reaction:{targetId:id,revision:1,emoji:'👍'}});a.send('ordinary later');
+    for(let n=0;n<8&&!a.chats().byPeer[bob.address].messages.every(m=>m.delivery==='stored');n++)await a.worker.poll();
+    expect(a.chats().byPeer[bob.address].messages.every(m=>m.delivery==='stored')).toBe(true);a.worker.stop();await server!.close();({node}=await start(port));b.reload();
+    for(let n=0;n<8&&b.chats().byPeer[alice.address].messages.length<4;n++)await b.worker.poll();
+    const raw=b.chats().byPeer[alice.address].messages,shown=presentMessages(raw,bob.address,alice.address);expect(raw).toHaveLength(4);expect(raw.find(m=>m.id===id)?.text).toBe('original');
+    expect(shown.find(m=>m.id===id)).toMatchObject({text:'corrected',edited:true,reactions:[{emoji:'👍',actors:[alice.address]}]});expect(shown.at(-1)?.text).toBe('ordinary later');
+    await b.worker.poll();expect(b.chats().byPeer[alice.address].messages).toHaveLength(4);
+  },20000);
   it('delivers after sender disconnect, node/client restart; erases key and verifies receipt without receiver online', async () => {
     vi.stubGlobal('fetch', (url: string, init?: RequestInit) => nativeFetch(url.replace(/^https:/, 'http:'), init));
     const [alice, bob] = await Promise.all([account(), account()]); let { node, port } = await start();

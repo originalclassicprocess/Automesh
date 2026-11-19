@@ -1,8 +1,9 @@
 import type { Conversation, SessionChats } from './session-chats';
 import { contactSearchTerm } from './contact-input';
+import {presentMessages} from './message-updates';
 
 export function conversationPreview(conversation: Conversation, ui: (source: string) => string = source => source): string {
-  const last = conversation.messages.findLast(message => !message.details?.pin && !message.details?.ephemeralOpened);
+  const last = presentMessages(conversation.messages,conversation.messages.find(m=>m.direction==='outgoing')?.from??'',conversation.peerAddress).at(-1);
   if (!last) return ui('Пока нет сообщений');
   if (last.details?.ephemeral) return ui(last.ephemeralState?.expired ? 'Исчезнувшее сообщение' : 'Исчезающее сообщение');
   return `${last.direction === 'outgoing' ? `${ui('Вы')}: ` : ''}${last.file ? `📎 ${last.file.name}` : last.details?.radioContact ? `LoRa · ${ui('Радиоконтакт')}` : last.details?.contactCard ? `👤 ${last.details.contactCard.nickname || ui('Контакт')}` : last.text}`.slice(0, 160);

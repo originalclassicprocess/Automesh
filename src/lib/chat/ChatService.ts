@@ -81,6 +81,8 @@ export class ChatService {
   private deviceHandlers: Array<(peer: string, kind: DeviceControlKind, value: unknown) => unknown> = [];
   private contactAcceptedHandlers: Array<(peer: string) => void> = [];
   private readPreferenceHandlers: Array<(peer: string, enabled: boolean) => void> = [];
+  private messageFeatureHandlers:Array<(peer:string)=>void>=[];
+  private messageFeaturesAnnounced=new Set<string>();
   private readReceiptHandlers: Array<(peer: string, messageId: string) => void> = [];
   private fileOfferHandlers: Array<(peer: string, offer: FileOffer) => unknown> = [];
   private fileControlHandlers: Array<(peer: string, id: string, action: 'accept' | 'reject' | 'received' | 'cancel') => unknown> = [];
@@ -106,6 +108,7 @@ export class ChatService {
   // ----------------------------------------------------------
 
   async init(identity: ChatIdentity): Promise<void> {
+    this.messageFeaturesAnnounced.clear();
     if (this.identity) throw new Error('already_initialized');
     const generation = ++this.generation;
     const current = () => this.generation === generation && this.identity === identity;
@@ -130,6 +133,7 @@ export class ChatService {
     this.transport.onPeerChange((peer, event) => {
       if (!current()) return;
       if (event === 'left') {
+        this.messageFeaturesAnnounced.delete(peer.address);
         this.peerEpochs.set(peer.address,(this.peerEpochs.get(peer.address) ?? 0) + 1);
         // Old asynchronous work remains guarded by its captured epoch. It must
         // not hold the fresh connection's send/verification queues hostage.
@@ -208,6 +212,7 @@ export class ChatService {
     this.secureSessions?.close();
     this.secureSessions = null;
     this.identity = null;
+    this.messageFeaturesAnnounced.clear();
     this.securePeers.clear();
     this.peerEpochs.clear();
     this.sendQueues.clear();
@@ -320,6 +325,13 @@ export class ChatService {
   async sendReadPreference(enabled: boolean, toPeerAddress: string): Promise<void> {
     await this.sendPayload(`\u0000mesh-read-preference-v1:${enabled ? '1' : '0'}`, toPeerAddress);
   }
+  async sendMessageFeatures(peer:string):Promise<void>{
+    if(this.messageFeaturesAnnounced.has(peer))return;
+    const generation=this.generation,epoch=this.peerEpochs.get(peer)??0;
+    this.messageFeaturesAnnounced.add(peer);
+    try{await this.sendPayload('\u0000mesh-message-updates-v1',peer);}catch(error){if(this.generation===generation&&(this.peerEpochs.get(peer)??0)===epoch)this.messageFeaturesAnnounced.delete(peer);throw error;}
+  }
+  onMessageFeatures(handler:(peer:string)=>void):void{this.messageFeatureHandlers.push(handler);}
 
   async sendReadReceipt(messageId: string, toPeerAddress: string): Promise<void> {
     if (!UUID_RE.test(messageId)) throw new Error('invalid_message_id');
@@ -504,6 +516,10 @@ export class ChatService {
       if (content === '\u0000mesh-read-preference-v1:1' || content === '\u0000mesh-read-preference-v1:0') {
         for (const handler of this.readPreferenceHandlers) handler(from, content.endsWith(':1'));
         return;
+      }
+      if(content==='\u0000mesh-message-updates-v1'){
+        for(const handler of this.messageFeatureHandlers)handler(from);
+        void this.sendMessageFeatures(from).catch(()=>{});return;
       }
       if (content.startsWith('\u0000mesh-read-receipt-v1:')) {
         const readId = content.slice('\u0000mesh-read-receipt-v1:'.length);

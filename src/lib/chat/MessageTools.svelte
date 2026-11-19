@@ -5,9 +5,10 @@
   import type { ChatEntry } from './session-chats';
   import { canDownloadMessage, canStopFile, type MessageStatus } from './message-presentation';
   import HelpInfo from '$lib/application/HelpInfo.svelte';
+  import {REACTIONS} from './message-updates';
   type View = 'menu' | 'status' | 'route' | 'share';
   let { message, status, recipient, courier, shareText, openView, disabled = false, canReply, onOpen, onClose,
-    onReply, onForward, onSelect, onStop, onDownload, onDelete, onPin, pinned = false, canPin = true, canForward = true, canSelect = true, loadShareFile, onCancelNode, onRetryNode, onRetryRadio, channelMode=false, onCopy, onRetryChannel }: {
+    onReply, onForward, onSelect, onStop, onDownload, onDelete, onPin, pinned = false, canPin = true, canForward = true, canSelect = true, loadShareFile, onCancelNode, onRetryNode, onRetryRadio, channelMode=false, onCopy, onRetryChannel,onReact,onEdit }: {
     message: ChatEntry; status: MessageStatus; recipient: string; courier?: string; shareText: string;
     openView: View | null; disabled?: boolean; canReply: boolean;
     onOpen: (view: View) => void; onClose: () => void; onReply: () => void; onForward: () => void;
@@ -16,6 +17,7 @@
     onCancelNode?:()=>void; onRetryNode?:()=>void;
     onRetryRadio?:()=>void; channelMode?:boolean;onCopy?:()=>void;onRetryChannel?:()=>void;
     loadShareFile: () => Promise<File>;
+    onReact?:(emoji:string)=>void;onEdit?:()=>void;
   } = $props();
   let prepared = $state<File | null>(null); let preparing = $state(false); let error = $state('');
   let request = 0;
@@ -64,7 +66,9 @@
   <dialog use:mountDialog aria-label={openView === 'menu' ? $i18n.text("Действия с сообщением") : openView === 'status' ? $i18n.text("Статус сообщения") : openView === 'route' ? $i18n.text("Путь сообщения") : $i18n.text("Поделиться вне Automesh")} oncancel={(event) => { event.preventDefault(); onClose(); }}>
     <header><h3>{openView === 'menu' ? $i18n.text("Сообщение") : openView === 'status' ? $i18n.text("Статус") : openView === 'route' ? $i18n.text("Известный путь") : $i18n.text("Поделиться")}</h3><button type="button" onclick={onClose} aria-label={$i18n.text("Закрыть")}>✕</button></header>
     {#if openView === 'menu'}
+      {#if onReact}<div class="reaction-picker" role="group" aria-label={$i18n.text('Реакция на сообщение')}>{#each REACTIONS as emoji}<button type="button" disabled={disabled} onclick={()=>run(()=>onReact?.(emoji))} aria-label={$i18n.text('Реакция на сообщение')+' '+emoji}>{emoji}</button>{/each}</div>{/if}
       <div class="actions">
+        {#if onEdit}<button disabled={disabled} onclick={()=>run(onEdit!)}><span class="action-icon" aria-hidden="true">✎</span> {$i18n.text('Изменить текст')}</button>{/if}
         {#if onCopy}<button disabled={disabled} onclick={()=>run(onCopy!)}><span class="action-icon" aria-hidden="true">⧉</span> {$i18n.text("Скопировать текст")}</button>{/if}
         {#if onRetryChannel}<button disabled={disabled} onclick={()=>run(onRetryChannel!)}><span class="action-icon" aria-hidden="true">↻</span> {$i18n.text("Отправить снова")}</button>{/if}
         <button disabled={!canReply || disabled} onclick={() => run(onReply)}><span class="action-icon" aria-hidden="true">↩</span> {$i18n.text("Ответить")}</button>
@@ -117,6 +121,7 @@
   header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
   h3 { margin:0; font-size:18px; } header button { border:0; background:transparent; font-size:16px; }
   .actions { display:grid; gap:3px; } .actions button { display:flex; align-items:center; gap:8px; text-align:left; border:0; min-height:42px; font-size:14px; }
+  .reaction-picker{display:flex;gap:3px;justify-content:space-between;margin:4px 0 12px}.reaction-picker button{padding:5px;min-width:36px;min-height:40px;font-size:21px;border:0}
   .action-icon { display:inline-grid; place-items:center; width:20px; flex-shrink:0; font-size:16px; line-height:1; }
   .danger, .error { color:var(--danger); } small { color:var(--muted); font-size:13px; }
   p { line-height:1.5; } code { display:block; font-size:12px; overflow-wrap:anywhere; } li { margin:12px 0; }

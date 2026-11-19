@@ -40,7 +40,7 @@ export function normalizeFileOffer(raw: unknown): FileOffer | null {
     typeof value.mime !== 'string' || value.mime.length > 100 || /[\u0000-\u001f\u007f]/.test(value.mime) ||
     typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)) return null;
   const details = value.details === undefined ? undefined : normalizeMessageDetails(value.details);
-  if (details === null || details?.pin || details?.ephemeralOpened) return null;
+  if (details === null || details?.pin || details?.ephemeralOpened || details?.edit || details?.reaction) return null;
   return { id: value.id, name: value.name, size: value.size as number, mime: value.mime, sha256: value.sha256,
     ...(details ? { details } : {}) };
 }

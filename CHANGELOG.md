@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.13 — chat navigation, preparation and message updates (2026-11-19)
+
+Stable media-aware scrolling, compact new-message counts, touch selection, local
+attachment previews/order, typed search, reactions and author-only text edits.
+Existing delivery queues and file hashes are preserved; nodes are unchanged.
+See docs/RELEASE_0_5_13.md.
+
 ## 0.5.12 — lock and file queue recovery (2026-11-18)
 
 Protect locked-session recovery, resume interrupted file queues, add manual sender

@@ -1,7 +1,8 @@
 import type { ChatEntry } from './session-chats';
+import {presentMessages} from './message-updates';
 export type MessagePin = { actor: string; targetId: string | null; revision: number; control: ChatEntry };
-export function visibleChatMessages(messages: readonly ChatEntry[]): ChatEntry[] {
-  return messages.filter(message => !message.details?.pin && !message.details?.ephemeralOpened);
+export function visibleChatMessages(messages: readonly ChatEntry[],self='',peer='') {
+  return presentMessages(messages,self,peer);
 }
 // Revision ordering makes delayed offline delivery and retries deterministic.
 // Each authenticated participant owns exactly one slot, even when pinning a
