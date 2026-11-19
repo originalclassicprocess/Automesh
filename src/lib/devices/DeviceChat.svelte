@@ -32,6 +32,8 @@
   import { identiconFor } from '../addressing/identicon';
   import ChatIcon from '../chat/ChatIcon.svelte';
   import MessageCard from '../chat/MessageCard.svelte';
+  import {visibleChatMessages} from '../chat/message-pins';
+  import MessageReactions from '../chat/MessageReactions.svelte';
   import MessageTools from '../chat/MessageTools.svelte';
   import { messageStatus, messageProvenance } from '../chat/message-presentation';
   import MessageDelivery from '../chat/MessageDelivery.svelte';
@@ -78,9 +80,10 @@
       detail: 'Подтверждение сообщения отправляется после сохранения; права проверяются свежим ответом ноды или владельца.' }]);
   let authority = $state.raw<DirectoryAuthority | null>((session.approval!.membership.record.body as unknown as MembershipBody).directory ?? null);
   const active = $derived(displayed.byPeer[chats.activePeer]);
+  const shownMessages=$derived(visibleChatMessages(active?.messages??[],owner,chats.activePeer));
   const listedPeers = $derived(visibleConversations(displayed, query, name, owner));
-  let showJumpDown = $state(false), chatOpenToken = $state(0);
-  const manageChatScroll = createChatScroll({ activePeer: () => chats.activePeer, firstUnread: () => undefined, onJump: visible => showJumpDown = visible });
+  let showJumpDown = $state(false), jumpNewMessages = $state(0), chatOpenToken = $state(0);
+  const manageChatScroll = createChatScroll({ activePeer: () => chats.activePeer, firstUnread: () => undefined, onJump: (visible,incoming) => {showJumpDown=visible;jumpNewMessages=incoming;} });
   let emojiOpen = $state(false), composer = $state<HTMLTextAreaElement>();
   let mobileInput = $state(false);
   const inputPanel = new ComposerInput(() => emojiOpen, open => emojiOpen = open, mobile => mobileInput = mobile);
@@ -116,6 +119,7 @@
     const outgoing = !copy && kind === 'sync';
     const decoded = decodeChatContent(copy?.content ?? event.text); if (!decoded || decoded.details?.pin || decoded.details?.ephemeral || decoded.details?.ephemeralOpened) throw new Error('device_content_invalid');
     const conversation = chats.byPeer[peer]; if (conversation?.contact === 'blocked') throw new Error('blocked_contact');
+    if(!copy&&kind==='message'&&(decoded.details?.edit||decoded.details?.reaction)&&conversation?.contact!=='accepted')throw Error('device_update_contact_not_accepted');
     if (conversation?.deletedIds?.includes(event.id)) return;
     const existing = conversation?.messages.find(m => m.id === event.id);
     if (existing) {
@@ -300,8 +304,8 @@
             <button class="select-messages-button" disabled aria-label={$i18n.text("Позвонить")} title={rights}><ChatIcon name="phone" /></button>
             <button class="select-messages-button" disabled aria-label={$i18n.text("Выбрать сообщения")} title={$i18n.text("Множественный выбор пока недоступен на подключённом устройстве")}><ChatIcon name="select" /></button></div>
           {#if active.contact === 'pending'}<p>{$i18n.text("Новый запрос на общение")}</p><button type="button" onclick={() => void accept().catch(() => error = 'Не удалось подтвердить контакт.')}>{$i18n.text("Принять контакт")}</button>{/if}
-          <div class="message-history"><div class="message-scroll" data-chat-scroll bind:this={messages} use:manageChatScroll={{peer: chats.activePeer, lastId: active.messages.at(-1)?.id ?? '', openToken: chatOpenToken}}>
-            {#each active.messages as message (message.id)}
+          <div class="message-history"><div class="message-scroll" data-chat-scroll bind:this={messages} use:manageChatScroll={{peer: chats.activePeer, messages: shownMessages, openToken: chatOpenToken}}>
+            {#each shownMessages as message (message.id)}
               <div data-chat-message-id={message.id}>
               <MessageCard outgoing={message.direction === 'outgoing'} sticker={message.details?.media?.kind === 'sticker'} preview={message.text.slice(0, 80)} onSelect={() => {}}>
                 <div class="message-header"><Avatar accountId={message.direction === 'outgoing' ? owner : chats.activePeer} size={18} /><span class="message-author">{message.direction === 'outgoing' ? $i18n.text("Вы") : name(chats.activePeer)}</span>
@@ -317,6 +321,8 @@
                 </div>
                 {#if message.details?.reply}<div class="reply-preview"><small>{$i18n.text("↩ Ответ")}</small><span>{message.details.reply.preview}</span></div>{/if}
                 <MessageText text={message.text} />
+                {#if message.edited}<small>{$i18n.text('изменено')}</small>{/if}
+                {#if message.reactions}<MessageReactions reactions={message.reactions} self={owner}/>{/if}
                 {#if message.file}<HistoryAttachment file={message.file} available={message.fileStatus === 'ready'} deleted={message.fileDeleted} load={() => historyFile(message)}
                   timestamp={message.timestamp} sender={message.from === owner ? 'Вы' : name(message.from)} senderAddress={message.from}
                   onReply={active.contact === 'accepted' ? () => startReply(message) : undefined} onShare={() => tools = { id: message.id, view: 'share' }} />{/if}
@@ -326,7 +332,7 @@
               </MessageCard>
               </div>
             {/each}
-          </div>{#if showJumpDown}<button type="button" class="jump-down" aria-label={$i18n.text("К последним сообщениям")} onclick={() => messages?.scrollTo({top: messages.scrollHeight, behavior:'smooth'})}><ChatIcon name="order-down" /></button>{/if}</div>
+          </div>{#if showJumpDown}<button type="button" class="jump-down" aria-label={`${$i18n.text("К последним сообщениям")}${jumpNewMessages?` · +${jumpNewMessages}`:''}`} onclick={() => messages?.scrollTo({top: messages.scrollHeight, behavior:'smooth'})}><ChatIcon name="order-down" />{#if jumpNewMessages}<span class="jump-count" aria-hidden="true">{jumpNewMessages>99?'99+':jumpNewMessages}</span>{/if}</button>{/if}</div>
           {#if reply}<div class="composer-reply"><span>↩ {reply.preview}</span><button type="button" onclick={() => reply = null} aria-label={$i18n.text("Отменить ответ")}>×</button></div>{/if}
           <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
           {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false} /></div>{/if}

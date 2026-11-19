@@ -71,11 +71,11 @@ export type SavedChats = {
 };
 
 export function unreadMessageCount(messages: ChatEntry[]): number {
-  return messages.filter((message) => !message.details?.pin && !message.details?.ephemeralOpened && message.direction === 'incoming' && !message.readState).length;
+  return messages.filter((message) => !message.details?.pin && !message.details?.edit && !message.details?.reaction && !message.details?.ephemeralOpened && message.direction === 'incoming' && !message.readState).length;
 }
 
 export function firstUnreadMessageId(messages: ChatEntry[]): string | undefined {
-  return messages.find((message) => !message.details?.pin && !message.details?.ephemeralOpened && message.direction === 'incoming' && !message.readState)?.id;
+  return messages.find((message) => !message.details?.pin && !message.details?.edit && !message.details?.reaction && !message.details?.ephemeralOpened && message.direction === 'incoming' && !message.readState)?.id;
 }
 
 export function saveChats(state: SessionChats): SavedChats {

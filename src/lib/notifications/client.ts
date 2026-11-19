@@ -28,7 +28,7 @@ export function pendingNotificationPeers(chats:SessionChats,self:string,now=Date
 }
 function notificationCandidate(m:ChatEntry,now:number,storedOnly=false):boolean {
   return localOutgoing(m) && ['queued','sending','sent','stored'].includes(m.delivery??'') && (!storedOnly || m.delivery==='stored') &&
-    !m.details?.ephemeral && !m.details?.ephemeralOpened && !m.details?.pin && !m.fileDeleted && !['ready','rejected','canceled'].includes(m.fileStatus??'') &&
+    !m.details?.ephemeral && !m.details?.ephemeralOpened && !m.details?.pin && !m.details?.edit && !m.details?.reaction && !m.fileDeleted && !['ready','rejected','canceled'].includes(m.fileStatus??'') &&
     now-m.timestamp>=0 && now-m.timestamp<24*3600000;
 }
 type Ticket={manual?:boolean;peer:string;provider:string;device:string;token:string;expires:number};
@@ -155,7 +155,7 @@ export class NotificationController {
   async nodeWake(peer:string,messageId:string,providers:unknown):Promise<unknown> {
     if(!this.current() || this.o.chats().byPeer[peer]?.contact!=='accepted' || !Array.isArray(providers))return undefined;
     const message=this.o.chats().byPeer[peer].messages.find(m=>m.id===messageId);
-    if(!localOutgoing(message) || message.details?.ephemeral || message.details?.ephemeralOpened || message.details?.pin || ['delivered','read'].includes(message.delivery??''))return undefined;
+    if(!localOutgoing(message) || message.details?.ephemeral || message.details?.ephemeralOpened || message.details?.pin || message.details?.edit || message.details?.reaction || ['delivered','read'].includes(message.delivery??''))return undefined;
     const known=this.o.state().peers[peer]??[];
     const wanted=new Set([...known.filter(r=>r.enabled).map(r=>r.provider),this.o.defaultProvider]);
     const event=encode(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${NOTIFICATION_PROTOCOL}:${this.o.account}:${peer}:${messageId}`))));

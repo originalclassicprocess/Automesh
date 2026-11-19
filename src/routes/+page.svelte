@@ -54,6 +54,9 @@ import { importStickerPack, exportStickerPack, type PreparedPack } from '$lib/ch
 import MessageTools from '$lib/chat/MessageTools.svelte';
 import { messageStatus } from '$lib/chat/message-presentation';
 import { messagePins, nextPinRevision, visibleChatMessages } from '$lib/chat/message-pins';
+import {presentMessages,editableText,nextUpdateRevision,reactionAllowed,retryMessageUpdate} from '$lib/chat/message-updates';
+import MessageReactions from '$lib/chat/MessageReactions.svelte';
+import EditMessageDialog from '$lib/chat/EditMessageDialog.svelte';
 import { offlineKeyBudget } from '$lib/chat/offline-key-budget';
 import SettingsMenu from '$lib/application/SettingsMenu.svelte';
 import SettingsLinks from '$lib/application/SettingsLinks.svelte';
@@ -665,7 +668,7 @@ let chatOpenToken = $state(0);
 let signalingStatus = $state<TransportStatus>('idle');
 let activeConversation = $derived(sessionChats.byPeer[sessionChats.activePeer]);
 let ordinaryUnreadBoundary=$state('');
-let activeMessages = $derived(visibleChatMessages(activeConversation?.messages ?? []));
+let activeMessages = $derived(visibleChatMessages(activeConversation?.messages ?? [],address,activeConversation?.peerAddress??''));
 let activeEphemeralStates = $derived(ephemeralStates(activeConversation?.messages ?? []));
 let activePins = $derived(messagePins(activeConversation?.messages ?? [], address, sessionChats.activePeer));
 let keyBudgetNow = $state(Date.now());
@@ -680,9 +683,9 @@ let courierWaiting = $derived(sessionChats.order.reduce((count, peer) => count +
   m.direction === 'outgoing' && (m.delivery === 'queued' || m.delivery === 'sent') && peer !== address).length, 0));
 let replyDrafts = $state<Record<string, ReplyReference>>({});
 let selecting = $state(false); let selectedMessages = $state<string[]>([]);
-let chatSearchPosition=0;
-function toggleChatSearch(){const node=document.querySelector<HTMLElement>('[data-chat-scroll]');if(!chatSearchOpen){chatSearchPosition=node?.scrollTop??0;chatSearchOpen=true;}else{chatSearchOpen=false;void tick().then(()=>node?.scrollTo({top:chatSearchPosition}));}}
-let chatSearchOpen = $state(false), emojiOpen = $state(false), showJumpDown = $state(false);
+let returnFromChatSearch:(()=>void)|undefined;
+function toggleChatSearch(){if(!chatSearchOpen){returnFromChatSearch=manageChatScroll.checkpoint();chatSearchOpen=true;}else{const restore=returnFromChatSearch;returnFromChatSearch=undefined;chatSearchOpen=false;void tick().then(()=>restore?.());}}
+let chatSearchOpen = $state(false), emojiOpen = $state(false), showJumpDown = $state(false), jumpNewMessages = $state(0);
 let mobileInput = $state(false);
 const inputPanel = new ComposerInput(() => emojiOpen, open => emojiOpen = open, mobile => mobileInput = mobile);
 let composerCaret = { peer: '', start: 0, end: 0 };
@@ -710,11 +713,11 @@ let actionPeer = ''; let highlightedMessage = $state('');
 let allowForwardAttribution = $state(true);
 let actionRows = $derived(sessionChats.order.map(id => ({ id, name: id === address ? 'Вы (Сохранённые)' : contactName(id) })));
 let attachmentInput = $state<HTMLInputElement>();
-let pastedFiles = $state<File[]>([]), composerSending = $state(false);
+let pastedFiles = $state<File[]>([]), composerSending = $state(false), stagedPreview=$state<number|null>(null);
 let pastedScope = '';
 $effect(() => {
   const scope = `${authGeneration}:${screen}:${sessionChats.activePeer}`;
-  if (scope !== pastedScope) untrack(() => { pastedScope=scope; pastedFiles=[]; sendRule=undefined; sendOptionsOpen=false; emojiOpen=false; ephemeralOpening=false; closeEphemeral(); });
+  if (scope !== pastedScope) untrack(() => { pastedScope=scope; pastedFiles=[]; stagedPreview=null; sendRule=undefined; sendOptionsOpen=false; emojiOpen=false; ephemeralOpening=false; closeEphemeral(); });
 });
 let attachingFiles = $state(false);
 let voiceBusy = $state(false);
@@ -749,6 +752,9 @@ let readReceiptsEnabled = $state(false);
 let trustedReadReceiptsPreference = true;
 let autoLockMinutes = $state(DEFAULT_AUTO_LOCK_MINUTES);
 let peerReadPreferences = $state<Record<string, boolean>>({});
+const canUpdateActive=$derived(canUseMessageUpdates(activeConversation?.peerAddress??''));
+let peerMessageFeatures=$state<Record<string,boolean>>({});
+let editDraft=$state<{peer:string;id:string;text:string;revision:number}|null>(null);
 let nicknameDraft = $state('');
 let aliases = $state<Record<string, string>>({});
 let declaredNames = $state<Record<string, string>>({});
@@ -777,7 +783,7 @@ function rootRoute(screen: Screen): PageRoute {
   return { screen, layer: '', view: 'chats', peer: '', card: '', pane: 'list', settings: 'account', connection: 'direct', gallery: '' };
 }
 function currentPageRoute(): PageRoute {
-  const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
+  const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : editDraft ? 'message-edit' : stagedPreview!==null ? 'attachment-preview' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
     backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
@@ -1868,6 +1874,8 @@ function saveContactAlias(): boolean {
 }
 
 function restorePageRoute(route: PageRoute): void {
+  if(route.layer!=='message-edit'&&!pinBusy)editDraft=null;
+  if(route.layer!=='attachment-preview')stagedPreview=null;
   chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; closeEphemeral();
   panicOpen = false; memoryConfirmation = null; pendingExit = null; nodeScannerOpen = false;
   openHelp = null; backupOpen = false;
@@ -2362,6 +2370,8 @@ async function readSessionProfiles(root: Uint8Array, owner: string, trusted: boo
 }
 
 function adoptProfileContext(context: ProfileChatContext): void {
+  peerMessageFeatures={};editDraft=null;returnFromChatSearch=undefined;
+  manageChatScroll.clear();
   audioTrack = null;
   const backupVerified = seedBackupVerified;
   clearMediaPreview(); stopNodeTools(); outbox.reset();
@@ -3264,6 +3274,11 @@ function stageAttachments(files: File[]): void {
   if (error) { status = error; return; }
   pastedFiles = [...pastedFiles,...files];
 }
+function moveStagedAttachment(index:number,offset:number):void {
+  const next=index+offset;
+  if(composerSending||attachingFiles||navigationBusy()||!Number.isInteger(index)||!Number.isInteger(next)||index<0||index>=pastedFiles.length||next<0||next>=pastedFiles.length)return;
+  const reordered=[...pastedFiles];const [file]=reordered.splice(index,1);reordered.splice(next,0,file);pastedFiles=reordered;
+}
 
 function addAttachments(files: File[], rule?: MessageDetails['ephemeral'], admitted = false): Promise<boolean> {
   return attachmentTasks.track(addAttachmentsNow(files, rule, admitted));
@@ -3550,6 +3565,7 @@ async function retryNodeMessage(peer:string,id:string) {
 async function resendMessageCopy(peer:string,id:string,activeChat:ChatService,generation:number):Promise<void>{
   const entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id);
   if(!entry||generation!==authGeneration||chat!==activeChat)throw new Error('Сеанс или чат изменился.');
+  if(entry.details?.edit||entry.details?.reaction){const update=retryMessageUpdate(sessionChats.byPeer[peer].messages,entry,address);if(update)await queueRichMessage(peer,update.text,update.details);return;}
   if(entry.file){
     const file=await prepareMessageFile(peer,id);
     if(generation!==authGeneration||chat!==activeChat||!await enqueueAttachment(file,peer,activeChat,entry.details))throw new Error('Не удалось повторить отправку.');
@@ -3749,6 +3765,7 @@ function resumeConnectedPeer(peer: string, active: ChatService, refreshKeys = fa
 }
 
 async function openConversation(peer: string) {
+  if(!pinBusy)editDraft=null;
   if (ephemeralOpening || actionBusy) return;
   // Keep an unconfirmed recording with its original chat.
   if (voiceBusy && sessionChats.activePeer !== peer) return;
@@ -3845,6 +3862,8 @@ function cancelReply(): void {
   const next = { ...replyDrafts }; delete next[sessionChats.activePeer]; replyDrafts = next;
 }
 function jumpToMessage(id: string): void {
+  const event=sessionChats.byPeer[sessionChats.activePeer]?.messages.find(m=>m.id===id);
+  id=event?.details?.edit?.targetId??event?.details?.reaction?.targetId??id;
   const node = [...document.querySelectorAll<HTMLElement>('[data-chat-message-id]')].find(item => item.dataset.chatMessageId === id);
   if (!node) { status = 'Исходное сообщение удалено или отсутствует на этом устройстве.'; return; }
   const scroll = node.closest<HTMLElement>('[data-chat-scroll]');
@@ -3858,7 +3877,7 @@ function toggleMessage(id: string): void {
 function openChatAction(mode: 'forward' | 'contact' | 'delete'): void {
   if (actionBusy || memoryBusy || switchingTrust || endingSession || attachingFiles || voiceBusy) return;
   if(mode==='forward'){
-    const messages=sessionChats.byPeer[sessionChats.activePeer]?.messages.filter(m=>selectedMessages.includes(m.id))??[];
+    const messages=messagesForActions(sessionChats.activePeer).filter(m=>selectedMessages.includes(m.id));
     if(messages.length&&messages.every(m=>!m.file&&!m.details?.ephemeral&&!m.details?.contactCard&&!m.details?.pin&&!m.localCall)){
       textForward={peer:sessionChats.activePeer,messages:messages.map(m=>({key:m.id,text:m.text,source:m.from===address?selfNickname:contactName(m.from)}))};attachmentMenu=false;return;
     }
@@ -3882,6 +3901,28 @@ async function copyMessage(message: ChatEntry): Promise<void> {
     copiedMessageId = message.id;
     setTimeout(() => { if (copiedMessageId === message.id) copiedMessageId = ''; }, 1800);
   } catch { if (generation === authGeneration) status = 'Браузер не разрешил копирование. Можно выделить текст вручную.'; }
+}
+function messagesForActions(peer:string){return presentMessages(sessionChats.byPeer[peer]?.messages??[],address,peer);}
+function canUseMessageUpdates(peer:string):boolean{return sessionChats.byPeer[peer]?.contact==='accepted'&&(peer===address||peerMessageFeatures[peer]===true||sessionChats.byPeer[peer].messages.some(m=>m.direction==='incoming'&&m.from===peer&&!!(m.details?.edit||m.details?.reaction)));}
+function beginMessageEdit(id:string):void{
+  const peer=sessionChats.activePeer,m=messagesForActions(peer).find(m=>m.id===id);
+  if(navigationBusy()||pinBusy||!canUseMessageUpdates(peer)||!m||m.from!==address||m.direction!=='outgoing'||!editableText(m))return;
+  editDraft={peer,id,text:m.text,revision:nextUpdateRevision(sessionChats.byPeer[peer].messages,address,id,'edit')-1};
+}
+async function saveMessageEdit(text:string):Promise<void>{
+  const draft=editDraft,generation=authGeneration;
+  if(!draft||navigationBusy()||pinBusy||draft.peer!==sessionChats.activePeer||!canUseMessageUpdates(draft.peer))throw Error('message_edit_unavailable');
+  const conversation=sessionChats.byPeer[draft.peer],m=conversation.messages.find(m=>m.id===draft.id),revision=nextUpdateRevision(conversation.messages,address,draft.id,'edit');
+  if(!m||m.from!==address||m.direction!=='outgoing'||!editableText(m)||revision-1!==draft.revision)throw Error('message_edit_changed');
+  pinBusy=true;try{await queueRichMessage(draft.peer,text,{edit:{targetId:draft.id,revision}});if(generation===authGeneration)status=draft.peer===address?'Изменение сохранено.':'Изменение сохранено и отправляется собеседнику.';}
+  finally{if(generation===authGeneration)pinBusy=false;}
+}
+async function reactToMessage(id:string,emoji:string):Promise<void>{
+  const peer=sessionChats.activePeer,generation=authGeneration,m=messagesForActions(peer).find(m=>m.id===id);
+  if(navigationBusy()||pinBusy||!canUseMessageUpdates(peer)||!m||!reactionAllowed(m))return;
+  const remove=m.reactions?.some(r=>r.emoji===emoji&&r.actors.includes(address));pinBusy=true;
+  try{await queueRichMessage(peer,'',{reaction:{targetId:id,revision:nextUpdateRevision(sessionChats.byPeer[peer].messages,address,id,'reaction'),emoji:remove?null:emoji}});}
+  catch{if(generation===authGeneration)status='Не удалось сохранить реакцию.';}finally{if(generation===authGeneration)pinBusy=false;}
 }
 async function pinMessage(targetId: string | null): Promise<void> {
   const peer = sessionChats.activePeer; const generation = authGeneration;
@@ -3918,14 +3959,14 @@ function saveDownload(bytes: BlobPart, name: string): void {
 }
 async function copySelection():Promise<void>{
   const peer=sessionChats.activePeer,generation=authGeneration;
-  const messages=sessionChats.byPeer[peer]?.messages.filter(m=>selectedMessages.includes(m.id))??[];
+  const messages=messagesForActions(peer).filter(m=>selectedMessages.includes(m.id));
   if(!messages.length||actionBusy||messages.some(m=>m.details?.ephemeral))return;
   actionBusy=true;try{await navigator.clipboard.writeText(messages.map(m=>m.file?.name||m.text).join('\n\n'));if(generation===authGeneration){selectedMessages=[];selecting=false;status='Текст скопирован.';}}
   catch{if(generation===authGeneration)status='Не удалось скопировать текст.';}finally{if(generation===authGeneration)actionBusy=false;}
 }
 async function downloadSelection(): Promise<void> {
   const peer = sessionChats.activePeer; const generation = authGeneration;
-  const messages = downloadableSelection(sessionChats.byPeer[peer]?.messages??[],selectedMessages);
+  const messages = downloadableSelection(messagesForActions(peer),selectedMessages);
   if (!messages.length || actionBusy) return;
   actionBusy = true;
   try {
@@ -3978,7 +4019,7 @@ async function confirmChatAction(targets: string[]): Promise<void> {
     } else if (mode === 'delete') {
       await deleteSelectedMessages(peer, [...selectedMessages], generation);
     } else {
-      const messages = sessionChats.byPeer[peer]?.messages.filter(message => selectedMessages.includes(message.id)) ?? [];
+      const messages = messagesForActions(peer).filter(message => selectedMessages.includes(message.id));
       const destinations = [...new Set(targets)];
       if (!messages.length || !destinations.length || destinations.length > 20) throw new Error('Выберите сообщения и до 20 чатов.');
       for (const target of destinations) {
@@ -4124,7 +4165,7 @@ function observeIncoming(node: HTMLElement, initial: { peer: string; messageId: 
 
 const manageChatScroll = createChatScroll({ activePeer: () => sessionChats.activePeer,
   firstUnread: peer => sessionChats.byPeer[peer]?.unread ? firstUnreadMessageId(sessionChats.byPeer[peer]?.messages ?? []) : undefined,
-  onJump: visible => showJumpDown = visible });
+  onJump: (visible, incoming) => { showJumpDown = visible; jumpNewMessages = incoming; } });
 
 function jumpToBottom(): void {
   const node = document.querySelector<HTMLElement>('[data-chat-scroll]');
@@ -4683,7 +4724,7 @@ async function initializeChat() {
     if (chat !== nextChat) return;
     const current = sessionChats.byPeer[msg.from];
     if (current?.contact === 'blocked') throw new Error('blocked_contact');
-    if ((msg.details?.pin || msg.details?.ephemeral || msg.details?.ephemeralOpened) && current?.contact !== 'accepted') throw new Error('pin_contact_not_accepted');
+    if ((msg.details?.pin || msg.details?.edit || msg.details?.reaction || msg.details?.ephemeral || msg.details?.ephemeralOpened) && current?.contact !== 'accepted') throw new Error('pin_contact_not_accepted');
     if (current?.deletedIds?.includes(msg.id)) return;
     if (!textFitsLimit(msg.text, false)) throw new Error('message_too_large');
     const existing = current?.messages.find((entry) => entry.id === msg.id);
@@ -4716,7 +4757,7 @@ async function initializeChat() {
       throw new Error('incoming_message_not_saved');
     }
     if (handshake.confirm) void nextChat.sendContactAccepted(msg.from).catch(() => {});
-    if (!existing && chat === nextChat) incomingNotification(msg.from);
+    if (!existing && chat === nextChat && !msg.details?.edit && !msg.details?.reaction) incomingNotification(msg.from);
     void deviceRuntime?.wake().catch(() => {});
     if (handshake.keys) publishDeliveryKeys(msg.from,true);
     if (reciprocalRequest) void nextChat.sendReadPreference(readReceiptsEnabled, msg.from).catch(() => {});
@@ -4751,9 +4792,11 @@ async function initializeChat() {
     scanVisibleMessages();
   };
   nextChat.onContactAccepted(peer => { void acceptAuthenticatedContact(peer).catch(() => {}); });
+  nextChat.onMessageFeatures(peer=>{if(chat===nextChat&&sessionChats.byPeer[peer]?.contact==='accepted')peerMessageFeatures={...peerMessageFeatures,[peer]:true};});
   nextChat.onReadPreference((peer, enabled) => {
     if (chat !== nextChat || sessionChats.byPeer[peer]?.contact !== 'accepted') return;
     peerReadConfirmed.add(peer);
+    void nextChat.sendMessageFeatures(peer).catch(()=>{});
     peerReadPreferences = { ...peerReadPreferences, [peer]: enabled };
     void persistLocalChats();
     if (!enabled) {
@@ -5225,6 +5268,8 @@ async function switchTrustMode(): Promise<void> {
 }
 
 function forgetOpenAccount(mode: 'lock' | 'logout'): void {
+  peerMessageFeatures={};editDraft=null;returnFromChatSearch=undefined;
+  manageChatScroll.clear();
   mediaLibrary = emptyMediaLibrary(); mediaOpen = false; receivedPack = null;
   lockedProfileId = mode === 'lock' ? activeProfileId : '';
   offlineDelivery?.stop(); offlineDelivery = null;
@@ -6098,7 +6143,7 @@ async function changePassword(): Promise<void> {
           title={selecting ? $i18n.text("Отменить выбор") : $i18n.text("Все чаты")}>←
           {#if otherUnread}<span class="unread-badge" aria-hidden="true">{otherUnread > 99 ? '99+' : otherUnread}</span>{/if}
         </button>
-        {#if selecting}
+        {#if selecting && activeMessages.some(message=>!message.localCall)}
           <MessageSelectionBar messages={activeMessages} selected={selectedMessages} busy={actionBusy} onCopy={()=>void copySelection()}
             retryCount={retrySelection.length} cancelCount={cancelSelection.length} downloadCount={downloadSelectionEntries.length}
             onRetry={()=>openBulkAction('retry')} onCancel={()=>openBulkAction('cancel')}
@@ -6122,8 +6167,8 @@ async function changePassword(): Promise<void> {
             aria-label={$i18n.text("Позвонить")} title={activeConversation.connection === 'connected' ? $i18n.text("Голосовой звонок") : $i18n.text("Для звонка собеседник должен быть на связи")}><ChatIcon name="phone" /></button>
         {/if}
         <button class="select-messages-button" type="button" onclick={toggleChatSearch} aria-label={$i18n.text("Поиск в чате")} title={$i18n.text("Поиск по тексту или дате")}><ChatIcon name="search" /></button>
-        <button class="select-messages-button" type="button" onclick={() => { selecting = true; selectedMessages = []; }} disabled={actionBusy}
-          aria-label={$i18n.text("Выбрать сообщения")} title={$i18n.text("Выбрать сообщения")}><ChatIcon name="select" /></button>
+        {#if activeMessages.some(message=>!message.localCall)}<button class="select-messages-button" type="button" onclick={() => { selecting = true; selectedMessages = []; }} disabled={actionBusy}
+          aria-label={$i18n.text("Выбрать сообщения")} title={$i18n.text("Выбрать сообщения")}><ChatIcon name="select" /></button>{/if}
         {/if}
         </div>
         {#if chatSearchOpen}<ChatSearch messages={activeMessages} onJump={jumpToMessage} onClose={toggleChatSearch} />{/if}
@@ -6166,7 +6211,7 @@ async function changePassword(): Promise<void> {
           </div>
         {/if}
         <div class="message-history">
-        <div class="message-scroll" data-chat-scroll use:manageChatScroll={{ peer: activeConversation.peerAddress, lastId: activeMessages.at(-1)?.id ?? '', openToken: chatOpenToken }}>
+        <div class="message-scroll" data-chat-scroll use:manageChatScroll={{ peer: activeConversation.peerAddress, messages: activeMessages, openToken: chatOpenToken }}>
           {#each activeMessages as message,i (message.id)}
             {#if i===0||new Date(message.timestamp).toDateString()!==new Date(activeMessages[i-1].timestamp).toDateString()}<HistoryDivider timestamp={message.timestamp}/>{/if}
             {#if ordinaryUnreadBoundary===message.id}<HistoryDivider unread/>{/if}
@@ -6203,6 +6248,8 @@ async function changePassword(): Promise<void> {
                   shareText={message.details?.contactCard ? contactLink(message.details.contactCard.accountId) : message.text}
                   openView={messageTools?.id === message.id ? messageTools.view : null} disabled={actionBusy || memoryBusy || endingSession || switchingTrust || pinBusy}
                   canReply={activeConversation.contact === 'accepted'}
+                  onReact={canUpdateActive&&reactionAllowed(message)?emoji=>void reactToMessage(message.id,emoji):undefined}
+                  onEdit={canUpdateActive&&message.direction==='outgoing'&&message.from===address&&editableText(message)?()=>beginMessageEdit(message.id):undefined}
                   onCopy={()=>void copyMessage(message)} onOpen={(view) => messageTools = { id: message.id, view }} onClose={() => messageTools = null}
                   onReply={() => startReply(message)} onForward={() => messageAction(message, 'forward')} onSelect={() => messageAction(message, 'select')}
                   onCancelNode={!message.nodeQueue && courierState.pending.some(j=>j.body.id===message.id) ? ()=>void cancelNodeMessage(activeConversation.peerAddress,message.id) : undefined}
@@ -6289,6 +6336,8 @@ async function changePassword(): Promise<void> {
                 </div>
               {:else}
                 <MessageText text={message.text} />
+                {#if message.edited&&message.editControl}{@const editStatus=messageStatus(message.editControl,activeConversation.peerAddress===address)}<small class:pending-edit={editStatus.tone==='waiting'} class:error-edit={editStatus.tone==='error'} title={$i18n.system(editStatus.detail)}>{$i18n.text(editStatus.tone==='error'?'Не удалось отправить изменение':message.editControl.direction==='outgoing'&&!['delivered','read','stored'].includes(message.editControl.delivery??'')?message.editControl.nodeQueue==='canceled'?'Изменение не отправлено':'Изменение отправляется':'изменено')}</small>{/if}
+                {#if message.reactions}<MessageReactions reactions={message.reactions} self={address} disabled={pinBusy||actionBusy||navigationBusy()} onReact={canUpdateActive?emoji=>void reactToMessage(message.id,emoji):undefined}/>{/if}
                 {#if message.details?.media?.kind === 'pack-request' && message.direction === 'incoming'}
                   {@const requestedPack = mediaLibrary.packs.find(p=>p.id===message.details?.media?.packId||p.previousIds?.includes(message.details?.media?.packId??''))}
                   {#if requestedPack&&!packRequestAnswered(activeConversation.messages,message)}<button disabled={mediaBusy || attachingFiles} onclick={()=>void answerPackRequest(requestedPack,activeConversation.peerAddress,message)}>{$i18n.text("Отправить набор")}</button>
@@ -6310,7 +6359,7 @@ async function changePassword(): Promise<void> {
             </div>
           {/each}
         </div>
-        {#if showJumpDown}<button class="jump-down" onclick={jumpToBottom} aria-label={$i18n.text("К последним сообщениям")} title={$i18n.text("К последним сообщениям")}><ChatIcon name="order-down" /></button>{/if}
+        {#if showJumpDown}<button class="jump-down" onclick={jumpToBottom} aria-label={`${$i18n.text("К последним сообщениям")}${jumpNewMessages ? ` · +${jumpNewMessages}` : ''}`} title={$i18n.text("К последним сообщениям")}><ChatIcon name="order-down" />{#if jumpNewMessages}<span class="jump-count" aria-hidden="true">{jumpNewMessages>99?'99+':jumpNewMessages}</span>{/if}</button>{/if}
         </div>
         {#if galleryId && galleryIndex >= 0}
           <MediaViewer id={galleryId} name={galleryItems[galleryIndex].file?.name ?? 'Медиа'}
@@ -6345,13 +6394,14 @@ async function changePassword(): Promise<void> {
         {#snippet textComposer(microphone?: Snippet)}
         {#if sendOptionsOpen}<SendOptions value={sendRule} onSave={value => { sendRule = value; sendOptionsOpen = false; }} onClose={() => sendOptionsOpen = false} />{/if}
         {#if ephemeralView && ephemeralView.account === address && screen === 'account'}<EphemeralViewer message={ephemeralView.message} url={ephemeralView.url} deadline={ephemeralView.deadline} onClose={closeEphemeral} onDownload={downloadEphemeral} />{/if}
+        {#if editDraft}<EditMessageDialog text={editDraft.text} onSave={saveMessageEdit} onClose={()=>editDraft=null}/>{/if}
         <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
         {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={insertEmoji} onClose={() => emojiOpen = false}
           library={mediaLibrary} load={loadLibraryAsset} canSend={activeConversation.contact === 'accepted'}
           busy={attachingFiles || composerSending || actionBusy || mediaBusy}
           onSend={sendLibraryAsset}
           onManage={tab => { emojiOpen = false; openMediaLibrary(tab); }} /></div>{/if}
-        <PastedImages files={pastedFiles} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
+        <PastedImages files={pastedFiles} bind:preview={stagedPreview} onMove={moveStagedAttachment} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
         <div class="composer">
         <div class="composer-controls composer-left">
         {#if activeConversation.peerAddress !== address}
@@ -6375,7 +6425,7 @@ async function changePassword(): Promise<void> {
           onkeydown={handleComposerKey}
           onpaste={pasteImage}
           onselect={rememberComposerCaret} onkeyup={rememberComposerCaret} onclick={rememberComposerCaret}
-          placeholder={$i18n.text("Сообщение...")}
+          placeholder={$i18n.text(pastedFiles.length?'Сообщение к вложениям…':'Сообщение...')}
           data-message-composer aria-label={$i18n.text("Сообщение")}
           disabled={actionBusy || composerSending}
         ></textarea>

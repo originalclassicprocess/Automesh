@@ -5,6 +5,8 @@ export type ContactCard = { accountId: string; nickname: string };
 export type ReplyReference = { id: string; from: string; preview: string };
 export type ForwardReference = { sourceId: string; author?: ContactCard };
 export type MessageDetails = {
+  edit?: {targetId:string;revision:number};
+  reaction?: {targetId:string;revision:number;emoji:string|null};
   imagePreview?: ImagePreview;
   ephemeral?: { seconds?: number; views?: number; allowDownload: boolean };
   ephemeralOpened?: { targetId: string; viewedAt: number; views: number };
@@ -33,6 +35,13 @@ export function normalizeContactCard(raw: unknown): ContactCard | null {
 export function normalizeMessageDetails(raw: unknown): MessageDetails | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>; const result: MessageDetails = {};
+  if(value.edit!==undefined||value.reaction!==undefined){
+    const kind=value.edit!==undefined?'edit':'reaction',control=value[kind] as Record<string,unknown>;
+    if(Object.keys(value).length!==1||!control||typeof control!=='object'||Array.isArray(control)||typeof control.targetId!=='string'||!MESSAGE_ID.test(control.targetId)||!Number.isSafeInteger(control.revision)||(control.revision as number)<1||Object.keys(control).some(k=>!(kind==='edit'?['targetId','revision']:['targetId','revision','emoji']).includes(k)))return null;
+    if(kind==='edit')return{edit:{targetId:control.targetId,revision:control.revision as number}};
+    if(control.emoji!==null&&!['👍','❤️','😂','😮','😢','🔥'].includes(control.emoji as string))return null;
+    return{reaction:{targetId:control.targetId,revision:control.revision as number,emoji:control.emoji as string|null}};
+  }
   if (value.ephemeralOpened !== undefined) {
     const opened = value.ephemeralOpened as Record<string, unknown>;
     if (!opened || typeof opened !== 'object' || Array.isArray(opened) || Object.keys(value).length !== 1 ||
@@ -108,9 +117,14 @@ export function normalizeMessageDetails(raw: unknown): MessageDetails | null {
 }
 export const RICH_PREFIX = '\u0000mesh-chat-v2:';
 export const EPHEMERAL_PREFIX = '\u0000mesh-chat-v3:';
+export const UPDATE_PREFIX = '\u0000mesh-chat-v4:';
 export function encodeChatContent(text: string, details?: MessageDetails): string {
   if (!details) return `\u0000mesh-chat-v1:${text}`;
   const valid = normalizeMessageDetails(details); if (!valid) throw new Error('invalid_message_details');
+  if(valid.edit||valid.reaction){
+    if(valid.edit&&!text.trim()||valid.reaction&&text!=='')throw Error('invalid_message_update_content');
+    const update=UPDATE_PREFIX+JSON.stringify({text,details:valid});if(new TextEncoder().encode(update).length>64*1024)throw Error('message_too_large');return update;
+  }
   // Ordinary text stays compatible with existing clients. New metadata needs
   // an updated receiver; it is never silently dropped as a fallback.
   if ((valid.pin || valid.ephemeralOpened) && text !== '') throw new Error('invalid_pin_content');
@@ -121,12 +135,13 @@ export function encodeChatContent(text: string, details?: MessageDetails): strin
 }
 export function decodeChatContent(content: string): { text: string; details?: MessageDetails } | null {
   if (content.startsWith('\u0000mesh-chat-v1:')) return { text: content.slice('\u0000mesh-chat-v1:'.length) };
-  const prefix = content.startsWith(EPHEMERAL_PREFIX) ? EPHEMERAL_PREFIX : RICH_PREFIX;
+  const prefix = content.startsWith(UPDATE_PREFIX)?UPDATE_PREFIX:content.startsWith(EPHEMERAL_PREFIX) ? EPHEMERAL_PREFIX : RICH_PREFIX;
   if (!content.startsWith(prefix) || new TextEncoder().encode(content).length > 64 * 1024) return null;
   try {
     const value = JSON.parse(content.slice(prefix.length));
     const details = normalizeMessageDetails(value.details);
-    if (!details || (prefix === EPHEMERAL_PREFIX) !== !!(details.ephemeral || details.ephemeralOpened)) return null;
+    if (!details || (prefix === EPHEMERAL_PREFIX) !== !!(details.ephemeral || details.ephemeralOpened)||(prefix===UPDATE_PREFIX)!==!!(details.edit||details.reaction)) return null;
+    if(details.edit&&(typeof value.text!=='string'||!value.text.trim())||details.reaction&&value.text!=='')return null;
     return typeof value.text === 'string' && (!(details.pin || details.ephemeralOpened) || value.text === '') ? { text: value.text, details } : null;
   } catch { return null; }
 }
