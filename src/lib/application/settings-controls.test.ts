@@ -6,7 +6,6 @@ import page from '../../routes/+page.svelte?raw';
 import direct from '../transport/DirectPairing.svelte?raw';
 import node from '../node/HomeNodePanel.svelte?raw';
 import admin from '../node/NodeAdminConnect.svelte?raw';
-// @ts-expect-error Node-only regression test; the app tsconfig has browser types.
 import { readFileSync } from 'node:fs';
 const css: string = readFileSync(new URL('./application-ui.css', import.meta.url), 'utf8');
 describe('consistent settings controls',()=>{

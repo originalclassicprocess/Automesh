@@ -2,6 +2,7 @@ import type { IdentityProvider } from '$lib/identity/identity';
 import { bytesToHex, hexToBytes } from '$lib/message/encoding';
 import { decodeChatContent, encodeChatContent } from '$lib/chat/message-details';
 import { receiveMessage, setDeliveryStatus, updateConversation, type ChatEntry, type SessionChats } from '$lib/chat/session-chats';
+import { isFreshIncoming, notifyCommittedIncoming, type CommittedIncomingListener } from '$lib/chat/committed-incoming';
 import { RadioCrypto, encodeRadioContact, parseRadioContact, MAX_RADIO_TEXT_BYTES } from './crypto';
 import { RadioConversation, type RadioMessage, type RadioLink } from './conversation';
 import { type RadioAccountState } from './account-state';
@@ -12,7 +13,7 @@ type Port = {
   signer: IdentityProvider; account: string;
   state(): RadioAccountState; setState(state: RadioAccountState): void;
   chats(): SessionChats; setChats(chats: SessionChats): void;
-  persist(): Promise<boolean>; current(): boolean;
+  persist(): Promise<boolean>; current(): boolean; committedIncoming?: CommittedIncomingListener;
   nodeReserved(peer: string, id: string): boolean;
   error(code: string): void; delivered(peer: string, id: string): void;
 };
@@ -146,10 +147,12 @@ export class RadioAccountController {
     const content = decodeChatContent(message.text);
     if (!content || content.details?.ephemeral || content.details?.ephemeralOpened || content.details?.pin || content.details?.media || content.details?.contactCard || content.details?.radioContact) throw Error('radio_unsupported_content');
     const existing = conversation.messages.find(m => m.id === message.id);
+    const fresh = isFreshIncoming(this.port.chats(), peer, message.id);
     if (existing && (existing.direction !== 'incoming' || encodeChatContent(existing.text, existing.details) !== encodeChatContent(content.text, content.details))) throw Error('radio_message_id_conflict');
     if (!conversation.deletedIds?.includes(message.id)) this.port.setChats(receiveMessage(this.port.chats(), { id: message.id, from: peer, timestamp: message.timestamp, direction: 'incoming', ...content, ...(message.reception?{radioReception:message.reception}:{}) }));
     // Always re-commit, including an in-memory duplicate after a failed write.
     await this.save();
+    if (fresh) notifyCommittedIncoming(this.port.committedIncoming, { peer, id: message.id, transport: 'radio' });
   }
   private async update(peer: string, message: RadioMessage) {
     this.current(); const existing = this.port.chats().byPeer[peer]?.messages.find(m => m.id === message.id);

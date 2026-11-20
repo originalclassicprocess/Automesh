@@ -6,19 +6,37 @@ import { radioBoardName } from './board-name';
 import type { RadioChannel } from './network';
 import type { ChatEntry } from '$lib/chat/session-chats';
 import type { MessageStatus } from '$lib/chat/message-presentation';
+import type { ReactionView } from '$lib/chat/message-updates';
+import { isChannelEmoji } from './meshtastic-wire';
 
 export const CHANNEL_TEXT_BYTES=200;
-export type ChannelText = {id:number;from:number;channel:number;text:string;name:string;receivedAt:number;replyId?:number;reception?:RadioReception};
+const CHANNEL_REACTION_LIMIT=2000;
+export type ChannelText = {id:number;from:number;channel:number;text:string;name:string;receivedAt:number;reception?:RadioReception} &
+  ({reaction:true;replyId:number}|{reaction?:undefined;replyId?:number});
+export type ChannelReaction = {id:number;from:number;replyId:number;emoji:string};
 export type ChannelFailure={source:'queue'|'routing';code:number};
 export type ChannelStatus={id:number;channel:number;status:'accepted'|'mesh'|'failed';failure?:ChannelFailure};
 export type ChannelMessage = {id:number;from:number;name:string;text:string;timestamp:number;outgoing:boolean;status:'queued'|'accepted'|'mesh'|'failed'|'unknown';failure?:ChannelFailure;reception?:RadioReception;replyId?:number;retryOf?:number};
-export type NativeChannel = {key:string;node:number;index:number;name:string;public:boolean;signature:boolean;unread:number;messages:ChannelMessage[];encryption?:ChannelEncryption;boardName?:string;draft?:string;replyId?:number;deleted?:string[]};
+export type NativeChannel = {key:string;node:number;index:number;name:string;public:boolean;signature:boolean;unread:number;messages:ChannelMessage[];reactions?:ChannelReaction[];encryption?:ChannelEncryption;boardName?:string;draft?:string;replyId?:number;deleted?:string[]};
 export type NativeChannels = {enabled:boolean;channels:NativeChannel[];configured?:boolean;showAll?:boolean;historyLimit?:number};
 export type ChannelEncryption='none'|'default'|'custom'|'unknown';
 export const emptyNativeChannels=():NativeChannels=>({enabled:true,channels:[],historyLimit:100});
 const validNode=(v:unknown):v is number=>Number.isInteger(v)&&(v as number)>0&&(v as number)<0xffffffff;
 const packetId=(v:unknown):v is number=>Number.isInteger(v)&&(v as number)>0&&(v as number)<=0xffffffff;
 const textBytes=(v:string)=>new TextEncoder().encode(v).length;
+const reactionIdentity=(r:ChannelReaction)=>`${r.from}:${r.replyId}:${r.emoji}`;
+function normalizeChannelReactions(value:unknown):ChannelReaction[] {
+  if(!Array.isArray(value))return [];
+  const packets=new Set<string>(),identities=new Set<string>(),reactions:ChannelReaction[]=[];
+  for(const r of value.slice(-CHANNEL_REACTION_LIMIT)){
+    if(!r||!packetId(r.id)||!validNode(r.from)||!packetId(r.replyId)||!isChannelEmoji(r.emoji))continue;
+    const key=nativeMessageKey(r),identity=reactionIdentity(r);
+    if(packets.has(key)||identities.has(identity))continue;
+    packets.add(key);identities.add(identity);
+    reactions.push({id:r.id,from:r.from,replyId:r.replyId,emoji:r.emoji});
+  }
+  return reactions;
+}
 export function normalizeNativeChannels(value:unknown):NativeChannels {
   const result=emptyNativeChannels();if(!value||typeof value!=='object')return result;
   const raw=value as Partial<NativeChannels>;result.enabled=raw.configured===true?raw.enabled===true:true;result.configured=raw.configured===true;result.showAll=raw.showAll===true;result.historyLimit=nativeHistoryLimit(raw.historyLimit);
@@ -33,7 +51,8 @@ export function normalizeNativeChannels(value:unknown):NativeChannels {
       const failure=normalizeChannelFailure(m.failure);
       messages.push({id:m.id,from:m.from,name:radioBoardName(m.name),text:m.text,timestamp:m.timestamp,outgoing:m.outgoing===true,status,...(status==='failed'&&failure?{failure}:{}),...(reception?{reception}:{}),...(packetId(m.replyId)?{replyId:m.replyId}:{}),...(packetId(m.retryOf)?{retryOf:m.retryOf}:{})});
     }
-    result.channels.push({key:c.key,node:c.node,index:c.index,name:radioBoardName(c.name),public:c.public===true,signature:c.signature===true,unread:Math.max(0,Math.min(messages.length,Number.isInteger(c.unread)?c.unread:0)),messages:messages.sort((a,b)=>a.timestamp-b.timestamp),encryption:normalizeEncryption(c.encryption),boardName:radioBoardName(c.boardName),draft:typeof c.draft==='string'?c.draft.slice(0,600):'',deleted,...(packetId(c.replyId)?{replyId:c.replyId}:{})});
+    const reactions=normalizeChannelReactions(c.reactions);
+    result.channels.push({key:c.key,node:c.node,index:c.index,name:radioBoardName(c.name),public:c.public===true,signature:c.signature===true,unread:Math.max(0,Math.min(messages.length,Number.isInteger(c.unread)?c.unread:0)),messages:messages.sort((a,b)=>a.timestamp-b.timestamp),...(reactions.length?{reactions}:{}),encryption:normalizeEncryption(c.encryption),boardName:radioBoardName(c.boardName),draft:typeof c.draft==='string'?c.draft.slice(0,600):'',deleted,...(packetId(c.replyId)?{replyId:c.replyId}:{})});
   }
   return result;
 }
@@ -63,6 +82,33 @@ export function appendChannelMessage(state:NativeChannels,key:string,node:number
     if(c.key!==key||c.node!==node||c.deleted?.includes(nativeMessageKey(message))||c.messages.some(m=>m.from===message.from&&m.id===message.id))return c;
     return {...c,messages:[...c.messages,message].sort((a,b)=>a.timestamp-b.timestamp).slice(-nativeHistoryLimit(state.historyLimit)),unread:visible?0:message.outgoing?c.unread:Math.min(nativeHistoryLimit(state.historyLimit),c.unread+1)};
   })};
+}
+export function appendChannelReaction(state:NativeChannels,channel:NativeChannel,reaction:ChannelReaction):NativeChannels {
+  const position=state.channels.findIndex(c=>c.node===channel.node&&c.key===channel.key);
+  if(position<0)return state;
+  const current=state.channels[position],reactions=current.reactions??[];
+  if(reactions.some(r=>r.from===reaction.from&&(r.id===reaction.id||r.replyId===reaction.replyId&&r.emoji===reaction.emoji)))return state;
+  const channels=[...state.channels];
+  channels[position]={...current,reactions:[...reactions,reaction].slice(-CHANNEL_REACTION_LIMIT)};
+  return {...state,channels};
+}
+export const canReactToChannelMessage=(message:ChannelMessage)=>!message.outgoing||message.status==='accepted'||message.status==='mesh';
+export function channelReactionViews(channel:NativeChannel):Map<number,ReactionView[]> {
+  // Meshtastic names only the original packet ID. Ignore ambiguous IDs.
+  const unique=new Set<number>(),ambiguous=new Set<number>(),views=new Map<number,ReactionView[]>();
+  for(const message of channel.messages){
+    if(unique.has(message.id))ambiguous.add(message.id);
+    unique.add(message.id);
+  }
+  for(const reaction of channel.reactions??[]){
+    if(!unique.has(reaction.replyId)||ambiguous.has(reaction.replyId))continue;
+    let groups=views.get(reaction.replyId);
+    if(!groups)views.set(reaction.replyId,groups=[]);
+    let group=groups.find(r=>r.emoji===reaction.emoji);
+    if(!group){group={emoji:reaction.emoji,actors:[]};groups.push(group);}
+    group.actors.push(String(reaction.from));
+  }
+  return views;
 }
 export function channelMessageStatus(state:NativeChannels,key:string,node:number,id:number,status:ChannelMessage['status'],failure?:ChannelFailure):NativeChannels {
   return {...state,channels:state.channels.map(c=>c.key===key&&c.node===node?{...c,messages:c.messages.map(m=>{

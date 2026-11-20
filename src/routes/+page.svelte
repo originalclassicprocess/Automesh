@@ -63,6 +63,14 @@ import { offlineKeyBudget } from '$lib/chat/offline-key-budget';
 import SettingsMenu from '$lib/application/SettingsMenu.svelte';
 import SettingsLinks from '$lib/application/SettingsLinks.svelte';
 import { settingsMenu, settingsDescriptions, settingsLocation, connectionMenu, mediaSettingsMenu, type SettingsSection, type LegacySettingsSection, type ConnectionSection, type MediaSettingsSection } from '$lib/application/settings-structure';
+import AgentSettingsPanel from '$lib/agents/AgentSettings.svelte';
+import AgentChatControls from '$lib/agents/AgentChatControls.svelte';
+import { portableDownloaded, preparePortableModel, deletePortableModel, stopPortableModel } from '$lib/agents/portable-client';
+import { portableModelId, PORTABLE_CACHE_PREFIX, type PortableProgress } from '$lib/agents/portable-models';
+import { emptyAgentSettings, normalizeAgentSettings, modelEndpoint, modelAvailability, generateAgentReply, agentKeyFor, type AgentSettings } from '$lib/agents/model';
+import { incomingAgentPrompt, incomingNativeAgentPrompt, radioAgentCommand, formatAgentReply, AGENT_QUEUE_SIZE, AGENT_REPLY_DETAILS, type AgentEvent } from '$lib/agents/runtime';
+import { agentChatPolicy, emptyAgentChatLimits, normalizeAgentChatLimits, reserveAgentRequest, senderAgentLimit, type AgentChatPolicy, type AgentChatLimits } from '$lib/agents/limits';
+import { isFreshIncoming, notifyCommittedIncoming, type CommittedIncoming } from '$lib/chat/committed-incoming';
 
 import QRCode from 'qrcode';
 import { onMount, tick, untrack, type Snippet } from 'svelte';
@@ -289,7 +297,7 @@ import MeshtasticChannels from '$lib/radio/MeshtasticChannels.svelte';
 import {forwardActivity,recentForwardTargets} from '$lib/chat/forward-targets';
 import TextForwardDialog, {type ForwardText,type ForwardTarget} from '$lib/chat/TextForwardDialog.svelte';
 import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
-import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,channelMessageStatus,channelSignature,nativeHistoryLimit,nativeMessageKey,nativeMessageStatus,removeNativeMessages,mergeNativeHistory,visibleNativeChannels,type ChannelMessage,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
+import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,appendChannelReaction,canReactToChannelMessage,channelMessageStatus,channelSignature,nativeHistoryLimit,nativeMessageKey,nativeMessageStatus,removeNativeMessages,mergeNativeHistory,visibleNativeChannels,type ChannelMessage,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
 import { radioError } from '$lib/radio/errors';
 import VoiceMessage from '$lib/chat/VoiceMessage.svelte';
 import InlineAudio from '$lib/chat/InlineAudio.svelte';
@@ -372,6 +380,31 @@ let address = $state('');
 let rootAccountId = $state('');
 let profileRegistry = $state<ProfileRegistry | null>(null);
 let activeProfileId = $state('');
+let agentSettings = $state<AgentSettings>(emptyAgentSettings());
+let agentBusy = $state(false);
+let agentNotice = $state('');
+let agentPeers = $state<string[]>([]);
+let agentReplyPeer = $state('');
+let agentReplyNotice = $state('');
+let agentModelReady = $state(false);
+let agentModelRevision = $state(0);
+let agentExample = $state('');
+const agentQueue: AgentEvent[] = [];
+let agentLimits = $state.raw(emptyAgentChatLimits());
+let agentKey = $state('');
+let agentProgress = $state<PortableProgress | null>(null);
+let agentController: AbortController | null = null;
+$effect(() => {
+  const { enabled, backend, model } = agentSettings;
+  void agentModelRevision;
+  let current = true;
+  agentModelReady = enabled && (backend === 'local' || backend === 'cloud');
+  if (enabled && (backend === 'portable' || backend === 'browser')) {
+    const readiness = backend === 'portable' ? portableDownloaded(portableModelId(model)) : modelAvailability().then(value => value === 'available');
+    void readiness.then(ready => { if (current) agentModelReady = ready; });
+  }
+  return () => { current = false; };
+});
 let profileNetwork = $state(true);
 let profileSwitchBusy = $state(false);
 let allProfileChats = $state(false);
@@ -818,6 +851,7 @@ let radioDiagnostics = $state.raw<RadioDiagnostics | null>(null), radioSelected 
 let radioBusy = $state(false), radioErrorText = $state(''), radioContact = $state('');
 let radioChecking=$state(false);
 let meshtastic=$state(emptyNativeChannels()),nativeOpen=$state(false),nativeSelected=$state(''),nativeSending=$state(false);
+let nativeSendDone = Promise.resolve();
 let nativeLive=$state<string[]>([]),nativeSaveTimer:ReturnType<typeof setTimeout>|null=null;
 let nativeInitialUnread=$state(0),nativeAtBottom=$state(true),nativeForwardDone=$state(0);
 let textForward=$state<{messages:ForwardText[];native?:string;peer?:string}|null>(null);
@@ -865,14 +899,23 @@ function saveNativeSoon(){
   if(nativeSaveTimer)return;const generation=authGeneration;
   nativeSaveTimer=setTimeout(()=>{nativeSaveTimer=null;if(generation===authGeneration&&radioAvailable)void persistLocalChats();},300);
 }
-function receiveNativeText(node:number,packet:ChannelText){
+function receiveNativeText(node:number,packet:ChannelText,offerAi=true){
   if(!radioAvailable||!meshtastic.enabled)return;
   const c=meshtastic.channels.find(c=>c.node===node&&c.index===packet.channel&&nativeLive.includes(nativeToken(c)));
   if(!c)return;
+  if(packet.reaction){
+    const next=appendChannelReaction(meshtastic,c,{id:packet.id,from:packet.from,replyId:packet.replyId,emoji:packet.text});
+    if(next!==meshtastic){meshtastic=next;saveNativeSoon();}
+    return;
+  }
   if(packet.from===node){meshtastic=channelMessageStatus(meshtastic,c.key,node,packet.id,'accepted');saveNativeSoon();return;}
+  const fresh=!c.deleted?.includes(nativeMessageKey(packet))&&!c.messages.some(m=>m.from===packet.from&&m.id===packet.id);
   const visible=nativeOpen&&nativeAtBottom&&accountView==='chats'&&(!narrowScreen||mobilePane==='chat')&&document.visibilityState==='visible'&&nativeSelected===nativeToken(c);
   meshtastic=appendChannelMessage(meshtastic,c.key,node,{id:packet.id,from:packet.from,name:packet.name,text:packet.text,timestamp:packet.receivedAt,outgoing:false,status:'accepted',...(packet.reception?{reception:packet.reception}:{}),...(packet.replyId?{replyId:packet.replyId}:{})},visible);
   saveNativeSoon();
+  if(offerAi&&fresh&&packet.receivedAt>=Date.now()-300_000&&radioAgentCommand(packet.text)){
+    enqueueAgentEvent({transport:'native-radio',peer:'radio:'+nativeToken(c),id:packet.id,from:packet.from,epoch:radioEpoch});
+  }
 }
 function receiveNativeStatus(node:number,update:ChannelStatus){
   if(!radioAvailable)return;
@@ -895,23 +938,51 @@ async function setNativeSignature(channel:NativeChannel,value:boolean){
   const generation=authGeneration,before=channel.signature;meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===nativeToken(channel)?{...c,signature:value}:c)};
   if(!await persistLocalChats()&&generation===authGeneration){meshtastic={...meshtastic,channels:meshtastic.channels.map(c=>nativeToken(c)===nativeToken(channel)?{...c,signature:before}:c)};throw Error(radioError('radio_history_not_saved'));}
 }
-async function sendNativeText(channel:NativeChannel,text:string,options:{replyId?:number;retryOf?:number;literal?:boolean}={}){
+async function sendNativeText(channel:NativeChannel,text:string,options:{replyId?:number;retryOf?:number;literal?:boolean;agentCommand?:boolean}={}){
   const runtime=radioRuntime,usb=radioUsb,generation=authGeneration,epoch=radioEpoch,node=radioSnapshot?.node;
   const current=()=>generation===authGeneration&&epoch===radioEpoch&&runtime===radioRuntime&&usb===radioUsb&&radioAvailable&&meshtastic.enabled&&nativeLive.includes(nativeToken(channel));
   if(!runtime||!usb||nativeSending||radioConnection!=='connected'||node!==channel.node||!current())throw Error(radioError('radio_not_ready'));
   let full:string;try{full=channelText(text,options.literal?false:channel.signature,contactLink(address));}catch{throw Error('Сообщение с подписью не должно превышать 200 байт.');}
   let id=crypto.getRandomValues(new Uint32Array(1))[0]||1;while(channel.messages.some(m=>m.from===node&&m.id===id))id=(id+1)>>>0||1;
   nativeSending=true;let recorded=false;
+  let complete!:()=>void;
+  nativeSendDone=new Promise(resolve=>complete=resolve);
   meshtastic=appendChannelMessage(meshtastic,channel.key,node,{id,from:node,name:radioBoardLabel,text:full,timestamp:Date.now(),outgoing:true,status:'queued',...(options.replyId?{replyId:options.replyId}:{}),...(options.retryOf?{retryOf:options.retryOf}:{})},nativeOpen&&nativeSelected===nativeToken(channel)&&nativeAtBottom);
   try{
     if(!await persistLocalChats())throw Error('radio_history_not_saved');
     recorded=true;
     await runtime.scheduleChannelSend(()=>usb.sendChannelText(channel.index,id,full,options.replyId),current);
     if(current()){meshtastic=channelMessageStatus(meshtastic,channel.key,node,id,'accepted');await persistLocalChats();}
+    if(current()&&options.agentCommand&&radioAgentCommand(full)){
+      enqueueAgentEvent({transport:'native-radio',peer:'radio:'+nativeToken(channel),id,from:node,epoch});
+    }
   }catch(error){
     if(generation===authGeneration){const code=error instanceof Error?error.message:'';meshtastic=channelMessageStatus(meshtastic,channel.key,node,id,code==='radio_queue_confirmation_timeout'||!current()?'unknown':'failed');await persistLocalChats();}
     throw recorded?Object.assign(Error(radioError(error)),{nativeAttemptRecorded:true}):Error(radioError(error));
-  }finally{if(generation===authGeneration)nativeSending=false;}
+  }finally{if(generation===authGeneration)nativeSending=false;complete();}
+}
+async function sendNativeReaction(channel:NativeChannel,target:ChannelMessage,emoji:string){
+  const runtime=radioRuntime,usb=radioUsb,generation=authGeneration,epoch=radioEpoch,token=nativeToken(channel);
+  const current=()=>generation===authGeneration&&epoch===radioEpoch&&runtime===radioRuntime&&usb===radioUsb&&radioAvailable&&meshtastic.enabled&&nativeLive.includes(token);
+  const saved=meshtastic.channels.find(c=>nativeToken(c)===token);
+  if(!runtime||!usb||!saved||nativeSending||radioConnection!=='connected'||radioSnapshot?.node!==saved.node||!current())throw Error(radioError('radio_not_ready'));
+  const originals=saved.messages.filter(m=>m.id===target.id);
+  if(originals.length!==1||originals[0].from!==target.from||!canReactToChannelMessage(originals[0]))throw Error('Исходное сообщение отсутствует');
+  if(saved.reactions?.some(r=>r.from===saved.node&&r.replyId===target.id&&r.emoji===emoji))return;
+
+  let id=crypto.getRandomValues(new Uint32Array(1))[0]||1;
+  while(saved.messages.some(m=>m.from===saved.node&&m.id===id)||saved.reactions?.some(r=>r.from===saved.node&&r.id===id))id=(id+1)>>>0||1;
+  nativeSending=true;
+  let complete!:()=>void;
+  nativeSendDone=new Promise(resolve=>complete=resolve);
+  try{
+    await runtime.scheduleChannelSend(()=>usb.sendChannelText(saved.index,id,emoji,target.id,true),current);
+    if(generation===authGeneration&&radioAvailable){
+      meshtastic=appendChannelReaction(meshtastic,saved,{id,from:saved.node,replyId:target.id,emoji});
+      if(!await persistLocalChats())throw Error('radio_history_not_saved');
+    }
+  }catch(error){throw Error(radioError(error));}
+  finally{if(generation===authGeneration)nativeSending=false;complete();}
 }
 let radioTransportReady=$state(false),radioRoutesRevision=$state(0);
 let radioOverviewOpen=$state(false);
@@ -920,6 +991,7 @@ let preferRadio = $derived(radioState.preferredPeers?.includes(sessionChats.acti
 let radioRuntime = $state.raw<RadioAccountController|null>(null), radioUsb:SerialRadio|null=null;
 const activeRadioNode = $derived.by(()=>{void radioRoutesRevision;void keyBudgetNow;return radioContact && radioState.routes[sessionChats.activePeer] ? radioRuntime?.peerNode(sessionChats.activePeer) : undefined;});
 const activeRadioRoute=$derived.by(()=>{void radioRoutesRevision;void keyBudgetNow;return !!radioRuntime?.hasRoute(sessionChats.activePeer);});
+const canReactActive=$derived(canUpdateActive||(preferRadio&&activeRadioRoute&&activeConversation?.contact==='accepted'));
 const radioBoardLabel=$derived(radioState.boards?.find(b=>b.node===(radioSnapshot?.node??radioState.connection?.node))?.name??'');
 const activeRadioReception=$derived(sessionChats.byPeer[sessionChats.activePeer]?.messages.findLast(m=>m.direction==='incoming'&&m.radioReception)?.radioReception);
 let radioProbe:SerialRadio|null=null;
@@ -969,6 +1041,7 @@ async function attachRadio(snapshot: RadioSnapshot, channel: number, epoch: numb
     nodeReserved: (peer,id) => courierState.pending.some(job => job.body.id === id) || offlineDeliveryState.pending.some(job => job.messageId === id) || !!sessionChats.byPeer[peer]?.messages.find(m => m.id === id && (m.delivery === 'stored' || m.courierStage)),
     error: code => { if (current()) radioErrorText = radioError(code); },
     delivered: (peer,id) => outbox.acknowledge(peer,id),
+    committedIncoming: event => { if (current()) onAgentIncoming(event); },
   }, network, snapshot.node, usb, channel, radioFrameGap(snapshot.profile.preset));
   if (!current()) { runtime.close(); return; }
   radioRuntime = runtime; radioContact = runtime.contact; radioSelected = channel;radioRoutesRevision++;
@@ -984,7 +1057,7 @@ async function attachRadio(snapshot: RadioSnapshot, channel: number, epoch: numb
     for(const packet of packets)runtime.receivePacket(packet);packets.length=0;
     usb.onChannelText=packet=>{if(current())receiveNativeText(snapshot.node,packet);};
     usb.onChannelStatus=update=>{if(current())receiveNativeStatus(snapshot.node,update);};
-    for(const packet of channelPackets)receiveNativeText(snapshot.node,packet);channelPackets.length=0;
+    for(const packet of channelPackets)receiveNativeText(snapshot.node,packet,false);channelPackets.length=0;
     void runtime.resumePending().catch(error=>{if(current())radioErrorText=radioError(error);});
   }
 }
@@ -1485,6 +1558,7 @@ async function applyAppUpdate(): Promise<void> {
 }
 
 function clearSensitiveData() {
+  resetAgent();
   deliveryRecovery.reset(); receiveRecoveryBusy = false;
   if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState(); radioDiagnostics = null; radioErrorText = '';
@@ -1591,6 +1665,9 @@ async function changeOwnAvatar(file: File | null, crop?: AvatarCrop): Promise<vo
 }
 
 function applyChatData(saved: LocalChatData): void {
+  resetAgent();
+  agentSettings=normalizeAgentSettings(saved.agentSettings);
+  agentLimits=normalizeAgentChatLimits(saved.agentChatLimits);
   notificationState = normalizeNotifications(saved.notifications);
   meshtastic=normalizeNativeChannels(saved.meshtastic);
   radioState = normalizeRadioState(saved.radioState);
@@ -1620,6 +1697,7 @@ function applyChatData(saved: LocalChatData): void {
 }
 
 async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<void> {
+  resetAgent();
   if(nativeSaveTimer){clearTimeout(nativeSaveTimer);nativeSaveTimer=null;}
   meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState();
@@ -2378,6 +2456,7 @@ async function readSessionProfiles(root: Uint8Array, owner: string, trusted: boo
 }
 
 function adoptProfileContext(context: ProfileChatContext): void {
+  resetAgent();
   peerMessageFeatures={};peerReactionFeatures={};reactionTarget=null;editDraft=null;returnFromChatSearch=undefined;
   manageChatScroll.clear();
   audioTrack = null;
@@ -2820,6 +2899,236 @@ async function sendTextOnly(admitted = false) {
         sending: false,
       }));
     }
+  }
+}
+
+function stopAgentRequest(): void {
+  agentController?.abort(); agentController = null; stopPortableModel(); agentBusy = false; agentProgress = null;
+}
+function revokeAgentAuto(): void {
+  agentPeers = []; agentQueue.length = 0; stopAgentRequest();
+  agentReplyPeer = ''; agentReplyNotice = '';
+}
+function toggleAgentPeer(peer: string): void {
+  if (agentPeers.includes(peer)) {
+    agentPeers = agentPeers.filter(value => value !== peer);
+    for (let index = agentQueue.length - 1; index >= 0; index--) {
+      if (agentQueue[index].peer === peer) agentQueue.splice(index, 1);
+    }
+    if (agentReplyPeer === peer) {
+      if (agentBusy) stopAgentRequest();
+      agentReplyPeer = ''; agentReplyNotice = '';
+    }
+  } else if (agentModelReady && !navigationBusy() && agentChatAvailable(peer)) {
+    agentPeers = [...agentPeers, peer];
+  }
+}
+function forgetAgentKey(): void { revokeAgentAuto(); agentKey = ''; }
+function resetAgent(): void {
+  revokeAgentAuto(); agentSettings = emptyAgentSettings(); agentLimits = emptyAgentChatLimits(); agentKey = ''; agentNotice = ''; agentExample = '';
+}
+
+function agentRadioChannel(peer: string): NativeChannel | undefined {
+  if (!peer.startsWith('radio:') || !meshtastic.enabled || !radioAvailable || radioConnection !== 'connected') return;
+  const token = peer.slice(6);
+  if (nativeLive.includes(token)) return meshtastic.channels.find(channel => nativeToken(channel) === token);
+}
+
+function agentChatAvailable(peer: string): boolean {
+  return peer.startsWith('radio:') ? !!agentRadioChannel(peer)
+    : peer !== address && sessionChats.byPeer[peer]?.contact === 'accepted';
+}
+
+async function saveAgentChatPolicy(peer: string, policy: AgentChatPolicy): Promise<boolean> {
+  if (navigationBusy() || !agentChatAvailable(peer)) return false;
+  const generation = authGeneration, previous = agentLimits.policies;
+  const next = normalizeAgentChatLimits({ policies: { ...previous, [peer]: policy } }).policies;
+  if (!next[peer]) return false;
+  agentLimits = { ...agentLimits, policies: next };
+  if (await persistLocalChats()) return generation === authGeneration;
+  if (generation === authGeneration && agentLimits.policies === next) agentLimits = { ...agentLimits, policies: previous };
+  return false;
+}
+
+async function saveAgentSettings(value: AgentSettings, key: string): Promise<boolean> {
+  if (navigationBusy() || screen !== 'account' || !profileNetwork) return false;
+  const settings = normalizeAgentSettings(value);
+  try { if (settings.enabled && (settings.backend === 'local' || settings.backend === 'cloud')) modelEndpoint(settings); }
+  catch { agentNotice = 'Неверный адрес API или имя модели.'; return false; }
+  const nextKey = settings.enabled ? agentKeyFor(agentSettings, settings, agentKey, key) : '';
+  revokeAgentAuto(); agentKey = ''; agentExample = '';
+  const previous = agentSettings, owner = address, generation = authGeneration;
+  agentSettings = settings;
+  if (!await persistLocalChats()) {
+    if (address === owner && authGeneration === generation) { agentSettings = previous; agentNotice = 'Не удалось сохранить настройки ИИ.'; }
+    return false;
+  }
+  if (address !== owner || authGeneration !== generation || screen !== 'account') return false;
+  agentKey = nextKey;
+  agentNotice = 'Настройки ИИ сохранены.';
+  return true;
+}
+
+async function testAgentModel(value: AgentSettings, key: string): Promise<boolean> {
+  if (agentBusy || navigationBusy() || screen !== 'account' || !profileNetwork) return false;
+  const settings = normalizeAgentSettings(value);
+  if (settings.backend === 'cloud' && networkSettings.internetEnabled === false) { agentNotice = 'Доступ к интернету отключён.'; return false; }
+  try { if (settings.backend === 'local' || settings.backend === 'cloud') modelEndpoint(settings); }
+  catch { agentNotice = 'Неверный адрес API или имя модели.'; return false; }
+  const controller = new AbortController(), owner = address, generation = authGeneration;
+  const selectedKey = agentKeyFor(agentSettings, settings, agentKey, key);
+  agentController = controller; agentBusy = true; agentNotice = ''; agentExample = ''; agentReplyPeer = ''; agentReplyNotice = '';
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    // Test the configured instructions with a fixed greeting, without chat data.
+    const example = await generateAgentReply(settings, 'Привет! Как дела?', selectedKey, controller.signal, fetch, { allowBrowserDownload: networkSettings.internetEnabled !== false });
+    if (controller !== agentController || owner !== address || generation !== authGeneration || controller.signal.aborted) return false;
+    agentExample = example; agentModelRevision++;
+    agentNotice = 'Модель доступна. Проверка прошла успешно.'; return true;
+  } catch (error) {
+    if (agentController === controller) agentNotice = agentErrorNotice(error, controller.signal.aborted);
+    return false;
+  } finally {
+    clearTimeout(timer);
+    if (agentController === controller) { agentController = null; agentBusy = false; }
+  }
+}
+
+function agentErrorNotice(error: unknown, cancelled = false): string {
+  if (cancelled) return 'Запрос ИИ отменён.';
+  const code = error instanceof Error ? error.message : '';
+  if (code === 'agent_model_not_downloaded') return 'Сначала загрузите модель в настройках ИИ.';
+  if (code === 'agent_webgpu_unavailable') return 'WebGPU недоступен. Выберите режим WASM.';
+  if (code === 'agent_webgpu_failed') return 'Не удалось запустить модель через WebGPU. Выберите совместимый режим WASM.';
+  if (code === 'agent_model_load_failed') return 'Не удалось запустить локальную модель. Проверьте свободную память и попробуйте режим WASM.';
+  if (code === 'agent_model_cache_failed') return 'Не удалось сохранить модель. Проверьте свободное место.';
+  if (code === 'agent_model_weights_invalid') return 'Файл весов не соответствует выбранной модели или повреждён.';
+  if (code === 'agent_model_configuration_needed') return 'Веса сохранены. Подключите интернет один раз для загрузки конфигурации модели.';
+  if (code === 'agent_model_download_interrupted') return 'Загрузка прервалась. Нажмите «Скачать с Hugging Face» ещё раз, чтобы продолжить.';
+  if (code === 'agent_api_key_rejected') return 'API отклонил ключ (HTTP 401). Проверьте полный секретный ключ в поле API key.';
+  if (code === 'agent_api_region') return 'Провайдер ограничивает доступ к API из текущего региона (HTTP 403).';
+  if (code === 'agent_api_forbidden') return 'API отказал в доступе (HTTP 403). Проверьте права ключа и проекта.';
+  if (code === 'agent_api_model_missing') return 'Модель не найдена или недоступна этому проекту (HTTP 404). Проверьте имя модели и доступ к ней.';
+  if (code === 'agent_api_endpoint_missing') return 'API вернул HTTP 404. Проверьте адрес и имя модели.';
+  if (code === 'agent_api_credits') return 'Кредиты API закончились (HTTP 429). Проверьте баланс в настройках оплаты провайдера.';
+  if (code === 'agent_api_quota') return 'Квота API исчерпана (HTTP 429). Проверьте баланс и лимиты проекта у провайдера.';
+  if (code === 'agent_api_rate_limit') return 'API ограничил частоту запросов (HTTP 429). Повторите позже.';
+  if (code === 'agent_api_limit') return 'API вернул HTTP 429. Проверьте баланс и лимит модели в настройках проекта.';
+  if (code === 'agent_api_invalid_request') return 'API отклонил запрос. Проверьте совместимость адреса и модели с Chat Completions.';
+  if (code === 'agent_api_service_unavailable') return 'Сервис API временно недоступен. Повторите позже.';
+  if (code === 'agent_api_unreachable') return 'Браузер не получил ответ API. Проверьте соединение и разрешение запросов с этого адреса (CORS).';
+  return 'Модель недоступна или произошла ошибка. Проверьте адрес API, ключ и поддержку браузера.';
+}
+
+async function prepareAgentModel(value: AgentSettings, weights?: File): Promise<void> {
+  if (agentBusy || navigationBusy() || screen !== 'account' || !profileNetwork || value.backend !== 'portable') return;
+  const offline = networkSettings.internetEnabled === false;
+  const settings = normalizeAgentSettings(value), controller = new AbortController(), owner = address, generation = authGeneration;
+  const current = () => agentController === controller && address === owner && generation === authGeneration && screen === 'account';
+  agentController = controller; agentBusy = true; agentNotice = ''; agentProgress = null; agentReplyPeer = ''; agentReplyNotice = '';
+  const timer = setTimeout(() => controller.abort(), 45 * 60 * 1000);
+  try {
+    await preparePortableModel(portableModelId(settings.model), settings.portableDevice ?? 'wasm', controller.signal,
+      progress => { if (current()) agentProgress = progress; }, { weights, offline });
+    if (current()) { agentModelRevision++; agentNotice = 'Модель загружена и готова к работе.'; }
+  } catch (error) { if (current()) agentNotice = agentErrorNotice(error, controller.signal.aborted); }
+  finally { clearTimeout(timer); if (current()) { agentController = null; agentBusy = false; agentProgress = null; } }
+}
+
+async function removeAgentModel(value: AgentSettings): Promise<void> {
+  if (agentBusy || navigationBusy() || screen !== 'account' || value.backend !== 'portable') return;
+  const owner = address, generation = authGeneration;
+  try {
+    revokeAgentAuto(); await deletePortableModel(portableModelId(value.model));
+    if (owner === address && generation === authGeneration) { agentModelRevision++; agentNotice = 'Модель удалена с устройства.'; }
+  }
+  catch { if (owner === address && generation === authGeneration) agentNotice = 'Не удалось удалить модель.'; }
+}
+
+function onAgentIncoming(event: CommittedIncoming): void {
+  enqueueAgentEvent(event);
+}
+
+function enqueueAgentEvent(event: AgentEvent): void {
+  if (!agentSettings.enabled || !agentPeers.includes(event.peer)) return;
+  if (event.transport === 'native-radio' && agentQueue.filter(queued => queued.transport === 'native-radio').length >= AGENT_QUEUE_SIZE) return;
+  agentQueue.push(event);
+  drainAgentQueue();
+}
+
+function drainAgentQueue(): void {
+  if (agentBusy || navigationBusy() || !agentSettings.enabled || screen !== 'account' || !profileNetwork) return;
+  while (agentQueue.length) {
+    const event = agentQueue.shift()!;
+    if (!agentPeers.includes(event.peer) || !agentChatAvailable(event.peer)) continue;
+    const channel = event.transport === 'native-radio' && event.epoch === radioEpoch ? agentRadioChannel(event.peer) : undefined;
+    const prompt = event.transport === 'native-radio' ? incomingNativeAgentPrompt(channel, event)
+      : incomingAgentPrompt(sessionChats, address, event.peer, event);
+    if (!prompt) continue;
+    const sender = event.transport === 'native-radio' ? String(event.from) : event.peer;
+    const limit = senderAgentLimit(agentChatPolicy(agentLimits, event.peer, agentSettings.replyLimit), sender,
+      event.transport === 'native-radio' && event.from === channel?.node);
+    const reservation = reserveAgentRequest(agentLimits, event.peer, sender, limit);
+    if (!reservation) {
+      agentReplyPeer = event.peer; agentReplyNotice = 'Лимит запросов для собеседника исчерпан.';
+      continue;
+    }
+    void runAgent(event, prompt, reservation);
+    return;
+  }
+}
+
+$effect(() => {
+  if (screen === 'account' && !agentBusy && !navigationBusy()) untrack(drainAgentQueue);
+});
+
+async function runAgent(event: AgentEvent, prompt: string, reservation: AgentChatLimits): Promise<void> {
+  const { peer, transport } = event;
+  agentReplyPeer = peer; agentReplyNotice = '';
+  const radio = transport === 'radio';
+  if (radio && (!radioAvailable || !radioRuntime?.hasRoute(peer))) {
+    agentReplyNotice = 'Ответ по LoRa недоступен. Проверьте подключение платы.';
+    queueMicrotask(drainAgentQueue);
+    return;
+  }
+  if (agentSettings.backend === 'cloud' && networkSettings.internetEnabled === false) {
+    agentReplyNotice = 'Доступ к интернету отключён.';
+    queueMicrotask(drainAgentQueue);
+    return;
+  }
+  const controller = new AbortController(), generation = authGeneration, owner = address, active = chat;
+  const settings = { ...agentSettings };
+  const current = () => agentController === controller && !controller.signal.aborted && generation === authGeneration && owner === address &&
+    active === chat && screen === 'account' && agentSettings.enabled && agentChatAvailable(peer) &&
+    (event.transport !== 'native-radio' || event.epoch === radioEpoch) &&
+    !endingSession && !switchingTrust && !memoryBusy && !panicBusy && !profileSwitchBusy &&
+    agentPeers.includes(peer);
+  agentController = controller; agentBusy = true;
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    if (reservation !== agentLimits) {
+      agentLimits = reservation;
+      if (!await persistLocalChats()) {
+        if (current()) agentReplyNotice = 'Не удалось сохранить лимит запросов.';
+        return;
+      }
+    }
+    if (!current()) return;
+    const reply = await generateAgentReply(settings, prompt, agentKey, controller.signal, fetch,
+      { allowBrowserDownload: false, radio: radio || transport === 'native-radio' });
+    if (!current()) return;
+    if (event.transport === 'native-radio') {
+      while (nativeSending && current()) await nativeSendDone;
+      const channel = agentRadioChannel(peer);
+      if (!current() || !channel) return;
+      await sendNativeText(channel, formatAgentReply(reply, transport), { replyId: event.id, literal: true });
+    } else await queueRichMessage(peer, formatAgentReply(reply, transport), AGENT_REPLY_DETAILS, radio);
+    if (current()) agentReplyNotice = 'Ответ ИИ поставлен в очередь.';
+  } catch (error) {
+    if (agentController === controller) agentReplyNotice = agentErrorNotice(error, controller.signal.aborted);
+  } finally {
+    clearTimeout(timer);
+    if (agentController === controller) { agentController = null; agentBusy = false; }
   }
 }
 
@@ -3573,7 +3882,12 @@ async function retryNodeMessage(peer:string,id:string) {
 async function resendMessageCopy(peer:string,id:string,activeChat:ChatService,generation:number):Promise<void>{
   const entry=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id);
   if(!entry||generation!==authGeneration||chat!==activeChat)throw new Error('Сеанс или чат изменился.');
-  if(entry.details?.edit||entry.details?.reaction){const update=retryMessageUpdate(sessionChats.byPeer[peer].messages,entry,address);if(update)await queueRichMessage(peer,update.text,update.details);return;}
+  if(entry.details?.edit||entry.details?.reaction){
+    const update=retryMessageUpdate(sessionChats.byPeer[peer].messages,entry,address);
+    const viaRadio=!!entry.details.reaction&&!!(entry.radioDelivery||radioState.preferredPeers?.includes(peer));
+    if(update)await queueRichMessage(peer,update.text,update.details,viaRadio);
+    return;
+  }
   if(entry.file){
     const file=await prepareMessageFile(peer,id);
     if(generation!==authGeneration||chat!==activeChat||!await enqueueAttachment(file,peer,activeChat,entry.details))throw new Error('Не удалось повторить отправку.');
@@ -3918,7 +4232,7 @@ function availableReactions(peer:string):readonly string[]{
 }
 function openReactionPicker(id:string):void{
   const message=activeMessages.find(m=>m.id===id);
-  if(navigationBusy()||pinBusy||!canUpdateActive||!message||!reactionAllowed(message))return;
+  if(navigationBusy()||pinBusy||!canReactActive||!message||!reactionAllowed(message))return;
   messageTools=null;reactionTarget={peer:sessionChats.activePeer,id};
 }
 function beginMessageEdit(id:string):void{
@@ -3936,12 +4250,12 @@ async function saveMessageEdit(text:string):Promise<void>{
 }
 async function reactToMessage(id:string,emoji:string):Promise<void>{
   const peer=sessionChats.activePeer,generation=authGeneration,m=messagesForActions(peer).find(m=>m.id===id);
-  if(navigationBusy()||pinBusy||!canUseMessageUpdates(peer)||!m||!reactionAllowed(m))return;
+  if(navigationBusy()||pinBusy||!canReactActive||!m||!reactionAllowed(m))return;
   const remove=m.reactions?.some(r=>r.emoji===emoji&&r.actors.includes(address));
   if(!remove&&!availableReactions(peer).includes(emoji))return;
   pinBusy=true;
-  try{await queueRichMessage(peer,'',{reaction:{targetId:id,revision:nextUpdateRevision(sessionChats.byPeer[peer].messages,address,id,'reaction'),emoji:remove?null:emoji}});}
-  catch{if(generation===authGeneration)status='Не удалось сохранить реакцию.';}finally{if(generation===authGeneration)pinBusy=false;}
+  try{await queueRichMessage(peer,'',{reaction:{targetId:id,revision:nextUpdateRevision(sessionChats.byPeer[peer].messages,address,id,'reaction'),emoji:remove?null:emoji}},peer!==address&&preferRadio);}
+  catch(error){if(generation===authGeneration)status=error instanceof Error&&error.message==='radio_message_unavailable'?radioError(error):'Не удалось сохранить реакцию.';}finally{if(generation===authGeneration)pinBusy=false;}
 }
 async function pinMessage(targetId: string | null): Promise<void> {
   const peer = sessionChats.activePeer; const generation = authGeneration;
@@ -4006,18 +4320,27 @@ async function downloadSelection(): Promise<void> {
   } catch (error) { if (generation === authGeneration) status = error instanceof Error ? error.message : 'Не удалось подготовить скачивание. Выбор сохранён.'; }
   finally { if (generation === authGeneration) actionBusy = false; }
 }
-async function queueRichMessage(peer: string, text: string, details: MessageDetails): Promise<void> {
+async function queueRichMessage(peer: string, text: string, details: MessageDetails, viaRadio = false): Promise<void> {
   const generation = authGeneration; const sendingChat = chat;
   const conversation = sessionChats.byPeer[peer];
   if (!conversation || (conversation.contact !== 'new' && conversation.contact !== 'accepted')) throw new Error('Сначала дождитесь принятия запроса или разблокируйте контакт.');
   if (!textFitsLimit(encodeChatContent(text, details), conversation.contact === 'new')) throw new Error('Сообщение слишком длинное для этого чата.');
   const id = crypto.randomUUID();
-  sessionChats = recordSentMessage(sessionChats, peer, { id, text, details, from: address, timestamp: Date.now(), direction: 'outgoing', delivery: peer === address ? 'delivered' : 'queued' });
+  const activeRadio = radioRuntime;
+  const message: ChatEntry = { id, text, details, from: address, timestamp: Date.now(), direction: 'outgoing', delivery: peer === address ? 'delivered' : 'queued', ...(viaRadio ? { radioDelivery: 'queued' as const } : {}) };
+  if (viaRadio && (conversation.contact !== 'accepted' || !radioAvailable || !activeRadio?.hasRoute(peer) || !radioEligible(message))) throw new Error('radio_message_unavailable');
+  sessionChats = recordSentMessage(sessionChats, peer, viaRadio ? { ...message, delivery: 'saving' } : message);
   if (!await persistLocalChats()) {
     if (generation === authGeneration) sessionChats = updateConversation(sessionChats, peer, current => ({ ...current, messages: current.messages.filter(message => message.id !== id) }));
     throw new Error('Не удалось сохранить сообщение.');
   }
   if (generation !== authGeneration) throw new Error('Сеанс завершён.');
+  if (viaRadio) {
+    sessionChats = setDeliveryStatus(sessionChats, peer, id, 'queued');
+    try { if (radioRuntime !== activeRadio || !activeRadio) throw new Error('radio_closed'); await activeRadio.send(peer, id); }
+    catch (error) { if (generation === authGeneration) { markRadioRetry(peer, id); radioErrorText = radioError(error); } }
+    return;
+  }
   if (peer !== address && sendingChat && sendingChat === chat) {
     courierDelivery?.wake();
     if (sessionChats.byPeer[peer].connection === 'connected') void flushOutbox(peer, sendingChat);
@@ -4358,6 +4681,7 @@ async function blockContact(peer: string): Promise<void> {
   const existing = sessionChats.byPeer[peer];
   if (!existing || existing.contact === 'blocked') return;
   calls?.revoke(peer);
+  if (agentPeers.includes(peer)) toggleAgentPeer(peer);
   const previous = sessionChats;
   const accountId = address;
   sessionChats = updateConversation(sessionChats, peer, (conversation) => ({
@@ -4644,6 +4968,7 @@ async function initializeChat() {
       authorize: authorizePrimary, issue: outgoingIssue,
       state: () => offlineDeliveryState, update: state => { offlineDeliveryState = state; },
       chats: () => sessionChats, persist: persistLocalChats, receive: receiveOfflineMessage,
+      committedIncoming: event => { if (chat === nextChat) onAgentIncoming(event); },
       delivery: (peer, id, value) => {
         const message = sessionChats.byPeer[peer]?.messages.find(msg => msg.id === id);
         if (!message || message.delivery === 'delivered' || message.delivery === 'read') return;
@@ -4717,6 +5042,7 @@ async function initializeChat() {
       },
       state: () => courierState, update: state => { courierState = state; },
       chats: () => sessionChats, persist: persistCourierState, receive: receiveOfflineMessage,
+      committedIncoming: event => { if (chat === nextChat) onAgentIncoming(event); },
       outcome: recordNodeOutcome,
       delivery: (peer, id, value) => {
         const message = sessionChats.byPeer[peer]?.messages.find(msg => msg.id === id);
@@ -4741,6 +5067,7 @@ async function initializeChat() {
   }
   const receiveChatMessage = async (msg: import('$lib/chat/ChatService').ChatMessage) => {
     if (chat !== nextChat) return;
+    const fresh=msg.verified&&isFreshIncoming(sessionChats,msg.from,msg.id);
     const current = sessionChats.byPeer[msg.from];
     if (current?.contact === 'blocked') throw new Error('blocked_contact');
     if ((msg.details?.pin || msg.details?.edit || msg.details?.reaction || msg.details?.ephemeral || msg.details?.ephemeralOpened) && current?.contact !== 'accepted') throw new Error('pin_contact_not_accepted');
@@ -4780,6 +5107,7 @@ async function initializeChat() {
     void deviceRuntime?.wake().catch(() => {});
     if (handshake.keys) publishDeliveryKeys(msg.from,true);
     if (reciprocalRequest) void nextChat.sendReadPreference(readReceiptsEnabled, msg.from).catch(() => {});
+    if(fresh&&chat===nextChat)notifyCommittedIncoming(onAgentIncoming,{peer:msg.from,id:msg.id,transport:'direct'});
   };
   nextChat.onMessage(receiveChatMessage);
   nextChat.onReceipt((peer, messageId) => {
@@ -5041,6 +5369,8 @@ async function initializeChat() {
 
 function chatSnapshot(): LocalChatData {
   return snapshotLocalChatData({
+    agentSettings:normalizeAgentSettings(agentSettings),
+    agentChatLimits:agentLimits,
     notifications: normalizeNotifications(notificationState),
     meshtastic,
     radioState,
@@ -5100,6 +5430,7 @@ async function refreshStorage(): Promise<void> {
 }
 
 function pauseFileTransfers(): void {
+  revokeAgentAuto();
   audioTrack = null;
   offlineDelivery?.stop(); offlineDelivery = null;
   courierDelivery?.stop(); courierDelivery = null; queueOverviewOpen=false;
@@ -5219,7 +5550,7 @@ async function emergencyReset(): Promise<void> {
           }
         }
         if ('caches' in window) for (const name of await caches.keys()) {
-          if (name.startsWith('mesh-autonomy-shell-')) await caches.delete(name).catch(() => { failed = true; return false; });
+          if (name.startsWith('mesh-autonomy-shell-') || name.startsWith(PORTABLE_CACHE_PREFIX)) await caches.delete(name).catch(() => { failed = true; return false; });
         }
         if (failed) throw new Error('cache_cleanup_failed');
       },
@@ -5288,6 +5619,7 @@ async function switchTrustMode(): Promise<void> {
 }
 
 function forgetOpenAccount(mode: 'lock' | 'logout'): void {
+  resetAgent();
   peerMessageFeatures={};peerReactionFeatures={};reactionTarget=null;editDraft=null;returnFromChatSearch=undefined;
   manageChatScroll.clear();
   mediaLibrary = emptyMediaLibrary(); mediaOpen = false; receivedPack = null;
@@ -6017,6 +6349,13 @@ async function changePassword(): Promise<void> {
   </div>
   {/if}
 
+  {#if settingsSection === 'ai' && profileNetwork}
+    <div class="settings-section">
+      {#key address}<AgentSettingsPanel settings={agentSettings} busy={navigationBusy()} working={agentBusy} notice={agentNotice}
+        example={agentExample} keyPresent={!!agentKey} automatic={agentPeers.length > 0} save={saveAgentSettings} test={testAgentModel} stop={stopAgentRequest} forgetKey={forgetAgentKey} revokeAuto={revokeAgentAuto}
+        prepare={prepareAgentModel} remove={removeAgentModel} progress={agentProgress} />{/key}
+    </div>
+  {/if}
   {#if settingsSection === 'account'}
   {#if profileNetwork}<div class="settings-section">
     <AvatarEditor accountId={address} photo={selfAvatar} busy={avatarBusy || endingSession || switchingTrust || profileSwitchBusy || memoryBusy}
@@ -6152,9 +6491,21 @@ async function changePassword(): Promise<void> {
     <section class="conversation-pane" class:drop-active={fileDragActive} use:fileDrop aria-label={$i18n.text("Выбранный чат")}>
       {#if fileDragActive}<div class="file-drop-hint" role="status">{$i18n.text("Отпустите файлы — они отправятся в этот чат")}</div>{/if}
       {#if nativeOpen}
+        {@const radioAgentPeer = 'radio:' + nativeSelected}
+        {@const agentChannel = agentRadioChannel(radioAgentPeer)}
         {#key nativeSelected}<MeshtasticChannels data={meshtastic} selected={nativeSelected} live={nativeLive} connected={radioConnection==='connected'} busy={nativeSending||radioBusy} board={radioBoardLabel} link={contactLink(address)} initialUnread={nativeInitialUnread} forwardDone={nativeForwardDone}
-          onSignature={setNativeSignature} onSend={sendNativeText} onDelete={deleteNativeMessages} onDraft={setNativeDraft} onForward={openNativeForward} onBottom={nativeBottom}
-          onSettings={()=>openConnectionSection('radio')} onBack={()=>{nativeOpen=false;showChatList();}}/>{/key}
+          onSignature={setNativeSignature} onSend={sendNativeText} onReaction={sendNativeReaction} onDelete={deleteNativeMessages} onDraft={setNativeDraft} onForward={openNativeForward} onBottom={nativeBottom}
+          onSettings={()=>openConnectionSection('radio')} onBack={()=>{nativeOpen=false;showChatList();}}>
+          {#snippet agentControls()}
+            {#if agentModelReady && agentChannel}
+              <AgentChatControls working={agentBusy && agentReplyPeer === radioAgentPeer} disabled={navigationBusy()}
+                automatic={agentPeers.includes(radioAgentPeer)} notice={agentReplyPeer === radioAgentPeer ? agentReplyNotice : ''}
+                policy={agentChatPolicy(agentLimits, radioAgentPeer)} ownBoard={agentChannel.node}
+                knownBoards={agentChannel.messages.slice(-80).filter(message => !message.outgoing).map(message => message.from)}
+                save={policy => saveAgentChatPolicy(radioAgentPeer, policy)} toggleAuto={() => toggleAgentPeer(radioAgentPeer)} />
+            {/if}
+          {/snippet}
+        </MeshtasticChannels>{/key}
       {:else if activeConversation}
         {#key activeConversation.peerAddress}
         <div class="chat-heading">
@@ -6240,7 +6591,7 @@ async function changePassword(): Promise<void> {
                 <CallHistoryCard record={message.localCall} disabled={callBusy || voiceBusy || navigationBusy() || activeConversation.connection !== 'connected' || activeConversation.contact !== 'accepted'}
                   onCall={() => void startCall(activeConversation.peerAddress)} onDelete={() => messageAction(message, 'delete')} />
               {:else}
-              <MessageCard onReaction={canUpdateActive&&reactionAllowed(message)?()=>openReactionPicker(message.id):undefined} reactionOpen={reactionTarget?.id===message.id} reactionBusy={pinBusy||actionBusy||navigationBusy()} outgoing={message.direction === 'outgoing'} sticker={message.details?.media?.kind === 'sticker' && mediaCanOpen(message)} selecting={selecting} highlighted={highlightedMessage === message.id} selected={selectedMessages.includes(message.id)} busy={actionBusy || ephemeralOpening} preview={messagePreview(message)} onSelect={() => toggleMessage(message.id)} onBeginSelect={() => messageAction(message, 'select')}>
+              <MessageCard onReaction={canReactActive&&reactionAllowed(message)?()=>openReactionPicker(message.id):undefined} reactionOpen={reactionTarget?.id===message.id} reactionBusy={pinBusy||actionBusy||navigationBusy()} outgoing={message.direction === 'outgoing'} sticker={message.details?.media?.kind === 'sticker' && mediaCanOpen(message)} selecting={selecting} highlighted={highlightedMessage === message.id} selected={selectedMessages.includes(message.id)} busy={actionBusy || ephemeralOpening} preview={messagePreview(message)} onSelect={() => toggleMessage(message.id)} onBeginSelect={() => messageAction(message, 'select')}>
               {@const deliveryView = messageStatus(message, activeConversation.peerAddress === address, readReceiptsEnabled && peerReadPreferences[activeConversation.peerAddress] === true && activeConversation.contact === 'accepted')}
               {#if message.details?.ephemeral}
                 {@const viewed = activeEphemeralStates.get(message.id)}
@@ -6268,7 +6619,7 @@ async function changePassword(): Promise<void> {
                   shareText={message.details?.contactCard ? contactLink(message.details.contactCard.accountId) : message.text}
                   openView={messageTools?.id === message.id ? messageTools.view : null} disabled={actionBusy || memoryBusy || endingSession || switchingTrust || pinBusy}
                   canReply={activeConversation.contact === 'accepted'}
-                  onReact={canUpdateActive&&reactionAllowed(message)?emoji=>void reactToMessage(message.id,emoji):undefined}
+                  onReact={canReactActive&&reactionAllowed(message)?emoji=>void reactToMessage(message.id,emoji):undefined}
                   onEdit={canUpdateActive&&message.direction==='outgoing'&&message.from===address&&editableText(message)?()=>beginMessageEdit(message.id):undefined}
                   onCopy={()=>void copyMessage(message)} onOpen={(view) => messageTools = { id: message.id, view }} onClose={() => messageTools = null}
                   onReply={() => startReply(message)} onForward={() => messageAction(message, 'forward')} onSelect={() => messageAction(message, 'select')}
@@ -6368,7 +6719,7 @@ async function changePassword(): Promise<void> {
               {/if}
               {#if message.radioReception}<RadioReception reception={message.radioReception}/>{/if}
               <div class="message-actions">
-                {#if message.reactions}<MessageReactions reactions={message.reactions} self={address} disabled={pinBusy||actionBusy||navigationBusy()} onReact={canUpdateActive?emoji=>void reactToMessage(message.id,emoji):undefined}/>{/if}
+                {#if message.reactions}<MessageReactions reactions={message.reactions} self={address} disabled={pinBusy||actionBusy||navigationBusy()} onReact={canReactActive?emoji=>void reactToMessage(message.id,emoji):undefined}/>{/if}
                 {#if replyCount(activeConversation.messages, message.id)}<small title={$i18n.text("Ответы в этой переписке")}>↩ {replyCount(activeConversation.messages, message.id)}</small>{/if}
                 {#if message.forwardedTo?.length}<small title={$i18n.text("Число чатов, куда вы сами переслали сообщение")}>↪ {message.forwardedTo.length}</small>{/if}
                 {#if message.direction === 'outgoing' || message.file}
@@ -6417,7 +6768,7 @@ async function changePassword(): Promise<void> {
         {#if ephemeralView && ephemeralView.account === address && screen === 'account'}<EphemeralViewer message={ephemeralView.message} url={ephemeralView.url} deadline={ephemeralView.deadline} onClose={closeEphemeral} onDownload={downloadEphemeral} />{/if}
         {#if reactionTarget&&reactionTarget.peer===activeConversation.peerAddress}
           {@const reacting=activeMessages.find(m=>m.id===reactionTarget?.id)}
-          {#if reacting&&canUpdateActive&&reactionAllowed(reacting)}<ReactionPicker options={activeReactionChoices} selected={reacting.reactions?.find(r=>r.actors.includes(address))?.emoji??''} onClose={()=>reactionTarget=null} onSelect={emoji=>{const id=reactionTarget?.id;reactionTarget=null;if(id)void reactToMessage(id,emoji);}}/>{/if}
+          {#if reacting&&canReactActive&&reactionAllowed(reacting)}<ReactionPicker options={activeReactionChoices} selected={reacting.reactions?.find(r=>r.actors.includes(address))?.emoji??''} onClose={()=>reactionTarget=null} onSelect={emoji=>{const id=reactionTarget?.id;reactionTarget=null;if(id)void reactToMessage(id,emoji);}}/>{/if}
         {/if}
         {#if editDraft}<EditMessageDialog text={editDraft.text} onSave={saveMessageEdit} onClose={()=>editDraft=null}/>{/if}
         <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
@@ -6429,6 +6780,15 @@ async function changePassword(): Promise<void> {
         <PastedImages files={pastedFiles} bind:preview={stagedPreview} onMove={moveStagedAttachment} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
         <div class="composer">
         <div class="composer-controls composer-left">
+        {#if agentModelReady && activeConversation.contact === 'accepted' && activeConversation.peerAddress !== address}
+          {#key activeConversation.peerAddress}
+            <AgentChatControls working={agentBusy && agentReplyPeer === activeConversation.peerAddress} disabled={navigationBusy()}
+              automatic={agentPeers.includes(activeConversation.peerAddress)} notice={agentReplyPeer === activeConversation.peerAddress ? agentReplyNotice : ''}
+              policy={agentChatPolicy(agentLimits, activeConversation.peerAddress, agentSettings.replyLimit)}
+              save={policy => saveAgentChatPolicy(activeConversation.peerAddress, policy)}
+              toggleAuto={() => toggleAgentPeer(activeConversation.peerAddress)} />
+          {/key}
+        {/if}
         {#if activeConversation.peerAddress !== address}
           <OfflineKeyBadge budget={activeKeyBudget} configured={offlineNodeConfigured}
             radioSelected={preferRadio} radioConnected={radioConnection==='connected'}

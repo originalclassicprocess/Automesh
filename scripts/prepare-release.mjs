@@ -40,6 +40,7 @@ const copy = path => {
 };
 copy('build'); copy('app.cjs'); copy('LICENSE'); copy('.env.example'); copy('docs/DEPLOYMENT.md'); copy('docs/UPDATES.md'); copy('docs/CHAT_UX_CHECKLIST.md'); copy('CHANGELOG.md'); copy('HISTORY.md'); copy('docs/PUBLIC_SOURCE_PREVIEW.md');
 copy('THIRD_PARTY_NOTICES.md'); copy('README.md'); copy('README.ru.md'); copy('SECURITY.md'); copy('CONTRIBUTING.md');
+copy('docs/ACCOUNT_AI_V1.md');
 copy('docs/ARCHITECTURE.md'); copy('docs/PUBLIC_RELEASE_PLAN.md');
 copy('docs/NOTIFICATIONS.md'); copy('docs/NOTIFICATION_UPLOAD_READY.md');
 copy('docs/RELEASE_'+JSON.parse(readFileSync(join(root,'package.json'),'utf8')).version.replaceAll('.','_')+'.md');

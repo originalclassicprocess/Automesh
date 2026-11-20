@@ -2,6 +2,14 @@
   "lockfileVersion": 3,
   "packages": [
     {
+      "name": "@emnapi/runtime",
+      "version": "1.11.3",
+      "license": "MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
       "name": "@hpke/common",
       "version": "1.10.1",
       "license": "MIT",
@@ -15,6 +23,256 @@
       "name": "@hpke/core",
       "version": "1.9.0",
       "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@huggingface/jinja",
+      "version": "0.5.13",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@huggingface/tokenizers",
+      "version": "0.2.0",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@huggingface/transformers",
+      "version": "4.3.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@img/colour",
+      "version": "1.1.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "@img/sharp-darwin-arm64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-darwin-x64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-freebsd-wasm32",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-darwin-arm64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-darwin-x64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linux-arm",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linux-arm64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linux-ppc64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linux-riscv64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linux-s390x",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linux-x64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linuxmusl-arm64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-libvips-linuxmusl-x64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linux-arm",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linux-arm64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linux-ppc64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linux-riscv64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linux-s390x",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linux-x64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linuxmusl-arm64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-linuxmusl-x64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-wasm32",
+      "version": "0.35.5",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later AND MIT",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-webcontainers-wasm32",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-win32-arm64",
+      "version": "0.35.5",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-win32-ia32",
+      "version": "0.35.5",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "@img/sharp-win32-x64",
+      "version": "0.35.5",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
       "development": true,
       "installed": true,
       "notices": [
@@ -129,6 +387,96 @@
         "upstream:polka-url.txt"
       ],
       "noticeSource": "https://raw.githubusercontent.com/lukeed/polka/02cbdb529ddca0a9f3d225e2abb2931924219cc3/license"
+    },
+    {
+      "name": "@protobufjs/aspromise",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/base64",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/codegen",
+      "version": "2.0.5",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/eventemitter",
+      "version": "1.1.1",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/fetch",
+      "version": "1.1.1",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/float",
+      "version": "1.0.2",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/path",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/pool",
+      "version": "1.1.0",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/utf8",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
     },
     {
       "name": "@rolldown/binding-android-arm-eabi",
@@ -676,6 +1024,16 @@
       ]
     },
     {
+      "name": "@types/node",
+      "version": "26.6.6",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "@types/resolve",
       "version": "1.20.2",
       "license": "MIT",
@@ -809,6 +1167,16 @@
     {
       "name": "acorn",
       "version": "8.18.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "adm-zip",
+      "version": "0.6.1",
       "license": "MIT",
       "development": true,
       "installed": true,
@@ -1037,6 +1405,26 @@
       ]
     },
     {
+      "name": "define-data-property",
+      "version": "1.1.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "define-properties",
+      "version": "1.2.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "detect-libc",
       "version": "2.1.2",
       "license": "Apache-2.0",
@@ -1087,6 +1475,16 @@
       ]
     },
     {
+      "name": "es-define-property",
+      "version": "1.0.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "es-errors",
       "version": "1.3.0",
       "license": "MIT",
@@ -1104,6 +1502,16 @@
       "installed": true,
       "notices": [
         "LICENSE"
+      ]
+    },
+    {
+      "name": "escape-string-regexp",
+      "version": "4.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
       ]
     },
     {
@@ -1197,6 +1605,16 @@
       ]
     },
     {
+      "name": "flatbuffers",
+      "version": "25.9.23",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "fsevents",
       "version": "2.3.3",
       "license": "MIT",
@@ -1222,6 +1640,54 @@
       "installed": true,
       "notices": [
         "LICENSE.md"
+      ]
+    },
+    {
+      "name": "global-agent",
+      "version": "4.1.7",
+      "license": "BSD-3-Clause",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "globalthis",
+      "version": "1.0.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "gopd",
+      "version": "1.2.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "guid-typescript",
+      "version": "1.0.9",
+      "license": "ISC",
+      "development": true,
+      "installed": true,
+      "notices": []
+    },
+    {
+      "name": "has-property-descriptors",
+      "version": "1.0.2",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
       ]
     },
     {
@@ -1462,6 +1928,16 @@
       ]
     },
     {
+      "name": "long",
+      "version": "5.3.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "magic-string",
       "version": "0.30.21",
       "license": "MIT",
@@ -1469,6 +1945,16 @@
       "installed": true,
       "notices": [
         "LICENSE"
+      ]
+    },
+    {
+      "name": "matcher",
+      "version": "4.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
       ]
     },
     {
@@ -1532,6 +2018,16 @@
       ]
     },
     {
+      "name": "object-keys",
+      "version": "1.1.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "obug",
       "version": "2.1.1",
       "license": "MIT",
@@ -1540,6 +2036,51 @@
       "notices": [
         "LICENSE"
       ]
+    },
+    {
+      "name": "onnxruntime-common",
+      "version": "1.30.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:onnx-runtime-mit.txt"
+      ],
+      "noticeSource": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@v1.30.0/LICENSE"
+    },
+    {
+      "name": "onnxruntime-node",
+      "version": "1.30.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:onnx-runtime-mit.txt"
+      ],
+      "noticeSource": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@v1.30.0/LICENSE"
+    },
+    {
+      "name": "onnxruntime-web",
+      "version": "1.31.0-dev.20260914-8d85527a0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:onnx-runtime-mit.txt",
+        "upstream:onnx-runtime-web-third-party.txt"
+      ],
+      "noticeSource": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@8d85527a010e294a26b274749f74294b2a32cec5/LICENSE"
+    },
+    {
+      "name": "onnxruntime-common",
+      "version": "1.31.0-dev.20260911-2a43ec07e",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:onnx-runtime-mit.txt"
+      ],
+      "noticeSource": "https://github.com/microsoft/onnxruntime/blob/2a43ec07e67df9263c7c56c15da76cc7f74d7b32/LICENSE"
     },
     {
       "name": "p-limit",
@@ -1622,6 +2163,16 @@
       ]
     },
     {
+      "name": "platform",
+      "version": "1.3.6",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "pngjs",
       "version": "5.0.0",
       "license": "MIT",
@@ -1635,6 +2186,16 @@
       "name": "postcss",
       "version": "8.5.32",
       "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "protobufjs",
+      "version": "7.6.6",
+      "license": "BSD-3-Clause",
       "development": true,
       "installed": true,
       "notices": [
@@ -1743,6 +2304,26 @@
       ]
     },
     {
+      "name": "semver",
+      "version": "7.8.6",
+      "license": "ISC",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "serialize-error",
+      "version": "8.1.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
       "name": "set-blocking",
       "version": "2.0.0",
       "license": "ISC",
@@ -1756,6 +2337,16 @@
       "name": "set-cookie-parser",
       "version": "3.1.0",
       "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "sharp",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
       "development": true,
       "installed": true,
       "notices": [
@@ -1912,6 +2503,24 @@
       ]
     },
     {
+      "name": "tslib",
+      "version": "2.9.1",
+      "license": "0BSD",
+      "development": true,
+      "installed": false,
+      "notices": []
+    },
+    {
+      "name": "type-fest",
+      "version": "0.20.2",
+      "license": "(MIT OR CC0-1.0)",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "license"
+      ]
+    },
+    {
       "name": "typescript",
       "version": "6.0.3",
       "license": "Apache-2.0",
@@ -1919,6 +2528,16 @@
       "installed": true,
       "notices": [
         "LICENSE.txt"
+      ]
+    },
+    {
+      "name": "undici-types",
+      "version": "8.9.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
       ]
     },
     {

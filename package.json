@@ -1,7 +1,7 @@
 {
   "name": "mesh-autonomy",
   "private": true,
-  "version": "0.5.14",
+  "version": "0.5.15",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -39,6 +39,7 @@
   },
   "devDependencies": {
     "@hpke/core": "1.9.0",
+    "@huggingface/transformers": "4.3.2",
     "@sveltejs/adapter-node": "^5.5.7",
     "@sveltejs/kit": "^2.57.0",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
@@ -48,6 +49,7 @@
     "@zxcvbn-ts/language-ru": "4.1.0",
     "fake-indexeddb": "6.2.5",
     "fflate": "0.8.3",
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "svelte": "^5.55.2",
     "svelte-check": "^4.4.6",
     "typescript": "^6.0.2",

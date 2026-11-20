@@ -3,6 +3,7 @@ import { pendingText } from '$lib/application/delivery-work';
 import { deliveryIssueForError, type DeliveryIssue } from '$lib/application/delivery-issues';
 import type { ChatMessage } from '$lib/chat/ChatService';
 import type { SessionChats } from '$lib/chat/session-chats';
+import { isFreshIncoming, notifyCommittedIncoming, type CommittedIncomingListener } from '$lib/chat/committed-incoming';
 import { encodeChatContent, decodeChatContent } from '$lib/chat/message-details';
 import { MAILBOX_PROTOCOL, MAX_MAIL_TTL_MS } from './protocol.js';
 import { signedNodeRequest, requireNodeNetwork } from './client';
@@ -11,7 +12,7 @@ import { cipherDigest, generatePrekey, openOffline, receiptFor, sealOffline, sig
 import { MAX_OFFLINE_PENDING, MAX_PENDING_CHARS, type OfflineState, type PendingMail } from './offline-state';
 
 type Port = { address: string; identity: IdentityProvider; state(): OfflineState; update(state: OfflineState): void;
-  chats(): SessionChats; persist(): Promise<boolean>; receive(message: ChatMessage): void;
+  chats(): SessionChats; persist(): Promise<boolean>; receive(message: ChatMessage): void; committedIncoming?: CommittedIncomingListener;
   authorize?(peer: string): Promise<void>; issue?(peer: string, id: string, issue: DeliveryIssue | undefined, error?: unknown): void;
   delivery(peer: string, id: string, status: 'queued' | 'stored' | 'delivered'): void; publish(peer: string, bundle: Bundle): Promise<void>;
   error(message: string): void; preferCourier?(): boolean; request?: typeof signedNodeRequest; lanOnly?(): boolean };
@@ -178,10 +179,12 @@ export class OfflineController {
     const content = decodeChatContent(opened.content)!;
     const receipt = accepted ? await receiptFor(opened.packet, envelope.ciphertext, this.port.identity) : ''; this.current();
     if (this.port.state().acks.length >= 2000) throw new Error('offline_ack_limit');
+    const fresh = accepted && isFreshIncoming(this.port.chats(), key.peer, raw.body.id);
     if (accepted) this.port.receive({ id: raw.body.id, from: key.peer, timestamp: raw.body.timestamp, verified: true, via: 'mailbox', ...content });
     this.update({ ...this.port.state(), keys: this.port.state().keys.filter(item => item.id !== key.id),
       acks: [...this.port.state().acks, { id: envelope.id, sender: envelope.sender, digest, receipt, expiresAt: envelope.expiresAt }] });
     await this.persist(); // Message + key deletion + receipt are one encrypted account write.
+    if (fresh) notifyCommittedIncoming(this.port.committedIncoming, { peer: key.peer, id: raw.body.id, transport: 'mailbox' });
     await this.request(node, '/mailbox/ack', { ids: [envelope.id], receipts: receipt ? { [envelope.id]: receipt } : {} });
     this.update({ ...this.port.state(), acks: this.port.state().acks.map(item => item.id === envelope.id ? { ...item, confirmed: true } : item) });
     await this.persist();

@@ -1,3 +1,5 @@
+import {normalizeAgentSettings,type AgentSettings} from '$lib/agents/model';
+import {normalizeAgentChatLimits,type AgentChatLimits} from '$lib/agents/limits';
 import { normalizeRadioReception } from '$lib/radio/reception';
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 import type { ChatEntry, SavedChats } from './session-chats';
@@ -20,6 +22,8 @@ import { normalizeNativeChannels,type NativeChannels } from '$lib/radio/native-c
 import { normalizeNotifications, type NotificationState } from '$lib/notifications/state';
 
 export type LocalChatData = {
+  agentSettings?:AgentSettings;
+  agentChatLimits?:AgentChatLimits;
   notifications?: NotificationState;
   meshtastic?:NativeChannels;
   radioState?: RadioAccountState;
@@ -277,6 +281,8 @@ function cleanData(value: unknown): LocalChatData {
   }
   return {
     ...(raw.deviceSettings !== undefined ? { deviceSettings: normalizeDeviceSettings(raw.deviceSettings) } : {}),
+    ...(raw.agentSettings !== undefined ? {agentSettings:normalizeAgentSettings(raw.agentSettings)} : {}),
+    ...(raw.agentChatLimits !== undefined ? {agentChatLimits:normalizeAgentChatLimits(raw.agentChatLimits)} : {}),
     ...(raw.notifications !== undefined ? { notifications: normalizeNotifications(raw.notifications) } : {}),
     ...(raw.radioState !== undefined ? { radioState: normalizeRadioState(raw.radioState) } : {}),
     ...(raw.meshtastic !== undefined ? {meshtastic:normalizeNativeChannels(raw.meshtastic)}:{}),

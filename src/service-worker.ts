@@ -14,7 +14,17 @@ const PUBLIC_ASSETS = files.filter((path) =>
   path.endsWith('/icon-192.png') ||
   path.endsWith('/icon-512.png')
 );
-const PRECACHE = [...new Set([...build, ...PUBLIC_ASSETS, SHELL_URL])];
+// Optional AI engine binaries are large. Never make installing/updating the
+// messenger download them; retain immutable engine files when actually used.
+const OPTIONAL_AI_ASSETS = new Set(build.filter(path => /(?:portable-worker[.-]|ort-wasm-simd-threaded).*\.(?:js|mjs|wasm)$/.test(path) || path.endsWith('.wasm')));
+// Vite emits worker URL assets outside SvelteKit's `build` manifest. Restrict
+// lazy caching to the exact immutable directory and hashed runtime filenames.
+function optionalAiAsset(path: string): boolean {
+  if (OPTIONAL_AI_ASSETS.has(path)) return true;
+  const prefix = `${base}/_app/immutable/workers/assets/`;
+  return path.startsWith(prefix) && /^ort-wasm-simd-threaded(?:\.asyncify)?-[a-zA-Z0-9_-]{8}\.(?:wasm|mjs)$/.test(path.slice(prefix.length));
+}
+const PRECACHE = [...new Set([...build.filter(path => !OPTIONAL_AI_ASSETS.has(path)), ...PUBLIC_ASSETS, SHELL_URL])];
 const CACHED_ASSETS = new Set([...build, ...PUBLIC_ASSETS]);
 
 async function completeCache(): Promise<boolean> {
@@ -109,6 +119,11 @@ self.addEventListener('fetch', (event) => {
       }
     }
     if (cached) return cached;
-    return fetch(request);
+    const response = await fetch(request);
+    if (optionalAiAsset(url.pathname) && response.ok && !url.search) {
+      // Only known immutable build files; never cache API replies or prompts.
+      await own.put(url.pathname, response.clone()).catch(() => {});
+    }
+    return response;
   })());
 });
