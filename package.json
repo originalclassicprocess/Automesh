@@ -38,7 +38,7 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
   },
   "devDependencies": {
-    "@hpke/core": "1.9.0",
+    "@hpke/core": "1.10.1",
     "@huggingface/transformers": "4.3.2",
     "@sveltejs/adapter-node": "^5.5.7",
     "@sveltejs/kit": "^2.57.0",
