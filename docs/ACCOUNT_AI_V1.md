@@ -7,43 +7,48 @@ execute tools. The existing client controls the data supplied to it and delivery
 
 ## User flow
 
-1. Open profile settings, expand **AI for this account**, enable it and select a backend.
-2. On-device: choose SmolLM2 135M (about 145 MB download) or Qwen2.5 0.5B
-   (about 525 MB download), WASM or WebGPU, and explicitly download the weights.
+1. Open **Settings → AI**, enable it and select a backend.
+2. On-device: choose Qwen2.5 0.5B (about 525 MB download) for Russian replies or
+   SmolLM2 135M (about 145 MB download), and explicitly download the weights.
+   Choose WASM or WebGPU.
    Browser native: check availability of the browser's own built-in model. Local: enter an
    OpenAI-compatible loopback endpoint (e.g. Ollama at
-   `http://localhost:11434/v1/chat/completions`) and model name. Cloud: enter the
-   HTTPS chat-completions endpoint, model name and access key if required.
-3. Use **Test connection** to send a fixed diagnostic prompt without any chat
-   content or custom instructions. Save settings. Open an accepted contact's
-   chat, expand **AI assistant**, and select **AI: draft reply**.
-   Review the generated draft and send it using the ordinary send control.
-4. Optionally enable **/ai replies** for one accepted contact in the current
-   unlocked session. A fresh verified message beginning with `/ai ` can
-   trigger one automatic plain-text response marked `[AI]`. No backlog is scanned.
+   `http://localhost:11434/v1/chat/completions`) and model name. Remote API
+   accepts an HTTPS chat-completions endpoint for a cloud service or your server.
+3. Test the connection to see the model's sample answer. The test uses
+   a fixed greeting and the configured instructions. Save the settings.
+4. Open an accepted contact's chat, click **AI** beside the composer and enable
+   **Reply to this contact**. New text messages receive short Russian auto-replies
+   labeled `[AI]`. Repeat for each contact who should have access.
+5. In a connected Meshtastic channel, use the same **AI** button to enable
+   responses to `/ai <request>`. Replies are sent as quoted, plain-text channel
+   messages and fit the 200-byte Meshtastic limit. Regular channel messages
+   are ignored by AI.
 
 ## Boundaries
 
 - Disabled by default; configuration is scoped to the account's encrypted chat
   store. API keys and automatic reply permission are session-only. Locking,
   switching or restoring an account clears these and aborts outstanding requests.
-- Draft context: at most six recent text messages, 600 characters each; no files,
-  calls, ephemeral messages or pin controls. Automatic mode receives just the
-  explicit command, not the chat history. One inference at a time, bounded input,
-  output and request duration, with a 15-second automatic request cooldown and
-  at most 20 automatic requests per unlocked session. Busy/cooldown-limited
-  commands are not queued for later inference, preventing unintended bursts.
+- Inference receives text from the triggering message. Files, calls, ephemeral
+  messages, chat history and control messages stay out of the prompt. Reply
+  generation runs sequentially. While one request is active, committed messages
+  are queued in memory. Each chat controls the number of requests per sender
+  over a time window beginning with the first request. The channel default
+  is one request per hour per radio. The local radio is unlimited by default,
+  and the owner can set overrides by radio number. Radio numbers do not
+  authenticate sender identity. Limits and usage are stored with local history.
 - Requests are direct browser requests. No Mesh Autonomy relay or model billing.
   Remote endpoints must use HTTPS and allow the web application's origin via
   CORS. Local mode only accepts loopback addresses; browser mixed-content/local
   network policy may restrict access. No redirect or cookie forwarding.
 - Cloud mode respects the existing internet-disabled setting. External engines
   receive the selected text; browser inference does not send it to a model API.
-- Manual drafting uses the same transport selection, including LoRa when the
-  existing radio text limit is satisfied. A common committed-incoming event
+- A common committed-incoming event
   supports direct, mailbox, Courier and personal LoRa messages. Events contain
   only a peer and message reference and are emitted after successful commit,
-  never on duplicate delivery or history import. Radio replies use the same
+  never on duplicate delivery or history import. Messages marked `[AI]` do not
+  invoke the model. Radio replies use the same
   radio transport and fit the encoded 320-byte payload, including metadata.
   Failed writes are not automatically replayed into the model. Model errors do
   not affect message acknowledgements, and no automatic requests are retried.
@@ -61,6 +66,13 @@ The engine is a pinned build-time dependency, not a server runtime dependency.
 It loads only after user selection. The two Q8 public ONNX presets use pinned
 Hub revisions and an origin-local per-model cache; generation is cache-only,
 never implicitly downloads weights, and never sends prompts to the model host.
+The model settings can download weights in verified ranges and resume with
+the cached parts after an interruption. They can also copy a matching
+`model_quantized.onnx` file selected from disk. Imported and assembled weights
+are checked against the pinned SHA-256 before becoming available for inference.
+First-time setup still needs the configuration and tokenizer from the Hub if
+they are absent from the browser cache. During a download, allow space for the
+cached parts and the assembled file.
 The WASM executable and factory are same-origin build assets and the service
 worker excludes them from ordinary PWA precache. They are cached when used.
 Model weights are not secret and are shared by accounts on the device; they
@@ -97,11 +109,13 @@ Model errors and context updates are kept outside the transport receipt path.
 
 ## Release gates
 
-Before publication, exercise actual downloads and generation on desktop and
-Android/iOS, including cancellation, cold offline reload, memory constraints,
-and storage eviction. The 2026-11-20 npm audit reported SvelteKit/adapter-node
+Desktop SmolLM2/WASM and cold offline reload have been verified. Check the
+Qwen preset, WebGPU, physical phones, and behavior under memory pressure or
+storage eviction before claiming support for those scenarios.
+The 2026-11-20 npm audit reported SvelteKit/adapter-node
 advisories, with npm proposing a breaking SvelteKit 3 upgrade. Assess and fix
 this independently; do not use `npm audit fix --force` in the AI change.
-The regenerated dependency inventory also reports new upstream notice gaps
-for ONNX Runtime and guid-typescript. Preserve exact upstream notices before
-publishing a distribution; do not claim that the inventory is complete.
+The generated dependency notices include the ONNX Runtime MIT text and the
+third-party notices from the pinned web runtime revision. See the
+[dependency license review](DEPENDENCY_LICENSE_REVIEW.md) for the remaining
+installed-package gaps and what ships in the browser build.

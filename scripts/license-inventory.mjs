@@ -43,12 +43,12 @@ for (const [path, entry] of Object.entries(lock.packages).sort(([a], [b]) => a.l
         notices.push(`\n===== ${name} ${entry.version} / README.md#license =====\n${section}\n`);
       }
     }
-    const supplement = supplements.find(item => item.name === name && item.version === row.version);
-    if (!row.notices.length && supplement) {
+    for (const supplement of supplements.filter(item => item.name === name && item.version === row.version)) {
       if (!/^[a-z0-9-]+\.txt$/.test(supplement.file)) throw new Error('supplement_path');
       const bytes = await readFile(join(root, 'docs/third-party-licenses', supplement.file));
       if (createHash('sha256').update(bytes).digest('hex') !== supplement.sha256) throw new Error('supplement_hash');
-      row.notices.push('upstream:' + supplement.file); row.noticeSource = supplement.url;
+      row.notices.push('upstream:' + supplement.file);
+      row.noticeSource ??= supplement.url;
       notices.push(`\n===== ${name} ${entry.version} / ${supplement.url} =====\n${bytes.toString('utf8')}\n`);
     }
   } catch (error) { if (error.code !== 'ENOENT') throw error; }

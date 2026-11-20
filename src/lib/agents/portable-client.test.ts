@@ -61,4 +61,16 @@ describe('portable model lifecycle', () => {
     expect(storage.delete).toHaveBeenCalledWith(portableCacheName(model));
     expect(portableMarker(model, origin)).toContain(PORTABLE_MODELS[model].revision);
   });
+  it('starts a clean runtime when switching between WASM and WebGPU', async () => {
+    setup(true);
+    const { signal } = new AbortController();
+    for (const [index, device] of (['wasm', 'webgpu', 'wasm'] as const).entries()) {
+      const loading = preparePortableModel(model, device, signal);
+      expect(MockWorker.instances).toHaveLength(index + 1);
+      if (index > 0) expect(MockWorker.instances[index - 1].terminate).toHaveBeenCalledOnce();
+      const worker = MockWorker.instances[index], request = worker.postMessage.mock.calls[0][0];
+      worker.reply({ id: request.id, type: 'result', text: '' });
+      await loading;
+    }
+  });
 });

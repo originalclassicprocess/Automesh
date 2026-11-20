@@ -14,6 +14,21 @@ clean install on the platform being packaged; retain all reported gaps.
   Copies from their npm-recorded Git commits are in `third-party-licenses/`,
   with source URLs and SHA-256 in `sources.json`. An update needs fresh evidence.
 
+## Account AI dependencies
+
+- ONNX Runtime Web uses the MIT license and ThirdPartyNotices.txt from commit
+  `8d85527a010e294a26b274749f74294b2a32cec5`. Both are preserved with SHA-256
+  hashes and included by the inventory generator. The stable 1.30.0 release
+  MIT file is byte-identical. The development common package's MIT text matches
+  the license displayed for its exact commit `2a43ec07e67df9263c7c56c15da76cc7f74d7b32`.
+- `guid-typescript@1.0.9` declares ISC. The npm payload and the upstream
+  repository inspected for this review did not provide a license file.
+  ONNX Runtime uses it in the WebGL code. The selected `onnxruntime-web/webgpu`
+  distribution includes WASM and WebGPU, and its published source maps have
+  no guid-typescript source. The generated app's browser and server JS also
+  contain none of the package's distinctive strings. Retain the inventory gap
+  for the installed package and recheck if the distribution entry point changes.
+
 ## Remaining upstream notice gaps
 
 | Package | Declared license | Evidence and scope |
@@ -21,6 +36,7 @@ clean install on the platform being packaged; retain all reported gaps.
 | is-reference 1.2.1 and 3.0.3 | MIT | Installed manifests/README; no full license text found in the inspected npm payload or attempted release-commit LICENSE paths. Compiler/build dependency. |
 | locate-character 3.0.0 | MIT | Installed manifest and README declaration; no full license text found at the inspected release-commit paths. Compiler/build dependency. |
 | stackback 0.0.2 | MIT | Installed manifest declaration; no full text found. Transitive test tool through why-is-node-running, not an application runtime dependency. |
+| guid-typescript 1.0.9 | ISC | Installed via ONNX Runtime Web; original full license text not located. See Account AI dependencies above. |
 
 Do not invent a copyright year or claim those original notices were recovered.
 The inventory retains these entries as missing full notices and returns a

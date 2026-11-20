@@ -1,4 +1,4 @@
-import { binary, bytesField, fields, numberField, int32Field, nonzeroFloat, PRIVATE_APP_PORT, TEXT_MESSAGE_APP, SerialFrames, serialFrame, textField, toRadioPacket, toChannelTextPacket, uint } from './meshtastic-wire';
+import { binary, bytesField, fields, numberField, int32Field, isChannelEmoji, nonzeroFloat, PRIVATE_APP_PORT, TEXT_MESSAGE_APP, SerialFrames, serialFrame, textField, toRadioPacket, toChannelTextPacket, uint } from './meshtastic-wire';
 import type { ChannelText, ChannelStatus } from './native-channels';
 import type { RadioChannel, RadioProfile } from './network';
 import { packetReception, type RadioReception } from './reception';
@@ -120,10 +120,10 @@ export class SerialRadio {
     const request = toRadioPacket(to, channel, id, payload, !!receipt);
     return this.submit(id,to,request,receipt);
   }
-  async sendChannelText(channel:number,id:number,text:string,replyId?:number):Promise<void> {
+  async sendChannelText(channel:number,id:number,text:string,replyId?:number,reaction=false):Promise<void> {
     if(!this.ready||!this.channels.has(channel))throw Error('radio_not_ready');
     if(this.pending.has(id)||this.sentIds.has(id)||this.pending.size>=2)throw Error('radio_usb_queue_full');
-    return this.submit(id,0xffffffff,toChannelTextPacket(channel,id,text,replyId),undefined,channel);
+    return this.submit(id,0xffffffff,toChannelTextPacket(channel,id,text,replyId,reaction),undefined,channel);
   }
   private submit(id:number,to:number,request:Uint8Array,receipt?: (accepted:boolean)=>void,channel?:number):Promise<void> {
     const now = Date.now();
@@ -214,7 +214,11 @@ export class SerialRadio {
           let text:string;
           try{text=new TextDecoder('utf-8',{fatal:true}).decode(payload);}
           catch{this.stats.parseErrors++;this.report();return;}
-          if(text.trim()&&!numberField(data,8))this.onChannelText({id,from,channel,text,...(numberField(data,7)?{replyId:numberField(data,7)}:{}),name:this.nodeNames.get(from)??'',receivedAt:reception?.receivedAt??Date.now(),...(reception?{reception}:{})});
+          const replyId=numberField(data,7), reaction=numberField(data,8)!==0;
+          if(reaction?replyId&&isChannelEmoji(text):text.trim()){
+            const target=reaction?{replyId,reaction:true as const}:replyId?{replyId}:{};
+            this.onChannelText({id,from,channel,text,...target,name:this.nodeNames.get(from)??'',receivedAt:reception?.receivedAt??Date.now(),...(reception?{reception}:{})});
+          }
         }
         this.report();return;
       }

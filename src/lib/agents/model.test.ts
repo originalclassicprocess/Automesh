@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { agentKeyFor, commandPrompt, emptyAgentSettings, generateAgentReply, modelEndpoint, normalizeAgentSettings, replyContext } from './model';
-import type { ChatEntry } from '$lib/chat/session-chats';
+import { agentKeyFor, emptyAgentSettings, generateAgentReply, modelEndpoint, normalizeAgentSettings } from './model';
 
 describe('account AI model adapters', () => {
   it('defaults off and never retains credentials or automatic permissions', () => {
@@ -25,21 +24,11 @@ describe('account AI model adapters', () => {
     expect(agentKeyFor(previous, { ...previous, backend: 'local' }, 'old-key', '')).toBe('');
     expect(agentKeyFor(previous, { ...previous, endpoint: 'https://other.test/v1' }, 'old-key', 'new-key')).toBe('new-key');
   });
-  it('uses only explicit bounded commands and does not interpret AI replies as commands', () => {
-    expect(commandPrompt('/ai hello')).toBe('hello');
-    expect(commandPrompt('[AI] /ai hello')).toBeNull();
-    expect(commandPrompt('/ai ')).toBeNull();
-    expect(commandPrompt('/ai ' + 'a'.repeat(2000))).toHaveLength(1200);
-  });
-  it('bounds chat history and excludes ephemeral content and non-text messages', () => {
-    const entry = (text: string, extra: Partial<ChatEntry> = {}): ChatEntry => ({ direction: 'incoming', id: text, from: 'peer', text, timestamp: 1, ...extra });
-    const context = replyContext([
-      entry('oldest'), ...Array.from({ length: 6 }, (_, i) => entry('text ' + i)),
-      entry('secret', { details: { ephemeral: { seconds: 10, allowDownload: false } } }),
-      entry('pinned', { details: { pin: { targetId: null, revision: 1 } } }),
-    ]);
-    expect(context).not.toContain('secret'); expect(context).not.toContain('pinned'); expect(context).not.toContain('oldest');
-    expect(context.split('\n')).toHaveLength(6);
+  it('keeps the reply limit off unless a positive integer was explicitly saved', () => {
+    for (const replyLimit of [undefined, 0, -1, 1.5, '20']) {
+      expect(normalizeAgentSettings({ replyLimit })).not.toHaveProperty('replyLimit');
+    }
+    expect(normalizeAgentSettings({ replyLimit: 20 }).replyLimit).toBe(20);
   });
   it('sends only the bounded prompt to the configured API and rejects redirects', async () => {
     const request = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ choices: [{ message: { content: ' test reply ' } }] })));
@@ -49,7 +38,9 @@ describe('account AI model adapters', () => {
     const [url, init] = request.mock.calls[0];
     expect(url).toBe(settings.endpoint);
     expect(init).toMatchObject({ credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal, headers: { Authorization: 'Bearer test-key' } });
-    expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'small', max_tokens: 160, messages: [{ role: 'system' }, { role: 'user', content: 'hello' }] });
+    expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'small', max_tokens: 96, messages: [
+      { role: 'system', content: expect.stringContaining('кратко по-русски') }, { role: 'user', content: 'hello' },
+    ] });
   });
   it('rejects aborted and oversized model responses', async () => {
     const settings = { ...emptyAgentSettings(), backend: 'cloud' as const, endpoint: 'https://example.test/v1', model: 'small' };
@@ -58,6 +49,36 @@ describe('account AI model adapters', () => {
     await expect(generateAgentReply(settings, 'hello', '', controller.signal, request)).rejects.toThrow();
     expect(request).not.toHaveBeenCalled();
     await expect(generateAgentReply(settings, 'hello', '', new AbortController().signal, request)).rejects.toThrow('agent_response_invalid');
+  });
+  it.each([
+    [401, 'invalid_api_key', 'agent_api_key_rejected'],
+    [403, 'unsupported_country_region_territory', 'agent_api_region'],
+    [403, 'permission_denied', 'agent_api_forbidden'],
+    [404, 'model_not_found', 'agent_api_model_missing'],
+    [404, null, 'agent_api_endpoint_missing'],
+    [429, 'insufficient_quota', 'agent_api_quota'],
+    [429, 'credit_balance_exhausted', 'agent_api_credits'],
+    [429, 'project_spend_limit_exceeded', 'agent_api_quota'],
+    [429, 'organization_spend_limit_exceeded', 'agent_api_quota'],
+    [429, 'organization_usage_limit_exceeded', 'agent_api_quota'],
+    [429, 'rate_limit_exceeded', 'agent_api_rate_limit'],
+    [429, 'slow_down', 'agent_api_rate_limit'],
+    [429, null, 'agent_api_limit'],
+    [400, 'unsupported_parameter', 'agent_api_invalid_request'],
+    [503, null, 'agent_api_service_unavailable'],
+  ])('maps HTTP %i and %s without exposing the provider body', async (status, code, message) => {
+    const settings = { ...emptyAgentSettings(), backend: 'cloud' as const, endpoint: 'https://example.test/v1/chat/completions', model: 'small' };
+    const body = code ? JSON.stringify({ error: { code, message: 'Never display this provider response' } }) : 'Non-JSON response';
+    const request = vi.fn(async () => new Response(body, { status }));
+    await expect(generateAgentReply(settings, 'hello', 'test-key', new AbortController().signal, request)).rejects.toEqual(new Error(message));
+  });
+  it('separates an unreachable API from cancellation', async () => {
+    const settings = { ...emptyAgentSettings(), backend: 'cloud' as const, endpoint: 'https://example.test/v1/chat/completions', model: 'small' };
+    const controller = new AbortController();
+    const request = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    await expect(generateAgentReply(settings, 'hello', '', controller.signal, request)).rejects.toThrow('agent_api_unreachable');
+    const cancelRequest = vi.fn(async () => { controller.abort(); throw controller.signal.reason; });
+    await expect(generateAgentReply(settings, 'hello', '', controller.signal, cancelRequest)).rejects.toMatchObject({ name: 'AbortError' });
   });
   it('uses the on-device browser session without a fetch and releases model resources', async () => {
     const destroy = vi.fn(), prompt = vi.fn(async () => 'local reply');

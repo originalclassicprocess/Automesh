@@ -6,7 +6,7 @@ export {REACTIONS} from './reactions';
 export type ReactionView={emoji:string;actors:string[]};
 export type PresentedMessage=ChatEntry&{edited?:boolean;editControl?:ChatEntry;reactions?:ReactionView[]};
 export const isMessageUpdate=(m:ChatEntry)=>!!(m.details?.edit||m.details?.reaction);
-export const reactionAllowed=(m:ChatEntry)=>MESSAGE_ID.test(m.id)&&!m.localCall&&!m.radioDelivery&&!m.details?.ephemeral&&!isMessageUpdate(m);
+export const reactionAllowed=(m:ChatEntry)=>MESSAGE_ID.test(m.id)&&!m.localCall&&!m.details?.ephemeral&&!isMessageUpdate(m);
 export function editableText(m:ChatEntry):boolean{
  return MESSAGE_ID.test(m.id)&&!!m.text.trim()&&!m.file&&!m.localCall&&!m.radioDelivery&&!m.details?.ephemeral&&!m.details?.ephemeralOpened&&!m.details?.pin&&!m.details?.forwarded&&!m.details?.contactCard&&!m.details?.radioContact&&!m.details?.media&&!isMessageUpdate(m);
 }

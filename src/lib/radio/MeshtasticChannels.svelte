@@ -1,10 +1,12 @@
 <script lang="ts">
-  import {tick,untrack} from 'svelte';
+  import {tick,untrack,type Snippet} from 'svelte';
   import {tr as i18n,locale} from '$lib/i18n/language';
   import ChatIcon from '$lib/chat/ChatIcon.svelte';
   import MessageText from '$lib/chat/MessageText.svelte';
   import MessageCard from '$lib/chat/MessageCard.svelte';
   import MessageTools from '$lib/chat/MessageTools.svelte';
+  import MessageReactions from '$lib/chat/MessageReactions.svelte';
+  import ReactionPicker from '$lib/chat/ReactionPicker.svelte';
   import MessageSelectionBar from '$lib/chat/MessageSelectionBar.svelte';
   import ChatSearch from '$lib/chat/ChatSearch.svelte';
   import EmojiPicker from '$lib/chat/EmojiPicker.svelte';
@@ -15,16 +17,20 @@
   import RadioReception from './RadioReception.svelte';
   import RadioBoardName from './RadioBoardName.svelte';
   import ChannelSecurity from './ChannelSecurity.svelte';
-  import {CHANNEL_TEXT_BYTES,channelText,channelSignature,nativeMessageKey,nativeChatEntry,nativeMessageStatus,nativeFailureAction,type NativeChannels,type NativeChannel,type ChannelMessage} from './native-channels';
-  let {data,selected,live,connected,busy,board,link,initialUnread=0,forwardDone=0,onSignature,onSend,onSettings,onBack,onDelete,onDraft,onForward,onBottom}:
+  import {CHANNEL_TEXT_BYTES,channelText,channelSignature,channelReactionViews,canReactToChannelMessage,nativeMessageKey,nativeChatEntry,nativeMessageStatus,nativeFailureAction,type NativeChannels,type NativeChannel,type ChannelMessage} from './native-channels';
+  let {data,selected,live,connected,busy,board,link,initialUnread=0,forwardDone=0,onSignature,onSend,onReaction,onSettings,onBack,onDelete,onDraft,onForward,onBottom,agentControls}:
     {data:NativeChannels;selected:string;live:string[];connected:boolean;busy:boolean;board:string;link:string;initialUnread?:number;forwardDone?:number;
       onSignature(c:NativeChannel,value:boolean):Promise<void>;
-      onSend(c:NativeChannel,text:string,options?:{replyId?:number;retryOf?:number;literal?:boolean}):Promise<void>;
+      onSend(c:NativeChannel,text:string,options?:{replyId?:number;retryOf?:number;literal?:boolean;agentCommand?:boolean}):Promise<void>;
+      onReaction?(c:NativeChannel,target:ChannelMessage,emoji:string):Promise<void>;
       onSettings():void;onBack():void;onDelete(c:NativeChannel,ids:string[]):Promise<void>;
-      onDraft(c:NativeChannel,text:string,replyId?:number):void;onForward(c:NativeChannel,messages:ChannelMessage[]):void;onBottom(value:boolean):void}=$props();
+      onDraft(c:NativeChannel,text:string,replyId?:number):void;onForward(c:NativeChannel,messages:ChannelMessage[]):void;onBottom(value:boolean):void;agentControls?:Snippet}=$props();
   const token=(c:NativeChannel)=>`${c.node}:${c.key}`;
   const current=$derived(data.channels.find(c=>token(c)===selected));
   const entries=$derived((current?.messages??[]).map(nativeChatEntry));
+  const reactions=$derived(current?channelReactionViews(current):undefined);
+  let reactionTarget=$state('');
+  const reacting=$derived(current?.messages.find(m=>nativeMessageKey(m)===reactionTarget));
   const draft=$derived(current?.draft??'');
   const reply=$derived(current?.messages.find(m=>m.id===current.replyId));
   let error=$state(''),notice=$state(''),working=$state(false),history=$state<HTMLDivElement>(),composer=$state<HTMLTextAreaElement>();
@@ -69,7 +75,14 @@
   function transcript(messages:ChannelMessage[]){return messages.map(m=>`[${new Date(m.timestamp).toLocaleString()}] ${m.name||'!'+m.from.toString(16)}\n${m.text}`).join('\n\n');}
   async function download(messages:ChannelMessage[]){await action(async()=>{const url=URL.createObjectURL(new Blob([transcript(messages)],{type:'text/plain;charset=utf-8'}));try{const a=document.createElement('a');a.href=url;a.download=`Meshtastic-${current?.node}-${Date.now()}.txt`;a.click();notice='Файл передан браузеру для скачивания.';success();}finally{setTimeout(()=>URL.revokeObjectURL(url),60000);}});}
   function startReply(m:ChannelMessage){if(current)onDraft(current,draft,m.id);composer?.focus();}
-  async function send(){if(optionsOpen||!current||!available||!composed||working||busy)return;const c=current,text=draft,replyId=c.replyId;await action(async()=>{await onSend(c,text,{replyId});if(current&&token(c)===token(current)&&current.draft===text)onDraft(current,'');nearBottom=true;});}
+  function react(message:ChannelMessage,emoji:string){
+    const channel=current;
+    reactionTarget='';
+    const sendReaction=onReaction;
+    if(!channel||!sendReaction||!available||busy||working||selecting||!canReactToChannelMessage(message))return;
+    void action(()=>sendReaction(channel,message,emoji));
+  }
+  async function send(){if(optionsOpen||!current||!available||!composed||working||busy)return;const c=current,text=draft,replyId=c.replyId;await action(async()=>{await onSend(c,text,{replyId,agentCommand:true});if(current&&token(c)===token(current)&&current.draft===text)onDraft(current,'');nearBottom=true;});}
   function addEmoji(value:string){const start=composer?.selectionStart??draft.length,end=composer?.selectionEnd??start;setDraft((draft.slice(0,start)+value+draft.slice(end)).slice(0,600));void tick().then(()=>inputPanel.restoreCaret(start+value.length,start+value.length));}
   function modal(node:HTMLDialogElement){const previous=document.activeElement as HTMLElement|null;node.showModal();return{destroy(){node.close();if(previous?.isConnected)previous.focus();}};}
   function sendPress(node:HTMLButtonElement){
@@ -93,26 +106,33 @@
   {#if !available}<div class="connection-note"><span>{$i18n.text(connected?'Для отправки подключите плату этого канала.':'Радиомодуль отключён')}</span><button onclick={onSettings}>{$i18n.text('Подключить')}</button></div>{/if}
   <div class="history-wrap"><div class="history" bind:this={history} onscroll={scrollState}><div use:watchHistory>
     {#if current}{#each current.messages as m,i (nativeMessageKey(m))}
+      {@const groups=reactions?.get(m.id)}
+      {@const canReact=!!onReaction&&available&&canReactToChannelMessage(m)}
       {#if i===0||day(m.timestamp)!==day(current.messages[i-1].timestamp)}<HistoryDivider timestamp={m.timestamp}/>{/if}
       {#if boundary===nativeMessageKey(m)}<HistoryDivider unread/>{/if}
       <div class="message-anchor" data-native-id={nativeMessageKey(m)}>
-      <MessageCard outgoing={m.outgoing} {selecting} selected={chosen.includes(nativeMessageKey(m))} highlighted={highlighted===nativeMessageKey(m)} busy={working} preview={m.text} onSelect={()=>select(nativeMessageKey(m))} onBeginSelect={()=>beginSelect(m)}>
+      <MessageCard onReaction={canReact?()=>{menu=null;reactionTarget=nativeMessageKey(m);}:undefined} reactionOpen={reactionTarget===nativeMessageKey(m)} reactionBusy={busy||working} outgoing={m.outgoing} {selecting} selected={chosen.includes(nativeMessageKey(m))} highlighted={highlighted===nativeMessageKey(m)} busy={working} preview={m.text} onSelect={()=>select(nativeMessageKey(m))} onBeginSelect={()=>beginSelect(m)}>
         <div class="message-heading"><RadioAvatar node={m.from} size={18}/><strong><RadioBoardName name={m.name||`!${m.from.toString(16).padStart(8,'0')}`}/></strong><time datetime={new Date(m.timestamp).toISOString()} title={new Date(m.timestamp).toLocaleString($locale)}>{new Date(m.timestamp).toLocaleTimeString($locale,{hour:'2-digit',minute:'2-digit'})}</time><button class="tiny" onclick={()=>startReply(m)} aria-label={$i18n.text('Ответить')}><ChatIcon name="reply"/></button><button class="tiny" onclick={()=>void copy([m])} aria-label={$i18n.text('Скопировать текст')}><ChatIcon name="copy"/></button>
-        <MessageTools message={nativeChatEntry(m)} status={nativeMessageStatus(m)} recipient={current.name} shareText={m.text} openView={menu?.id===nativeMessageKey(m)?menu.view:null} disabled={working} canReply={true} channelMode canPin={false}
+        <MessageTools message={nativeChatEntry(m)} status={nativeMessageStatus(m)} recipient={current.name} shareText={m.text} openView={menu?.id===nativeMessageKey(m)?menu.view:null} disabled={working} canReply={true} channelMode canPin={false} onReact={canReact&&!busy&&!selecting?emoji=>react(m,emoji):undefined}
           onOpen={view=>menu={id:nativeMessageKey(m),view}} onClose={()=>menu=null} onReply={()=>startReply(m)} onForward={()=>current&&onForward(current,[m])} onSelect={()=>beginSelect(m)} onStop={()=>{}} onDownload={()=>void download([m])} onDelete={()=>confirmDelete=[nativeMessageKey(m)]} onPin={()=>{}} loadShareFile={async()=>{throw Error('Только текст');}} onCopy={()=>void copy([m])} onRetryChannel={m.outgoing&&m.status!=='queued'&&available&&!busy?()=>retry=m:undefined}/></div>
         {#if m.replyId}{@const originals=current.messages.filter(x=>x.id===m.replyId)}<button class="quote" onclick={()=>originals.length===1?jump(nativeMessageKey(originals[0])):notice='Исходное сообщение удалено или отсутствует на этом устройстве.'}><small>↩ {$i18n.text('Ответить')}</small><span>{originals.length===1?originals[0].text:$i18n.text('Исходное сообщение отсутствует')}</span></button>{/if}
         {#if m.retryOf}<small>{$i18n.text('Повторная отправка')}</small>{/if}
         <p><MessageText text={m.text} markdownLinks/></p>{#if m.reception&&!m.outgoing}<RadioReception reception={m.reception}/>{/if}
+        {#if groups}<MessageReactions reactions={groups} self={String(current.node)} disabled={busy||working||selecting} onReact={canReact?emoji=>react(m,emoji):undefined}/>{/if}
         {#if m.outgoing}{@const status=nativeMessageStatus(m)}<button class="status" class:success={status.tone==='success'} class:danger={status.tone==='error'} onclick={()=>menu={id:nativeMessageKey(m),view:'status'}}>{status.icon} {$i18n.system(status.label)}</button>{/if}
         {#if m.status==='failed'}<div class="failure-action"><small>{$i18n.system(nativeMessageStatus(m).detail)}</small>{#if nativeFailureAction(m.failure)==='connect'}<button onclick={onSettings}>{$i18n.text('Подключить')}</button>{:else if nativeFailureAction(m.failure)==='wait'}<small>{$i18n.text('Дождитесь освобождения очереди или разрешённого времени передачи, затем повторите.')}</small>{:else if nativeFailureAction(m.failure)==='shorten'}<button onclick={()=>{setDraft(m.text);composer?.focus();}}>{$i18n.text('Сократить текст')}</button>{:else}<button disabled={!available||busy||working} onclick={()=>retry=m}>{$i18n.text('Отправить снова')}</button>{/if}</div>{/if}
       </MessageCard></div>
     {:else}<p class="empty">{$i18n.text('В этом радиоканале пока нет сообщений.')}</p>{/each}{/if}
   </div></div>{#if jumpVisible||!nearBottom&&(current?.unread??0)>0}<button class="jump" onclick={()=>bottom()} aria-label={$i18n.text('К последним сообщениям')}>↓{#if current?.unread}<span>{current.unread}</span>{/if}</button>{/if}</div>
+  {#if reacting&&current&&available}
+    <ReactionPicker selected={reactions?.get(reacting.id)?.filter(r=>r.actors.includes(String(current?.node))).map(r=>r.emoji)??[]}
+      onClose={()=>reactionTarget=''} onSelect={emoji=>reacting&&react(reacting,emoji)}/>
+  {/if}
   {#if error}<p class="error" role="alert">{$i18n.system(error)}</p>{/if}{#if notice}<small role="status">{$i18n.system(notice)}</small>{/if}
   {#if current?.replyId}<div class="reply-draft"><span>↩ {reply?.text||$i18n.text('Исходное сообщение отсутствует')}</span><button onclick={()=>current&&onDraft(current,draft)} aria-label={$i18n.text('Отменить ответ')}>✕</button></div>{/if}
   <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
   {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={addEmoji} onClose={()=>emojiOpen=false}/></div>{/if}
-  <form onsubmit={e=>{e.preventDefault();void send();}}><div class="composer"><textarea bind:this={composer} value={draft} oninput={e=>setDraft(e.currentTarget.value)} maxlength="600" aria-label={$i18n.text('Сообщение в канал Meshtastic')} placeholder={$i18n.text('Короткое сообщение от имени платы')} onkeydown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void send();}}}></textarea><button type="button" data-composer-toggle class="tiny" onclick={inputPanel.toggle} aria-expanded={emojiOpen} aria-label={$i18n.text(emojiOpen&&mobileInput?'Открыть клавиатуру':'Эмодзи')}><ChatIcon name={emojiOpen&&mobileInput?'keyboard':'emoji'}/></button></div><button type="button" data-composer-send class="icon primary" class:send-unavailable={!available||!composed} use:sendPress onclick={()=>void send()} oncontextmenu={e=>{e.preventDefault();if(current&&!working&&!busy)optionsOpen=true;}} disabled={!current||working||busy} aria-label={$i18n.text('Отправить')} aria-haspopup="dialog" aria-expanded={optionsOpen} title={$i18n.text('Удерживайте кнопку для настроек отправки')}><ChatIcon name="send"/></button></form>
+  <form onsubmit={e=>{e.preventDefault();void send();}}>{@render agentControls?.()}<div class="composer"><textarea bind:this={composer} value={draft} oninput={e=>setDraft(e.currentTarget.value)} maxlength="600" aria-label={$i18n.text('Сообщение в канал Meshtastic')} placeholder={$i18n.text('Короткое сообщение от имени платы')} onkeydown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void send();}}}></textarea><button type="button" data-composer-toggle class="tiny" onclick={inputPanel.toggle} aria-expanded={emojiOpen} aria-label={$i18n.text(emojiOpen&&mobileInput?'Открыть клавиатуру':'Эмодзи')}><ChatIcon name={emojiOpen&&mobileInput?'keyboard':'emoji'}/></button></div><button type="button" data-composer-send class="icon primary" class:send-unavailable={!available||!composed} use:sendPress onclick={()=>void send()} oncontextmenu={e=>{e.preventDefault();if(current&&!working&&!busy)optionsOpen=true;}} disabled={!current||working||busy} aria-label={$i18n.text('Отправить')} aria-haspopup="dialog" aria-expanded={optionsOpen} title={$i18n.text('Удерживайте кнопку для настроек отправки')}><ChatIcon name="send"/></button></form>
   </div>
   <small class:danger={bytes>CHANNEL_TEXT_BYTES}>{bytes}/{CHANNEL_TEXT_BYTES} {$i18n.text('байт')}</small>
   {#if optionsOpen&&current}<dialog use:modal aria-label={$i18n.text('Настройки отправки')} oncancel={e=>{e.preventDefault();if(!working)optionsOpen=false;}}><header><h3>{$i18n.text('Настройки отправки')}</h3><button disabled={working} onclick={()=>optionsOpen=false} aria-label={$i18n.text('Закрыть')}>✕</button></header><label class="check"><input type="checkbox" checked={current.signature} disabled={working||busy} onchange={e=>void action(()=>onSignature(current!,e.currentTarget.checked))}/>{$i18n.text('Добавлять мой контакт Automesh')}</label>{#if current.signature}<p class="signature-preview"><MessageText text={channelSignature(link)} markdownLinks/></p>{/if}<p>{$i18n.text('Ссылка будет видна всем читателям канала и входит в лимит сообщения.')}</p><small>{bytes}/{CHANNEL_TEXT_BYTES} {$i18n.text('байт')}</small><footer><button disabled={working} onclick={()=>optionsOpen=false}>{$i18n.text('Готово')}</button></footer></dialog>{/if}

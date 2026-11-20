@@ -1,7 +1,7 @@
 <script lang="ts">
  import {tr as i18n} from '$lib/i18n/language';
  import {REACTIONS} from './reactions';
- let {options=REACTIONS,selected='',onSelect,onClose}:{options?:readonly string[];selected?:string;onSelect(emoji:string):void;onClose():void}=$props();
+ let {options=REACTIONS,selected='',onSelect,onClose}:{options?:readonly string[];selected?:string|readonly string[];onSelect(emoji:string):void;onClose():void}=$props();
  function mount(node:HTMLDialogElement){
   const previous=document.activeElement as HTMLElement|null;
   node.showModal();(node.querySelector<HTMLButtonElement>('[aria-pressed="true"]')??node.querySelector('button'))?.focus({preventScroll:true});
@@ -16,7 +16,7 @@
  }
 </script>
 <dialog class="reaction-dialog" use:mount aria-label={$i18n.text('Реакция на сообщение')} oncancel={event=>{event.preventDefault();onClose();}} onclick={outside} onkeydown={keys}>
- <div class="reaction-grid">{#each options as emoji}<button type="button" aria-pressed={selected===emoji} aria-label={$i18n.text('Реакция на сообщение')+' '+emoji} onclick={()=>onSelect(emoji)}>{emoji}</button>{/each}</div>
+ <div class="reaction-grid">{#each options as emoji}<button type="button" aria-pressed={typeof selected==='string'?selected===emoji:selected.includes(emoji)} aria-label={$i18n.text('Реакция на сообщение')+' '+emoji} onclick={()=>onSelect(emoji)}>{emoji}</button>{/each}</div>
 </dialog>
 <style>
  .reaction-dialog{width:min(312px,calc(100vw - 24px));max-height:80dvh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid var(--line-strong);border-radius:18px;background:var(--surface);color:var(--text)}

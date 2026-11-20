@@ -19,5 +19,40 @@
     "file": "http-ece.txt",
     "url": "https://raw.githubusercontent.com/martinthomson/encrypted-content-encoding/0562510a30819f52424724a6fd5504becacd98a1/LICENSE",
     "sha256": "717363ac0c7f0883042868db171cfed1f4b423119249eac9bce5131291017ea8"
+  },
+  {
+    "name": "onnxruntime-web",
+    "version": "1.31.0-dev.20260914-8d85527a0",
+    "file": "onnx-runtime-mit.txt",
+    "url": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@8d85527a010e294a26b274749f74294b2a32cec5/LICENSE",
+    "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+  },
+  {
+    "name": "onnxruntime-web",
+    "version": "1.31.0-dev.20260914-8d85527a0",
+    "file": "onnx-runtime-web-third-party.txt",
+    "url": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@8d85527a010e294a26b274749f74294b2a32cec5/ThirdPartyNotices.txt",
+    "sha256": "143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3"
+  },
+  {
+    "name": "onnxruntime-common",
+    "version": "1.30.0",
+    "file": "onnx-runtime-mit.txt",
+    "url": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@v1.30.0/LICENSE",
+    "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+  },
+  {
+    "name": "onnxruntime-node",
+    "version": "1.30.0",
+    "file": "onnx-runtime-mit.txt",
+    "url": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@v1.30.0/LICENSE",
+    "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+  },
+  {
+    "name": "onnxruntime-common",
+    "version": "1.31.0-dev.20260911-2a43ec07e",
+    "file": "onnx-runtime-mit.txt",
+    "url": "https://github.com/microsoft/onnxruntime/blob/2a43ec07e67df9263c7c56c15da76cc7f74d7b32/LICENSE",
+    "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
   }
 ]

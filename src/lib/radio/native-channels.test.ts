@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {appendChannelMessage,channelMessageStatus,channelText,channelSignature,emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelEncryption,visibleNativeChannels,nativeChannelToken,removeNativeMessages,nativeMessageKey,mergeNativeHistory,nativeHistoryLimit,type ChannelMessage} from './native-channels';
+import {appendChannelMessage,appendChannelReaction,channelReactionViews,channelMessageStatus,channelText,channelSignature,emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelEncryption,visibleNativeChannels,nativeChannelToken,removeNativeMessages,nativeMessageKey,mergeNativeHistory,nativeHistoryLimit,type ChannelMessage} from './native-channels';
 import {inlineMessageLinks} from '$lib/chat/message-links';
 import {nativeMessageStatus} from './native-channels';
 import {bytesField,fields,numberField,TEXT_MESSAGE_APP,toChannelTextPacket,toRadioPacket} from './meshtastic-wire';
@@ -15,6 +15,25 @@ it('keeps Meshtastic handoff yellow, completed broadcast green, and missing evid
 const message=(id=1,from=200,timestamp=id):ChannelMessage=>({id,from,name:'🐰',text:'hello',timestamp,outgoing:false,status:'accepted'});
 
 describe('native Meshtastic channel isolation',()=>{
+  it('persists reactions that arrive before the original, deduplicates rebroadcasts and keeps channels independent',async()=>{
+    let state=await syncNativeChannels(emptyNativeChannels(),snapshot());
+    const channel=state.channels[0],reaction={id:41,from:201,replyId:9,emoji:'👍🏽'};
+    state=appendChannelReaction(state,channel,reaction);
+    expect(state.channels[0]).toMatchObject({messages:[],unread:0});
+    expect(channelReactionViews(state.channels[0]).size).toBe(0);
+    expect(appendChannelReaction(state,channel,{...reaction,id:42})).toBe(state);
+    state=appendChannelReaction(state,channel,{...reaction,from:202});
+    state=appendChannelReaction(state,channel,{...reaction,id:43,emoji:'🔥'});
+    state=normalizeNativeChannels(state);
+    state=appendChannelMessage(state,channel.key,channel.node,message(9));
+    expect(channelReactionViews(state.channels[0]).get(9)).toEqual([{emoji:'👍🏽',actors:['201','202']},{emoji:'🔥',actors:['201']}]);
+    expect(state.channels[0].unread).toBe(1);
+    state=await syncNativeChannels(state,snapshot(300,0));
+    state=appendChannelMessage(state,channel.key,300,message(9));
+    expect(channelReactionViews(state.channels[1]).size).toBe(0);
+    state=appendChannelMessage(state,channel.key,channel.node,message(9,203));
+    expect(channelReactionViews(state.channels[0]).size).toBe(0);
+  });
   it('uses standard text broadcasts without changing directed private messages or requesting MQTT upload',()=>{
     const packet=fields(bytesField(fields(toChannelTextPacket(1,0xfffffffe,'Привет')),1)),data=fields(bytesField(packet,4));
     expect(numberField(packet,2)).toBe(0xffffffff);expect(numberField(packet,3)).toBe(1);expect(numberField(packet,6)).toBe(0xfffffffe);

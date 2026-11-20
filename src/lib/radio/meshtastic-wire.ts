@@ -107,7 +107,11 @@ export function toRadioPacket(to: number, channel: number, id: number, payload: 
   const packet = concat(fixed(2, to), uint(3, channel), binary(4, data), fixed(6, id), uint(9, wantAck ? 1 : 0), uint(10, wantAck ? 1 : 0));
   return binary(1, packet);
 }
-export function toChannelTextPacket(channel:number,id:number,text:string,replyId?:number):Uint8Array {
+// Meshtastic carries one Unicode emoji as the body of a marked text packet.
+const channelEmojiPattern=/^(?:\p{Extended_Pictographic}[\ufe0e\ufe0f]?\p{Emoji_Modifier}?(?:\u200d\p{Extended_Pictographic}[\ufe0e\ufe0f]?\p{Emoji_Modifier}?)*|\p{Regional_Indicator}{2}|[0-9#*]\ufe0f?\u20e3|\u{1f3f4}[\u{e0020}-\u{e007e}]+\u{e007f})$/u;
+export const isChannelEmoji=(value:unknown):value is string=>typeof value==='string'&&value.length<=32&&value===value.trim()&&channelEmojiPattern.test(value);
+
+export function toChannelTextPacket(channel:number,id:number,text:string,replyId?:number,reaction=false):Uint8Array {
   const payload=new TextEncoder().encode(text);
   if(!Number.isInteger(channel)||channel<0||channel>7||!Number.isInteger(id)||id<=0||id>0xffffffff||!text.trim()||payload.length>200)throw Error('meshtastic_text_too_large');
   // Standard Meshtastic text from the board, broadcast to its configured channel.
@@ -115,6 +119,7 @@ export function toChannelTextPacket(channel:number,id:number,text:string,replyId
   // not individual ACKs from everyone. No application-level automatic retries.
   // MQTT upload is off; firmware retains its normal hop/airtime/retry policy.
   if(replyId!==undefined&&(!Number.isInteger(replyId)||replyId<=0||replyId>0xffffffff))throw Error('radio_invalid_integer');
-  const data=concat(uint(1,TEXT_MESSAGE_APP),binary(2,payload),...(replyId?[fixed(7,replyId)]:[]),uint(9,0));
+  if(reaction&&(!replyId||!isChannelEmoji(text)))throw Error('radio_invalid_reaction');
+  const data=concat(uint(1,TEXT_MESSAGE_APP),binary(2,payload),...(replyId?[fixed(7,replyId)]:[]),...(reaction?[fixed(8,1)]:[]),uint(9,0));
   return binary(1,concat(fixed(2,0xffffffff),uint(3,channel),binary(4,data),fixed(6,id),uint(10,1)));
 }

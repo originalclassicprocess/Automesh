@@ -7,20 +7,21 @@ import { emptyAgentSettings } from './model';
 
 const action = () => {};
 describe('account AI interface', () => {
-  it('renders localized settings actions and clearly shows disabled state', () => {
+  it('renders localized provider settings and leaves the reply limit empty by default', () => {
     setLanguage('en');
-    const html = render(AgentSettings, { props: { settings: emptyAgentSettings(), busy: false, working: false, notice: '', keyPresent: false, automatic: false, save: async () => true, test: async () => true, stop: action, forgetKey: action, revokeAuto: action } }).body;
-    expect(html).toContain('AI for this account');
-    expect(html).toContain('Disabled');
+    const html = render(AgentSettings, { props: { settings: emptyAgentSettings(), busy: false, working: false, notice: '', example: '', keyPresent: false, automatic: false, save: async () => true, test: async () => true, stop: action, forgetKey: action, revokeAuto: action } }).body;
+    expect(html).toContain('Enable AI');
+    expect(html).not.toContain('Requests per contact per session');
     expect(html).toContain('Browser model');
     expect(html).toContain('Local engine (PC)');
-    expect(html).toContain('Cloud API');
+    expect(html).toContain('Remote API');
   });
-  it('renders a compact chat toolbar with remaining automatic replies', () => {
+  it('renders a single composer button indicating auto-replies are on', () => {
     setLanguage('en');
-    const html = render(AgentChatControls, { props: { working: false, disabled: false, canDraft: true, automatic: true, remaining: 7, notice: '', draft: action, stop: action, toggleAuto: action } }).body;
-    expect(html).toContain('AI assistant');
-    expect(html).toContain('/ai · 7');
+    const html = render(AgentChatControls, { props: { working: false, disabled: false, automatic: true, notice: '', toggleAuto: action } }).body;
+    expect(html).toContain('AI auto-replies');
+    expect(html).toContain('Auto-replies on');
+    expect(html.match(/<button\b/g)).toHaveLength(1);
     expect(html).toContain('aria-expanded="false"');
   });
 });

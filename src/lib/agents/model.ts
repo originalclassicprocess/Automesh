@@ -1,4 +1,3 @@
-import type { ChatEntry } from '$lib/chat/session-chats';
 import { DEFAULT_PORTABLE_MODEL, portableModelId, type PortableDevice } from './portable-models';
 import { generatePortableReply } from './portable-client';
 
@@ -9,6 +8,7 @@ export type AgentSettings = {
   model: string;
   instructions: string;
   portableDevice?: PortableDevice;
+  replyLimit?: number;
 };
 
 export const emptyAgentSettings = (): AgentSettings => ({
@@ -24,6 +24,7 @@ export function normalizeAgentSettings(value: unknown): AgentSettings {
     backend,
     endpoint: backend === 'portable' || backend === 'browser' ? '' : text(raw.endpoint, 2048),
     model: backend === 'portable' ? portableModelId(raw.model) : text(raw.model, 256), instructions: text(raw.instructions, 1024),
+    ...(typeof raw.replyLimit === 'number' && Number.isSafeInteger(raw.replyLimit) && raw.replyLimit > 0 ? { replyLimit: raw.replyLimit } : {}),
     ...(backend === 'portable' ? { portableDevice: raw.portableDevice === 'webgpu' ? 'webgpu' as const : 'wasm' as const } : {}),
   };
 }
@@ -49,31 +50,13 @@ export function agentKeyFor(previous: AgentSettings, next: AgentSettings, existi
   return entered.trim() || (previous.backend === next.backend && previous.endpoint === next.endpoint ? existing : '');
 }
 
-// A small, bounded context from exactly one chat, never other chats, files,
-// ephemeral content, device metadata or keys.
-export function replyContext(messages: readonly ChatEntry[]): string {
-  const lines: string[] = [];
-  for (let i = messages.length - 1; i >= Math.max(0, messages.length - 64) && lines.length < 6; i--) {
-    const m = messages[i];
-    if (!m.text.trim() || m.file || m.localCall || m.details?.ephemeral || m.details?.ephemeralOpened ||
-        m.details?.pin || m.details?.edit || m.details?.reaction || m.details?.media || m.details?.contactCard || m.details?.radioContact) continue;
-    lines.push(`${m.direction === 'incoming' ? 'Contact' : 'Me'}: ${m.text.slice(0, 600)}`);
-  }
-  return lines.reverse().join('\n');
-}
-
-export function commandPrompt(text: string): string | null {
-  const match = /^\/ai\s+([\s\S]+)$/.exec(text.trim());
-  return match ? match[1].trim().slice(0, 1200) || null : null;
-}
-
 type BrowserSession = {
   prompt(input: string, options: { signal: AbortSignal }): Promise<string>;
   destroy(): void;
 };
 type BrowserModel = {
   availability(): Promise<string>;
-  create(): Promise<BrowserSession>;
+  create(options: { initialPrompts: [{ role: 'system'; content: string }]; signal: AbortSignal }): Promise<BrowserSession>;
 };
 const browserModel = () => (globalThis as typeof globalThis & { LanguageModel?: BrowserModel }).LanguageModel;
 export async function modelAvailability(): Promise<string> {
@@ -98,10 +81,31 @@ async function readResponse(response: Response): Promise<unknown> {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+async function apiError(response: Response): Promise<Error> {
+  const { status } = response;
+  // A provider's error message can echo secrets or prompt text. Only use
+  // known error codes to select an application-owned message.
+  const data = await readResponse(response).catch(() => null) as { error?: { code?: unknown; type?: unknown } } | null;
+  const code = data?.error?.code ?? data?.error?.type;
+  if (status === 401) return new Error('agent_api_key_rejected');
+  if (status === 403) return new Error(code === 'unsupported_country_region_territory' ? 'agent_api_region' : 'agent_api_forbidden');
+  if (status === 404) return new Error(code === 'model_not_found' ? 'agent_api_model_missing' : 'agent_api_endpoint_missing');
+  if (status === 429) {
+    if (code === 'credit_balance_exhausted') return new Error('agent_api_credits');
+    if (['billing_hard_limit_reached', 'organization_spend_limit_exceeded', 'project_spend_limit_exceeded', 'organization_usage_limit_exceeded'].some(limit => code === limit) ||
+        code === 'insufficient_quota' || data?.error?.type === 'insufficient_quota') return new Error('agent_api_quota');
+    if (code === 'rate_limit_exceeded' || code === 'slow_down' || data?.error?.type === 'rate_limit_error') return new Error('agent_api_rate_limit');
+    return new Error('agent_api_limit');
+  }
+  if (status === 400 || status === 422) return new Error('agent_api_invalid_request');
+  if (status >= 500) return new Error('agent_api_service_unavailable');
+  return new Error('agent_request_failed');
+}
+
 export async function generateAgentReply(settings: AgentSettings, prompt: string, key: string, signal: AbortSignal,
-  request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean } = {}): Promise<string> {
+  request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean; radio?: boolean } = {}): Promise<string> {
   signal.throwIfAborted();
-  const system = 'You are a chat participant. Reply briefly in the language of the contact. Output plain text only. ' + settings.instructions;
+  const system = [options.radio ? 'Ответь по-русски одним коротким предложением.' : 'Отвечай кратко по-русски.', settings.instructions].filter(Boolean).join('\n');
   const input = prompt.slice(0, 4000);
   let result: unknown;
   if (settings.backend === 'portable') {
@@ -112,21 +116,25 @@ export async function generateAgentReply(settings: AgentSettings, prompt: string
     if (!model || availability === 'unavailable') throw new Error('agent_browser_unavailable');
     if (options.allowBrowserDownload === false && availability !== 'available') throw new Error('agent_browser_download_disabled');
     signal.throwIfAborted();
-    const session = await model.create();
-    try { signal.throwIfAborted(); result = await session.prompt(`${system}\n\n${input}`, { signal }); }
+    const session = await model.create({ initialPrompts: [{ role: 'system', content: system }], signal });
+    try { signal.throwIfAborted(); result = await session.prompt(input, { signal }); }
     finally { session.destroy(); }
   } else {
     const url = modelEndpoint(settings);
     const response = await request(url, {
       method: 'POST', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store', signal,
       headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-      body: JSON.stringify({ model: settings.model, messages: [{ role: 'system', content: system }, { role: 'user', content: input }], max_tokens: 160, stream: false }),
+      body: JSON.stringify({ model: settings.model, messages: [{ role: 'system', content: system }, { role: 'user', content: input }], max_tokens: options.radio ? 64 : 96, stream: false }),
+    }).catch(() => {
+      signal.throwIfAborted();
+      throw new Error('agent_api_unreachable');
     });
-    if (!response.ok) throw new Error('agent_request_failed');
+    if (!response.ok) throw await apiError(response);
     const data = await readResponse(response) as { choices?: { message?: { content?: unknown } }[] } | null;
     result = data?.choices?.[0]?.message?.content;
   }
   signal.throwIfAborted();
   if (typeof result !== 'string' || !result.trim()) throw new Error('agent_response_invalid');
-  return result.trim().slice(0, 1200);
+  const lines = result.trim().split(/\n+/).map(line => line.trim()).filter(Boolean);
+  return [...new Set(lines)].join('\n').slice(0, 1200);
 }

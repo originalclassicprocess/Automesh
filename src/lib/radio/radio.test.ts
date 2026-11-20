@@ -373,19 +373,32 @@ describe('recipient board proof and queue lifecycle', () => {
 });
 
 
-describe('native reply Phone API interoperability',()=>{
-  it('reads and sends broadcast replies, keeping reactions out of the text history',async()=>{
+describe('native reply and reaction Phone API interoperability',()=>{
+  it('distinguishes replies and emoji reactions and keeps the broadcast on the configured channel',async()=>{
     const fixture=fakePort(),radio=new SerialRadio(),incoming:import('./native-channels').ChannelText[]=[];
     radio.onChannelText=packet=>incoming.push(packet);
     try{
       await radio.open(fixture.port);
-      const text=(id:number,extra:Uint8Array)=>binary(2,concat(fixed(1,200),fixed(2,0xffffffff),uint(3,0),fixed(6,id),binary(4,concat(uint(1,1),binary(2,new TextEncoder().encode('reply')),extra))));
-      fixture.push(text(10,fixed(7,9)));fixture.push(text(11,concat(fixed(7,9),fixed(8,1))));
-      await until(()=>radio.diagnostics.incoming===2);
-      expect(incoming).toHaveLength(1);expect(incoming[0]).toMatchObject({id:10,replyId:9,from:200,channel:0,text:'reply'});
+      const text=(id:number,extra:Uint8Array,payload='reply')=>binary(2,concat(fixed(1,200),fixed(2,0xffffffff),uint(3,0),fixed(6,id),binary(4,concat(uint(1,1),binary(2,new TextEncoder().encode(payload)),extra))));
+      fixture.push(text(10,fixed(7,9)));
+      fixture.push(text(11,concat(fixed(7,9),fixed(8,1))));
+      fixture.push(text(13,concat(fixed(7,9),fixed(8,1)),'🔥'));
+      fixture.push(text(14,fixed(8,1),'👎'));
+      await until(()=>radio.diagnostics.incoming===4);
+      expect(incoming).toHaveLength(2);
+      expect(incoming[0]).toMatchObject({id:10,replyId:9,from:200,channel:0,text:'reply'});
+      expect(incoming[0].reaction).toBeUndefined();
+      expect(incoming[1]).toMatchObject({id:13,replyId:9,from:200,channel:0,text:'🔥',reaction:true});
       await radio.sendChannelText(0,12,'answer',10);
       const packet=fields(bytesField(fields(fixture.writes.at(-1)!.slice(4)),1));
       expect(numberField(fields(bytesField(packet,4)),7)).toBe(10);expect(numberField(packet,2)).toBe(0xffffffff);
+      expect(numberField(fields(bytesField(packet,4)),8)).toBe(0);
+      await radio.sendChannelText(0,15,'👎',10,true);
+      const broadcast=fields(bytesField(fields(fixture.writes.at(-1)!.slice(4)),1)),data=fields(bytesField(broadcast,4));
+      expect(numberField(broadcast,2)).toBe(0xffffffff);expect(numberField(broadcast,3)).toBe(0);
+      expect(numberField(data,7)).toBe(10);expect(numberField(data,8)).toBe(1);
+      expect(new TextDecoder().decode(bytesField(data,2))).toBe('👎');
+      await expect(radio.sendChannelText(0,16,'👎',undefined,true)).rejects.toThrow('radio_invalid_reaction');
     }finally{await radio.close();}
   });
 });

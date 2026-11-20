@@ -1,6 +1,7 @@
-import { portableCacheName, portableCacheComplete, type PortableModelId, type PortableDevice, type PortableProgress, type PortableRequest, type PortableResponse } from './portable-models';
+import { portableCacheName, portableCacheComplete, portableWeightsUrl, type PortableModelId, type PortableDevice, type PortableProgress, type PortableRequest, type PortableResponse } from './portable-models';
 
 let worker: Worker | undefined;
+let workerDevice: PortableDevice | undefined;
 let pending: { reject: (error: Error) => void } | undefined;
 let sequence = 0;
 export function portableSupported(): boolean { return typeof Worker !== 'undefined' && typeof WebAssembly !== 'undefined' && typeof caches !== 'undefined' && typeof location !== 'undefined'; }
@@ -11,9 +12,19 @@ export async function portableDownloaded(model: PortableModelId): Promise<boolea
   catch { return false; }
 }
 
+export async function portableWeightsSaved(model: PortableModelId): Promise<boolean> {
+  if (!portableSupported()) return false;
+  try {
+    if (!await caches.has(portableCacheName(model))) return false;
+    const response = await (await caches.open(portableCacheName(model))).match(portableWeightsUrl(model));
+    void response?.body?.cancel().catch(() => {});
+    return !!response;
+  } catch { return false; }
+}
+
 export function stopPortableModel(): void {
   const active = pending; pending = undefined;
-  worker?.terminate(); worker = undefined;
+  worker?.terminate(); worker = undefined; workerDevice = undefined;
   active?.reject(new Error('agent_model_cancelled'));
 }
 
@@ -26,7 +37,10 @@ function requestModel(value: Omit<PortableRequest, 'id'>, signal: AbortSignal, p
   signal.throwIfAborted();
   if (!portableSupported()) return Promise.reject(new Error('agent_browser_unavailable'));
   if (pending) return Promise.reject(new Error('agent_model_busy'));
+  // ONNX Runtime initializes its WASM binary once per worker.
+  if (worker && workerDevice !== value.device) stopPortableModel();
   const active = worker ??= new Worker(new URL('./portable-worker.ts', import.meta.url), { type: 'module' });
+  workerDevice = value.device;
   const id = ++sequence;
   return new Promise((resolve, reject) => {
     const finish = (error?: Error, result = '') => {
@@ -48,8 +62,9 @@ function requestModel(value: Omit<PortableRequest, 'id'>, signal: AbortSignal, p
   });
 }
 
-export async function preparePortableModel(model: PortableModelId, device: PortableDevice, signal: AbortSignal, progress?: (value: PortableProgress) => void): Promise<void> {
-  await requestModel({ action: 'prepare', model, device }, signal, progress);
+export async function preparePortableModel(model: PortableModelId, device: PortableDevice, signal: AbortSignal,
+  progress?: (value: PortableProgress) => void, options: { weights?: File; offline?: boolean } = {}): Promise<void> {
+  await requestModel({ action: 'prepare', model, device, ...options }, signal, progress);
 }
 export async function generatePortableReply(model: PortableModelId, device: PortableDevice, system: string, prompt: string, signal: AbortSignal): Promise<string> {
   if (!await portableDownloaded(model)) throw new Error('agent_model_not_downloaded');

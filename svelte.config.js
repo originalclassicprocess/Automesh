@@ -22,10 +22,9 @@ const config = {
 				'media-src': ['self', 'blob:'],
 				'worker-src': ['self'],
 				// User-approved home nodes need HTTPS for their authenticated API
-				// as well as WSS for signaling. CSP has no private-subnet source;
-				// the node client separately requires an explicitly entered local
-				// HTTPS URL. This permits no scanning, plaintext API or remote code.
-				'connect-src': ['self', 'https:', 'wss:', 'ws://127.0.0.1:*', 'ws://localhost:*'],
+				// as well as WSS for signaling. Plain HTTP is scoped to loopback
+				// for explicitly configured local model engines such as Ollama.
+				'connect-src': ['self', 'https:', 'wss:', 'http://127.0.0.1:*', 'http://localhost:*', 'http://[::1]:*', 'ws://127.0.0.1:*', 'ws://localhost:*'],
 				'object-src': ['none'],
 				'base-uri': ['none'],
 				'frame-ancestors': ['none'],

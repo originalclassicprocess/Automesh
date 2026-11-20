@@ -1,39 +1,108 @@
 <script lang="ts">
   import { tr as i18n } from '$lib/i18n/language';
-  let { working, disabled, canDraft, automatic, remaining, notice, draft, stop, toggleAuto }:
-    { working: boolean; disabled: boolean; canDraft: boolean; automatic: boolean; remaining: number; notice: string;
-      draft: () => void; stop: () => void; toggleAuto: () => void } = $props();
+  import CompactDialog from '$lib/application/CompactDialog.svelte';
+  import { MAX_AGENT_MINUTES, MAX_AGENT_REQUESTS, radioAgentSender, senderAgentLimit, type AgentChatPolicy } from './limits';
+
+  let { working, disabled, automatic, notice, toggleAuto, policy, save, ownBoard, knownBoards = [] }:
+    { working: boolean; disabled: boolean; automatic: boolean; notice: string; toggleAuto: () => void;
+      policy?: AgentChatPolicy; save?: (value: AgentChatPolicy) => Promise<boolean>; ownBoard?: number; knownBoards?: number[] } = $props();
   let open = $state(false);
+  let saving = $state(false), error = $state(''), boardInput = $state('');
+  let unlimited = $state(true), count = $state<number | undefined>(1), minutes = $state<number | undefined>(60);
+  const boardListId = $props.id();
+  const native = $derived(ownBoard !== undefined);
+  const sender = $derived(radioAgentSender(boardInput));
+  const hasOverride = $derived(!!sender && Object.hasOwn(policy?.senders ?? {}, sender));
+  const boardIds = $derived([...new Set([...(ownBoard !== undefined ? [ownBoard] : []), ...knownBoards, ...Object.keys(policy?.senders ?? {}).map(Number)])]);
+
+  function loadLimit() {
+    const selected = radioAgentSender(boardInput);
+    const value = selected && policy ? senderAgentLimit(policy, selected, Number(selected) === ownBoard) : policy?.limit;
+    unlimited = !value;
+    count = value?.count ?? 1;
+    minutes = value?.minutes ?? 60;
+    error = '';
+  }
+
+  async function saveLimit(remove = false) {
+    if (!policy || !save || saving || disabled) return;
+    const selected = radioAgentSender(boardInput);
+    if (boardInput.trim() && !selected) { error = 'Укажите номер платы или ID вида !a1b2c3d4.'; return; }
+    if (!remove && !unlimited && (!count || !minutes || !Number.isInteger(count) || !Number.isInteger(minutes) ||
+      count < 1 || minutes < 1 || count > MAX_AGENT_REQUESTS || minutes > MAX_AGENT_MINUTES)) {
+      error = 'Укажите допустимое количество запросов и период.'; return;
+    }
+    const value = unlimited ? null : { count: count!, minutes: minutes! };
+    const senders = { ...policy.senders };
+    if (selected) {
+      if (remove) delete senders[selected];
+      else senders[selected] = value;
+    }
+    saving = true;
+    error = '';
+    try {
+      if (await save({ limit: selected ? policy.limit : value, senders })) {
+        if (remove) { boardInput = ''; loadLimit(); }
+        error = 'Лимит сохранён.';
+      } else error = 'Не удалось сохранить лимит.';
+    } finally { saving = false; }
+  }
 </script>
 
-<div class="agent-tools">
-  <div class="agent-bar">
-    <button type="button" class="agent-toggle" aria-expanded={open} onclick={() => open = !open}><span class="mark" aria-hidden="true">AI</span> {$i18n.text('Помощник ИИ')} <span aria-hidden="true">{open ? '−' : '+'}</span></button>
-    {#if working}<span class="indicator" role="status">{$i18n.text('Модель выполняет запрос…')}</span><button type="button" onclick={stop}>{$i18n.text('Отменить запрос ИИ')}</button>
-    {:else if automatic}<span class="indicator active">/ai · {remaining}</span>{/if}
-  </div>
-  {#if open}
-    <div class="agent-expanded">
-      <button type="button" disabled={working || disabled || !canDraft} onclick={draft}>{$i18n.text('ИИ: черновик ответа')}</button>
-      <button type="button" class:active={automatic} aria-pressed={automatic} disabled={disabled || (!automatic && remaining <= 0)} onclick={toggleAuto}>{automatic ? $i18n.text('Отключить ответы на /ai') : $i18n.text('Разрешить ответы на /ai')}</button>
-      <p>{$i18n.text('Черновик можно проверить и изменить перед отправкой.')}</p>
-      <p>{$i18n.text('Ответы на /ai отправляются автоматически только этому контакту. Разрешение действует до смены или блокировки аккаунта.')}</p>
-      <p>{$i18n.text('Осталось автоматических запросов:')} {remaining}</p>
-    </div>
-  {/if}
-  {#if notice && !working}<p class="notice" role="status">{$i18n.text(notice)}</p>{/if}
-</div>
+<button type="button" class="icon-button ai-button" class:automatic aria-label={$i18n.text('Автоответы ИИ')}
+  title={$i18n.text(automatic ? 'Автоответы включены' : 'Автоответы ИИ')}
+  aria-haspopup="dialog" aria-expanded={open} aria-busy={working} onclick={() => { boardInput = ''; loadLimit(); open = true; }}>AI</button>
+
+{#if open}
+  <CompactDialog title={$i18n.text('Автоответы ИИ')} literalTitle onClose={() => open = false}>
+    <label>
+      <input type="checkbox" checked={automatic} {disabled} onchange={toggleAuto} />
+      <strong>{$i18n.text(native ? 'Отвечать на /ai в этом канале' : 'Отвечать этому контакту')}</strong>
+    </label>
+    {#if native}
+      <p>{$i18n.text('Напишите /ai и запрос. Ответ увидят участники канала. Запрос передаётся выбранной модели. После блокировки ответы нужно включить снова.')}</p>
+    {:else}
+      <p>{$i18n.text('ИИ отвечает на новые текстовые сообщения в этом чате, пока аккаунт открыт. После блокировки разрешение нужно включить снова.')}</p>
+    {/if}
+    {#if policy && save}
+      <fieldset disabled={disabled || saving}>
+        <legend>{$i18n.text('Лимит запросов в чате')}</legend>
+        {#if native}
+          <label class="field">{$i18n.text('ID платы для исключения')}
+            <input type="text" list={boardListId} value={boardInput} maxlength="12" placeholder={$i18n.text('Пусто для всех участников')} onchange={event => { boardInput = event.currentTarget.value; loadLimit(); }} />
+          </label>
+          <datalist id={boardListId}>
+            {#each boardIds as node}<option value={'!' + node.toString(16)} label={node === ownBoard ? $i18n.text('Моя плата') : undefined}></option>{/each}
+          </datalist>
+          <p>{$i18n.text('Лимит считается для каждой платы отдельно. Для своей платы по умолчанию лимита нет. Номер платы не подтверждает личность.')}</p>
+        {/if}
+        <label><input type="checkbox" bind:checked={unlimited} />{$i18n.text('Без лимита')}</label>
+        {#if !unlimited}
+          <div class="limit-fields">
+            <label class="field">{$i18n.text('Запросов')}<input type="number" min="1" max={MAX_AGENT_REQUESTS} step="1" bind:value={count} /></label>
+            <label class="field">{$i18n.text('Период, мин')}<input type="number" min="1" max={MAX_AGENT_MINUTES} step="1" bind:value={minutes} /></label>
+          </div>
+        {/if}
+        <div class="limit-actions">
+          <button type="button" onclick={() => void saveLimit()}>{$i18n.text('Сохранить лимит')}</button>
+          {#if hasOverride}<button type="button" onclick={() => void saveLimit(true)}>{$i18n.text('Сбросить исключение')}</button>{/if}
+        </div>
+        {#if error}<p role="status">{$i18n.text(error)}</p>{/if}
+      </fieldset>
+    {/if}
+    {#if working || notice}<p role="status">{working ? $i18n.text('Модель выполняет запрос…') : $i18n.text(notice)}</p>{/if}
+  </CompactDialog>
+{/if}
 
 <style>
-  .agent-tools { border:1px solid var(--line); border-radius:11px; margin:4px 0; padding:5px 8px; }
-  .agent-bar { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
-  button { font-size:12px; min-height:34px; padding:6px 9px; }
-  .agent-toggle { display:flex; align-items:center; gap:6px; border:0; background:transparent; padding-left:2px; }
-  .mark { border:1px solid var(--line); border-radius:5px; font-size:10px; padding:3px; }
-  .indicator { color:var(--muted); font-size:11px; flex:1; }
-  .active { color:var(--accent); }
-  .agent-expanded { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,155px),1fr)); gap:6px; margin-top:5px; padding-top:7px; border-top:1px solid var(--line); }
-  .agent-expanded p { grid-column:1/-1; }
-  p { margin:2px 0; font-size:12px; color:var(--muted); line-height:1.4; }
-  .notice { padding-top:4px; }
+  .ai-button { font-size:13px; font-weight:700; }
+  .ai-button.automatic { border-color:var(--accent); color:var(--accent); }
+  label { display:flex; align-items:center; gap:10px; min-height:44px; cursor:pointer; }
+  input[type=checkbox] { margin:0; width:18px; height:18px; flex:none; }
+  p { margin:6px 0 0; font-size:13px; color:var(--muted); line-height:1.4; }
+  fieldset { border:1px solid var(--line); border-radius:9px; margin:12px 0 0; min-width:0; padding:10px; }
+  .field { display:grid; gap:5px; min-width:0; font-size:13px; }
+  .field input { min-width:0; width:100%; box-sizing:border-box; }
+  .limit-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .limit-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
 </style>

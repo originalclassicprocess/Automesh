@@ -3,12 +3,12 @@
   import { untrack } from 'svelte';
   import { modelAvailability, type AgentSettings } from './model';
   import { PORTABLE_MODELS, DEFAULT_PORTABLE_MODEL, portableModelId, type PortableProgress } from './portable-models';
-  import { portableDownloaded } from './portable-client';
+  import { portableDownloaded, portableWeightsSaved } from './portable-client';
 
-  let { settings, busy, working, notice, keyPresent, automatic, save, test, stop, forgetKey, revokeAuto, prepare, remove, progress = null }:
-    { settings: AgentSettings; busy: boolean; working: boolean; notice: string; keyPresent: boolean; automatic: boolean;
+  let { settings, busy, working, notice, example, keyPresent, automatic, save, test, stop, forgetKey, revokeAuto, prepare, remove, progress = null }:
+    { settings: AgentSettings; busy: boolean; working: boolean; notice: string; example: string; keyPresent: boolean; automatic: boolean;
       save: (value: AgentSettings, key: string) => Promise<boolean>; test: (value: AgentSettings, key: string) => Promise<boolean>;
-      stop: () => void; forgetKey: () => void; revokeAuto: () => void; prepare?: (value: AgentSettings) => Promise<void>;
+      stop: () => void; forgetKey: () => void; revokeAuto: () => void; prepare?: (value: AgentSettings, weights?: File) => Promise<void>;
       remove?: (value: AgentSettings) => Promise<void>; progress?: PortableProgress | null } = $props();
   let draft = $state<AgentSettings>(untrack(() => ({ ...settings })));
   let key = $state('');
@@ -16,20 +16,24 @@
   let saving = $state(false);
   let checking = $state(false);
   let downloaded = $state(false);
+  let weightsSaved = $state(false);
   let deleting = $state(false);
+  let weightsInput = $state<HTMLInputElement>();
   let model = $derived(PORTABLE_MODELS[portableModelId(draft.model)]);
   $effect(() => {
     const id = portableModelId(draft.model); void working; void deleting;
-    let current = true; downloaded = false;
-    if (draft.backend === 'portable') void portableDownloaded(id).then(value => { if (current) downloaded = value; });
+    let current = true; downloaded = false; weightsSaved = false;
+    if (draft.backend === 'portable') void Promise.all([portableDownloaded(id), portableWeightsSaved(id)]).then(([ready, saved]) => {
+      if (current) { downloaded = ready; weightsSaved = saved; }
+    });
     return () => { current = false; };
   });
   let sameEndpoint = $derived(draft.endpoint.trim() === settings.endpoint && draft.backend === settings.backend);
   const providers = [
-    { id: 'portable' as const, title: 'Модель на устройстве', detail: 'WebGPU / WASM' },
-    { id: 'browser' as const, title: 'Модель браузера', detail: 'Без внешнего API' },
+    { id: 'portable' as const, title: 'Модель на устройстве', detail: 'Hugging Face или файл с диска' },
+    { id: 'browser' as const, title: 'Модель браузера', detail: 'Встроенная модель браузера' },
     { id: 'local' as const, title: 'Локальный движок (ПК)', detail: 'Ollama / localhost' },
-    { id: 'cloud' as const, title: 'Облачный API', detail: 'Внешний поставщик' },
+    { id: 'cloud' as const, title: 'Удалённый API', detail: 'Облако или свой сервер' },
   ];
   const browserStatus: Record<string, string> = { available: 'Модель готова', downloadable: 'Требуется загрузка модели', downloading: 'Модель загружается', unavailable: 'Модель недоступна на этом устройстве' };
   function selectProvider(provider: AgentSettings['backend']) {
@@ -49,12 +53,11 @@
   }
 </script>
 
-<details class="agent-settings">
-  <summary><span><span class="agent-mark" aria-hidden="true">AI</span> {$i18n.text('ИИ для аккаунта')}</span><small class:active={settings.enabled}>{settings.enabled ? $i18n.text('Включён') : $i18n.text('Выключен')}</small></summary>
+<div class="agent-settings">
   <div class="settings-body">
-    <p class="intro">{$i18n.text('ИИ отключён по умолчанию. Для изоляции переписки используйте отдельный аккаунт.')}</p>
     <label class="toggle"><span><strong>{$i18n.text('Включить ИИ')}</strong><small>{$i18n.text('Настройки действуют только для этого аккаунта.')}</small></span><input type="checkbox" bind:checked={draft.enabled} disabled={saving || working} /></label>
-    {#if automatic}<div class="auto-active"><span>{$i18n.text('Автоответы разрешены в одном чате.')}</span><button type="button" onclick={revokeAuto}>{$i18n.text('Отключить автоответы')}</button></div>{/if}
+    <p>{$i18n.text('Кнопка AI в личном чате позволяет выбрать, кому будет отвечать модель.')}</p>
+    {#if automatic}<div class="auto-active"><button type="button" onclick={revokeAuto}>{$i18n.text('Отключить автоответы во всех чатах')}</button></div>{/if}
     <fieldset disabled={saving || working || deleting}>
       <legend>{$i18n.text('Источник модели')}</legend>
       <div class="providers">
@@ -65,16 +68,22 @@
       {#if draft.backend === 'portable'}
         <p>{$i18n.text('Модель работает на устройстве. Переписка не отправляется внешнему поставщику.')}</p>
         <label>{$i18n.text('Имя модели')}<select bind:value={draft.model}>
-          {#each Object.entries(PORTABLE_MODELS) as [id, preset]}<option value={id}>{preset.title} · ~{preset.downloadMB} MB</option>{/each}
+          {#each Object.entries(PORTABLE_MODELS) as [id, preset]}<option value={id}>{preset.title} · ~{preset.downloadMB} MB · {$i18n.text(id === 'smollm2-135m' ? 'В основном английский' : 'Поддерживает русский')}</option>{/each}
         </select></label>
         <p><a href={'https://huggingface.co/' + model.repo + '/tree/' + model.revision} target="_blank" rel="noreferrer">Hugging Face · {model.title}</a></p>
         <label>{$i18n.text('Движок выполнения')}<select value={draft.portableDevice ?? 'wasm'} onchange={e => draft.portableDevice = e.currentTarget.value === 'webgpu' ? 'webgpu' : 'wasm'}>
           <option value="wasm">WASM — {$i18n.text('Совместимый режим')}</option>
           <option value="webgpu">WebGPU — {$i18n.text('Аппаратное ускорение')}</option>
         </select></label>
-        <p>{$i18n.text('Веса сохраняются в браузере и доступны всем аккаунтам этого приложения. RAM зависит от модели и устройства.')}</p>
-        <div class="row"><span class="model-state" role="status">{downloaded ? $i18n.text('Модель готова') : $i18n.text('Требуется загрузка модели')}</span>
-          <button type="button" disabled={busy || !prepare} onclick={() => void prepare?.({ ...draft })}>{downloaded ? $i18n.text('Проверить и восстановить модель') : $i18n.text('Загрузить модель')} · ~{model.downloadMB} MB</button>
+        <p>{$i18n.text('Веса скачиваются с Hugging Face или копируются из выбранного файла в хранилище браузера. При первом импорте может потребоваться скачать конфигурацию и токенизатор.')}</p>
+        <div class="row"><span class="model-state" role="status">{$i18n.text(downloaded ? 'Файлы модели сохранены' : weightsSaved ? 'Веса сохранены' : 'Требуется загрузка модели')}</span>
+          <button type="button" disabled={busy || !prepare} onclick={() => void prepare?.({ ...draft })}>{$i18n.text(downloaded ? 'Проверить и восстановить модель' : weightsSaved ? 'Подготовить модель' : 'Скачать с Hugging Face')}</button>
+          <button type="button" disabled={busy || !prepare} onclick={() => weightsInput?.click()}>{$i18n.text('Выбрать файл весов')}</button>
+          <input type="file" accept=".onnx" hidden bind:this={weightsInput} onchange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (file) void prepare?.({ ...draft }, file);
+          }} />
           <button type="button" disabled={busy || deleting || !remove} onclick={async () => { deleting = true; try { await remove?.({ ...draft }); } finally { deleting = false; } }}>{$i18n.text('Удалить модель')}</button>
         </div>
       {:else if draft.backend === 'browser'}
@@ -96,18 +105,14 @@
       {#if working}<button type="button" onclick={stop}>{$i18n.text('Отменить запрос ИИ')}</button>{/if}
     </div>
     <p>{$i18n.text('При проверке отправляется только тестовый запрос, без переписки.')}</p>
-    {#if progress && working}<div class="result" role="status"><span>{$i18n.text('Загрузка модели')} · {Math.round(progress.loaded / 1000000)} / {Math.round(progress.total / 1000000)} MB</span><progress value={progress.loaded} max={Math.max(progress.total, progress.loaded, 1)}></progress></div>
+    {#if progress && working}<div class="result" role="status"><span>{$i18n.text(progress.importing ? 'Проверка и копирование файла' : 'Загрузка модели')} · {Math.round(progress.loaded / 1000000)} / {Math.round(progress.total / 1000000)} MB</span><progress value={progress.loaded} max={Math.max(progress.total, progress.loaded, 1)}></progress></div>
     {:else if notice || working}<div class="result" role="status">{working ? $i18n.text('Модель выполняет запрос…') : $i18n.text(notice)}</div>{/if}
+    {#if example && !working}<div class="result example"><small>{$i18n.text('Ответ на «Привет! Как дела?»')}</small><p>{example}</p></div>{/if}
   </div>
-</details>
+</div>
 
 <style>
-  summary { display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:pointer; font-weight:600; }
-  summary > span { display:flex; align-items:center; gap:10px; }
-  .agent-mark { display:inline-grid; place-items:center; font-size:11px; width:30px; height:30px; border:1px solid var(--line); border-radius:9px; color:var(--muted); }
-  summary small { border:1px solid var(--line); border-radius:20px; padding:3px 9px; font-size:11px; color:var(--muted); }
-  summary small.active { color:var(--accent); border-color:var(--accent); }
-  .settings-body { display:grid; gap:12px; padding-top:12px; }
+  .settings-body { display:grid; gap:12px; }
   fieldset { min-width:0; border:0; margin:0; padding:0; }
   legend { font-weight:600; margin-bottom:8px; }
   .providers { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr)); gap:8px; }
@@ -120,11 +125,11 @@
   input:not([type=checkbox]), textarea, select, progress { box-sizing:border-box; width:100%; min-width:0; }
   textarea { resize:vertical; }
   p, small { color:var(--muted); font-size:13px; line-height:1.4; margin:0; }
-  .intro { margin-top:2px; }
   .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
   .row.actions > button { flex:1 1 auto; }
   .privacy, .auto-active, .result { border:1px solid var(--line); border-radius:10px; padding:10px; }
-  .auto-active { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:8px; font-size:13px; }
+  .auto-active { display:flex; align-items:center; }
+  .example p { margin-top:5px; color:inherit; white-space:pre-wrap; overflow-wrap:anywhere; }
   .model-state { color:var(--muted); font-size:13px; }
   code { overflow-wrap:anywhere; }
 </style>

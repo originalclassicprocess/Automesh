@@ -18,10 +18,10 @@
 <main>
   <header><h2>AI interface preview</h2><p>Mock settings and chat, no account, storage or network requests.</p></header>
   <section class="account-shell settings-surface"><div class="settings-section">
-    <AgentSettingsPanel {settings} busy={false} {working} {notice} {keyPresent} {automatic} {save} {test} {stop} forgetKey={() => { keyPresent = false; automatic = false; }} revokeAuto={() => automatic = false} />
+    <AgentSettingsPanel {settings} busy={false} {working} {notice} example="" {keyPresent} {automatic} {save} {test} {stop} forgetKey={() => { keyPresent = false; automatic = false; }} revokeAuto={() => automatic = false} />
   </div></section>
   <section class="account-shell chat-preview"><h3>Chat preview</h3>
-    <AgentChatControls {working} disabled={false} canDraft={true} {automatic} remaining={20} {notice} draft={() => { void test(settings, ''); }} {stop} toggleAuto={() => automatic = !automatic} />
+    <AgentChatControls {working} disabled={false} {automatic} {notice} toggleAuto={() => automatic = !automatic} />
     <textarea rows="2" placeholder="Message"></textarea><button type="button" class="primary">Send</button>
   </section>
 </main>

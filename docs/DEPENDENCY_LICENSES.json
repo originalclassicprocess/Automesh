@@ -2043,7 +2043,10 @@
       "license": "MIT",
       "development": true,
       "installed": true,
-      "notices": []
+      "notices": [
+        "upstream:onnx-runtime-mit.txt"
+      ],
+      "noticeSource": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@v1.30.0/LICENSE"
     },
     {
       "name": "onnxruntime-node",
@@ -2051,7 +2054,10 @@
       "license": "MIT",
       "development": true,
       "installed": true,
-      "notices": []
+      "notices": [
+        "upstream:onnx-runtime-mit.txt"
+      ],
+      "noticeSource": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@v1.30.0/LICENSE"
     },
     {
       "name": "onnxruntime-web",
@@ -2059,7 +2065,11 @@
       "license": "MIT",
       "development": true,
       "installed": true,
-      "notices": []
+      "notices": [
+        "upstream:onnx-runtime-mit.txt",
+        "upstream:onnx-runtime-web-third-party.txt"
+      ],
+      "noticeSource": "https://cdn.jsdelivr.net/gh/microsoft/onnxruntime@8d85527a010e294a26b274749f74294b2a32cec5/LICENSE"
     },
     {
       "name": "onnxruntime-common",
@@ -2067,7 +2077,10 @@
       "license": "MIT",
       "development": true,
       "installed": true,
-      "notices": []
+      "notices": [
+        "upstream:onnx-runtime-mit.txt"
+      ],
+      "noticeSource": "https://github.com/microsoft/onnxruntime/blob/2a43ec07e67df9263c7c56c15da76cc7f74d7b32/LICENSE"
     },
     {
       "name": "p-limit",
