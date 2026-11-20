@@ -9,6 +9,7 @@ import { ATTACHMENT_PROTOCOL, FILE_POLICY_BYTES } from './attachment-protocol.js
 import { WebCryptoIdentity } from '$lib/identity/webcrypto';
 import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import { emptySessionChats, ensureConversation, recordSentMessage, setContactState, setDeliveryStatus } from '$lib/chat/session-chats';
+import type { CommittedIncoming } from '$lib/chat/committed-incoming';
 async function account() { const identity = new WebCryptoIdentity(); await identity.create();
   return { identity, address: await accountIdFromPublicKey(await identity.getPublicKeyBytes()) }; }
 describe('courier durable actor', () => {
@@ -131,6 +132,7 @@ describe('courier durable actor', () => {
     }));
     let state = { ...emptyCourierState(), enabled: false, node: { url: 'https://node.automesh.space', nodeId: 'a'.repeat(32), address: n.address }, keys };
     let committed = emptyCourierState(), save = true, received = 0, acked = 0, loseAckResponse = true;
+    const incoming:CommittedIncoming[] = [];
     const request = async (_url: string, _node: string, _identity: unknown, address: string, path: string, body: any): Promise<any> => {
       expect(address).toBe(b.address);
       if (path === '/outbox/status') return { address: n.address, inboxProtocol: 'automesh-inbox-v1' };
@@ -145,16 +147,19 @@ describe('courier durable actor', () => {
     };
     const worker = () => new CourierController({ ...b, state: () => state, update: s => { state = s as typeof state; }, chats: () => chats,
       persist: async () => { if (save) committed = restoreCourierState(state); return save; }, receive: () => { received++; },
+      committedIncoming: event => { expect(committed.acks.some(ack => ack.id === event.id)).toBe(true); incoming.push(event); },
       delivery: () => {}, publish: async () => {}, error: () => {}, request });
     let target = worker();
     try {
-      save = false; await expect(target.poll()).rejects.toThrow('courier_not_saved'); expect(acked).toBe(0);
+      save = false; await expect(target.poll()).rejects.toThrow('courier_not_saved'); expect(acked).toBe(0); expect(incoming).toHaveLength(0);
       save = true; await target.poll(); expect(acked).toBe(0); expect(received).toBe(1);
       await target.poll(); expect(acked).toBe(1); expect(received).toBe(1);
       for (let cycle = 1; cycle < 32; cycle++) {
         target.stop(); await target.settled(); state = restoreCourierState(committed) as typeof state; target = worker();
         await target.poll(); expect(acked).toBe(cycle + 1); expect(received).toBe(cycle + 1);
       }
+      expect(incoming).toHaveLength(31);
+      expect(incoming.every(event => event.peer === a.address && event.transport === 'courier')).toBe(true);
     } finally { target.stop(); await target.settled(); }
   });
 

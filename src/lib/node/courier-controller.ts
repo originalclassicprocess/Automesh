@@ -20,6 +20,7 @@ import { manifestContent, type CourierFileIO } from './courier-files';
 import {readQueueSnapshot,type QueueSnapshot} from './queue-quota';
 import type {QueueCleanup} from './queue-cleanup';
 import { base64 } from './offline-crypto';
+import {isFreshIncoming,notifyCommittedIncoming,type CommittedIncomingListener} from '$lib/chat/committed-incoming';
 import { emptyDeliveryDiagnostics, deliveryFailure, type DeliveryDiagnostics } from './delivery-diagnostics';
 export type CourierDelivery = { from: string; job: CourierJob; hop: CourierHop };
 export type CourierReply = ((id: string, receipt: string) => unknown) & {
@@ -31,7 +32,7 @@ export type CourierStatus = { connection: 'idle' | 'checking' | 'connected' | 'o
 export const idleCourierStatus = (): CourierStatus => ({ connection: 'idle', relay: 'disabled', stored: 0 });
 const keyLookupIssue=(error:unknown):DeliveryIssue=>error instanceof Error&&['prekeys_unavailable','prekey_capacity'].includes(error.message)?'keys_exhausted':'keys_source_unavailable';
 type Port = { address: string; identity: IdentityProvider; state(): CourierState; update(s: CourierState): void;
-  chats(): SessionChats; persist(): Promise<boolean>; receive(m: ChatMessage): void;
+  chats(): SessionChats; persist(): Promise<boolean>; receive(m: ChatMessage): void; committedIncoming?:CommittedIncomingListener;
   authorize?(peer: string): Promise<void>; issue?(peer: string, id: string, issue: DeliveryIssue | undefined, error?: unknown): void;
   activity?(peer:string,id:string,stage:CourierStage|undefined):void;
   notification?(peer:string,id:string,providers:unknown):Promise<unknown>;
@@ -576,10 +577,12 @@ export class CourierController {
     const content = decodeChatContent(packet.content); if (!content) throw new Error('invalid_courier_content');
     const receipt = JSON.stringify(await signCourier('receipt', { protocol: COURIER_PROTOCOL, from: this.port.address, to: job.body.from,
       id: job.body.id, digest }, this.port.identity)); this.current();
+    const fresh=isFreshIncoming(this.port.chats(),packet.body.from,packet.body.id);
     this.port.receive({ ...content, id: packet.body.id, from: packet.body.from, timestamp: packet.body.timestamp, verified: true, via: 'courier', courierVia: data.from });
     this.update({ ...this.port.state(), keys: this.port.state().keys.filter(k => k.id !== key.id),
       acks: [...this.port.state().acks, { id: job.body.id, sender: job.body.from, digest, receipt, expiresAt: job.body.expiresAt }] });
     await this.persist(); // Commit message, consumed key and receipt together before acknowledgement.
+    if(fresh)notifyCommittedIncoming(this.port.committedIncoming,{peer:packet.body.from,id:packet.body.id,transport:'courier'});
     this.trace({ savedAt: Date.now(), failure: '' });
     this.port.error('');
     await reply(job.body.id.replaceAll('-', ''), receipt); this.current();

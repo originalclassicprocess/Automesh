@@ -4,6 +4,7 @@ import { createDevicePairingRelay } from './server/device-pairing.js';
 import { buildInformationPlugin } from './scripts/build-info.mjs';
 
 export default defineConfig({
+  worker:{format:'es'},
   plugins: [buildInformationPlugin(), sveltekit(), { name: 'local-device-pairing', apply: 'serve', configureServer(server) {
     const origin = `http://127.0.0.1:${server.config.server.port}`;
     const pairing = createDevicePairingRelay({ origin }); server.httpServer?.once('close', () => pairing.close());

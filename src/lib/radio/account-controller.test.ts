@@ -10,6 +10,7 @@ import { portableChatData } from '$lib/backup/full-backup';
 import { selectHistoryData } from '$lib/devices/history-data';
 import { OutboxController } from '$lib/application/outbox';
 import type { RadioPacket } from './serial-radio';
+import type { CommittedIncoming } from '$lib/chat/committed-incoming';
 
 const network = 'a'.repeat(64);
 const pause = () => new Promise(resolve => setTimeout(resolve, 2));
@@ -17,11 +18,11 @@ async function until(check:()=>boolean) { for(let i=0;i<500;i++){if(check())retu
 async function account(node:number) {
   const signer = new WebCryptoIdentity(); await signer.create(); const address = await accountIdFromPublicKey(await signer.getPublicKeyBytes());
   let state=emptyRadioState(), chats=emptySessionChats(), current=true, write=true, blockedSave:Promise<void>|null=null;
-  let receiver: ((p:RadioPacket)=>void)|undefined; const frames:RadioPacket[]=[], errors:string[]=[]; let writes=0;
+  let receiver: ((p:RadioPacket)=>void)|undefined; const frames:RadioPacket[]=[], errors:string[]=[], incoming:CommittedIncoming[]=[]; let writes=0;
   const port = {signer,account:address,state:()=>state,setState:(value:typeof state)=>{state=value;},chats:()=>chats,setChats:(value:typeof chats)=>{chats=value;},
-    persist:async()=>{writes++;if(blockedSave)await blockedSave;return write;},current:()=>current,nodeReserved:()=>false,error:(code:string)=>errors.push(code),delivered:()=>{}};
+    persist:async()=>{writes++;if(blockedSave)await blockedSave;return write;},current:()=>current,nodeReserved:()=>false,error:(code:string)=>errors.push(code),delivered:()=>{},committedIncoming:(event:CommittedIncoming)=>incoming.push(event)};
   const link={send:async(to:number,channel:number,payload:Uint8Array)=>{const p={from:node,to,channel,payload};frames.push(p);receiver?.(p);}};
-  return {signer,address,port,link,frames,errors,node,
+  return {signer,address,port,link,frames,errors,node,incoming,
     get state(){return state;},get chats(){return chats;},get writes(){return writes;},
     accept(peer:string){chats=setContactState(ensureConversation(chats,peer),peer,'accepted');},
     outgoing(peer:string,text='hello',id:string=crypto.randomUUID()){const message:ChatEntry={id,text,from:address,timestamp:Date.now(),direction:'outgoing',delivery:'queued',radioDelivery:'queued',details:{allowForwardAttribution:true}};chats=recordSentMessage(chats,peer,message);return message;},
@@ -106,9 +107,10 @@ describe('radio account integration',()=>{
       const message=p.a.outgoing(p.b.address);p.b.holdSave(new Promise(resolve=>release=resolve));
       await p.ac.send(p.b.address,message.id);
       await until(()=>p.b.chats.byPeer[p.a.address].messages.length===1);
-      expect(p.b.frames).toHaveLength(0);expect(p.a.chats.byPeer[p.b.address].messages[0].delivery).toBe('queued');
+      expect(p.b.frames).toHaveLength(0);expect(p.b.incoming).toHaveLength(0);expect(p.a.chats.byPeer[p.b.address].messages[0].delivery).toBe('queued');
       release();p.b.holdSave(null);await until(()=>p.a.chats.byPeer[p.b.address].messages[0].delivery==='delivered');
       expect(p.b.chats.byPeer[p.a.address].messages[0]).toMatchObject({id:message.id,text:'hello',from:p.a.address});
+      expect(p.b.incoming).toEqual([{peer:p.a.address,id:message.id,transport:'radio'}]);
       expect(p.a.state.pending).toHaveLength(0);
       const saved=await p.ac.crypto.save(), restored=await RadioCrypto.restore(p.a.signer,saved);
       expect(restored.contact).toEqual(p.ac.crypto.contact);restored.dispose();

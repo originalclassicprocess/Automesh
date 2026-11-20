@@ -14,6 +14,15 @@ const accountId = encodeAccountId(new Uint8Array(20).fill(1));
 const otherId = encodeAccountId(new Uint8Array(20).fill(2));
 
 describe('encrypted local chat data', () => {
+  it('retains account AI settings in encrypted history without API keys or automatic permissions', async () => {
+    const key = await deriveChatStoreKey(new Uint8Array(32).fill(26), accountId);
+    const data: LocalChatData = { selfNickname: '', readReceiptsEnabled: true, autoLockMinutes: 15, peerReadPreferences: {}, aliases: {}, declaredNames: {}, peerPublicKeys: {}, chats: { order: [], byPeer: {} },
+      agentSettings: { enabled: true, backend: 'cloud', endpoint: 'https://model.example.test/v1/chat/completions', model: 'small', instructions: 'Concise replies' } };
+    const sealed = await sealChatData(key, accountId, data);
+    expect(new TextDecoder().decode(sealed.cipher)).not.toContain('model.example.test');
+    expect((await openSealedChatData(key, accountId, sealed)).agentSettings).toEqual(data.agentSettings);
+    await expect(openSealedChatData(key, otherId, sealed)).rejects.toThrow('account_mismatch');
+  });
   it('encrypts native channel history separately from account chats and retains it in portable data without radio secrets',async()=>{
     const key=await deriveChatStoreKey(new Uint8Array(32).fill(25),accountId);
     const data:LocalChatData={selfNickname:'',readReceiptsEnabled:true,autoLockMinutes:15,peerReadPreferences:{},aliases:{},declaredNames:{},peerPublicKeys:{},chats:{order:[],byPeer:{}},
