@@ -1114,6 +1114,30 @@
       ]
     },
     {
+      "name": "@wllama/wllama",
+      "version": "4.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENCE",
+        "upstream:llama-cpp-0b51bb2.txt"
+      ],
+      "noticeSource": "https://raw.githubusercontent.com/ggml-org/llama.cpp/0b51bb2fed322bc884f96f98db340e2b0f6ea176/LICENSE"
+    },
+    {
+      "name": "@wllama/wllama-compat",
+      "version": "4.0.0",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "upstream:llama-cpp-0b51bb2.txt",
+        "upstream:wllama-mit.txt"
+      ],
+      "noticeSource": "https://raw.githubusercontent.com/ggml-org/llama.cpp/0b51bb2fed322bc884f96f98db340e2b0f6ea176/LICENSE"
+    },
+    {
       "name": "@zxcvbn-ts/core",
       "version": "4.2.0",
       "license": "MIT",

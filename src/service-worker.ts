@@ -16,13 +16,15 @@ const PUBLIC_ASSETS = files.filter((path) =>
 );
 // Optional AI engine binaries are large. Never make installing/updating the
 // messenger download them; retain immutable engine files when actually used.
-const OPTIONAL_AI_ASSETS = new Set(build.filter(path => /(?:portable-worker[.-]|ort-wasm-simd-threaded).*\.(?:js|mjs|wasm)$/.test(path) || path.endsWith('.wasm')));
+const OPTIONAL_AI_ASSETS = new Set(build.filter(path => /(?:(?:file-model|portable)-worker[.-]|ort-wasm-simd-threaded).*\.(?:js|mjs|wasm)$/.test(path) || path.endsWith('.wasm')));
 // Vite emits worker URL assets outside SvelteKit's `build` manifest. Restrict
 // lazy caching to the exact immutable directory and hashed runtime filenames.
 function optionalAiAsset(path: string): boolean {
   if (OPTIONAL_AI_ASSETS.has(path)) return true;
   const prefix = `${base}/_app/immutable/workers/assets/`;
-  return path.startsWith(prefix) && /^ort-wasm-simd-threaded(?:\.asyncify)?-[a-zA-Z0-9_-]{8}\.(?:wasm|mjs)$/.test(path.slice(prefix.length));
+  if (path.startsWith(prefix) && /^(?:ort-wasm-simd-threaded(?:\.asyncify)?-[a-zA-Z0-9_-]{8}\.(?:wasm|mjs)|wllama-[a-zA-Z0-9_-]{8}\.wasm)$/.test(path.slice(prefix.length))) return true;
+  const workerPath = `${base}/_app/immutable/workers/`;
+  return path.startsWith(workerPath) && /^(?:file-model|portable)-worker-[a-zA-Z0-9_-]{8}\.js$/.test(path.slice(workerPath.length));
 }
 const PRECACHE = [...new Set([...build.filter(path => !OPTIONAL_AI_ASSETS.has(path)), ...PUBLIC_ASSETS, SHELL_URL])];
 const CACHED_ASSETS = new Set([...build, ...PUBLIC_ASSETS]);

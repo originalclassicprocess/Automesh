@@ -39,7 +39,7 @@ describe('account AI model adapters', () => {
     expect(url).toBe(settings.endpoint);
     expect(init).toMatchObject({ credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal, headers: { Authorization: 'Bearer test-key' } });
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'small', max_tokens: 96, messages: [
-      { role: 'system', content: expect.stringContaining('кратко по-русски') }, { role: 'user', content: 'hello' },
+      { role: 'user', content: 'hello' },
     ] });
   });
   it('rejects aborted and oversized model responses', async () => {

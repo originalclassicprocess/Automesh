@@ -16,6 +16,7 @@
   import HelpInfo from '$lib/application/HelpInfo.svelte';
   import RadioReception from './RadioReception.svelte';
   import RadioBoardName from './RadioBoardName.svelte';
+  import { radioAgentCommand } from '$lib/agents/runtime';
   import ChannelSecurity from './ChannelSecurity.svelte';
   import {CHANNEL_TEXT_BYTES,channelText,channelSignature,channelReactionViews,canReactToChannelMessage,nativeMessageKey,nativeChatEntry,nativeMessageStatus,nativeFailureAction,type NativeChannels,type NativeChannel,type ChannelMessage} from './native-channels';
   let {data,selected,live,connected,busy,board,link,initialUnread=0,forwardDone=0,onSignature,onSend,onReaction,onSettings,onBack,onDelete,onDraft,onForward,onBottom,agentControls}:
@@ -24,7 +25,7 @@
       onSend(c:NativeChannel,text:string,options?:{replyId?:number;retryOf?:number;literal?:boolean;agentCommand?:boolean}):Promise<void>;
       onReaction?(c:NativeChannel,target:ChannelMessage,emoji:string):Promise<void>;
       onSettings():void;onBack():void;onDelete(c:NativeChannel,ids:string[]):Promise<void>;
-      onDraft(c:NativeChannel,text:string,replyId?:number):void;onForward(c:NativeChannel,messages:ChannelMessage[]):void;onBottom(value:boolean):void;agentControls?:Snippet}=$props();
+      onDraft(c:NativeChannel,text:string,replyId?:number):void;onForward(c:NativeChannel,messages:ChannelMessage[]):void;onBottom(value:boolean):void;agentControls?:Snippet<[() => void, boolean]>}=$props();
   const token=(c:NativeChannel)=>`${c.node}:${c.key}`;
   const current=$derived(data.channels.find(c=>token(c)===selected));
   const entries=$derived((current?.messages??[]).map(nativeChatEntry));
@@ -82,7 +83,17 @@
     if(!channel||!sendReaction||!available||busy||working||selecting||!canReactToChannelMessage(message))return;
     void action(()=>sendReaction(channel,message,emoji));
   }
-  async function send(){if(optionsOpen||!current||!available||!composed||working||busy)return;const c=current,text=draft,replyId=c.replyId;await action(async()=>{await onSend(c,text,{replyId,agentCommand:true});if(current&&token(c)===token(current)&&current.draft===text)onDraft(current,'');nearBottom=true;});}
+  const aiPrompt=$derived(radioAgentCommand(draft) ? draft.trim() : '/ai '+draft.trim());
+  const canAsk=$derived(available && !!draft.trim() && !working && !busy && new TextEncoder().encode(aiPrompt).length <= CHANNEL_TEXT_BYTES);
+  async function send(ask=false){
+    if(optionsOpen||!current||!available||working||busy||(ask?!canAsk:!composed))return;
+    const c=current,text=draft,replyId=c.replyId;
+    await action(async()=>{
+      await onSend(c,ask?aiPrompt:text,{replyId,agentCommand:true,...(ask?{literal:true}:{})});
+      if(current&&token(c)===token(current)&&current.draft===text)onDraft(current,'');
+      nearBottom=true;
+    });
+  }
   function addEmoji(value:string){const start=composer?.selectionStart??draft.length,end=composer?.selectionEnd??start;setDraft((draft.slice(0,start)+value+draft.slice(end)).slice(0,600));void tick().then(()=>inputPanel.restoreCaret(start+value.length,start+value.length));}
   function modal(node:HTMLDialogElement){const previous=document.activeElement as HTMLElement|null;node.showModal();return{destroy(){node.close();if(previous?.isConnected)previous.focus();}};}
   function sendPress(node:HTMLButtonElement){
@@ -132,7 +143,7 @@
   {#if current?.replyId}<div class="reply-draft"><span>↩ {reply?.text||$i18n.text('Исходное сообщение отсутствует')}</span><button onclick={()=>current&&onDraft(current,draft)} aria-label={$i18n.text('Отменить ответ')}>✕</button></div>{/if}
   <div class="composer-dock" use:inputPanel.mount={emojiOpen}>
   {#if emojiOpen}<div class="composer-picker"><EmojiPicker onChoose={addEmoji} onClose={()=>emojiOpen=false}/></div>{/if}
-  <form onsubmit={e=>{e.preventDefault();void send();}}>{@render agentControls?.()}<div class="composer"><textarea bind:this={composer} value={draft} oninput={e=>setDraft(e.currentTarget.value)} maxlength="600" aria-label={$i18n.text('Сообщение в канал Meshtastic')} placeholder={$i18n.text('Короткое сообщение от имени платы')} onkeydown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void send();}}}></textarea><button type="button" data-composer-toggle class="tiny" onclick={inputPanel.toggle} aria-expanded={emojiOpen} aria-label={$i18n.text(emojiOpen&&mobileInput?'Открыть клавиатуру':'Эмодзи')}><ChatIcon name={emojiOpen&&mobileInput?'keyboard':'emoji'}/></button></div><button type="button" data-composer-send class="icon primary" class:send-unavailable={!available||!composed} use:sendPress onclick={()=>void send()} oncontextmenu={e=>{e.preventDefault();if(current&&!working&&!busy)optionsOpen=true;}} disabled={!current||working||busy} aria-label={$i18n.text('Отправить')} aria-haspopup="dialog" aria-expanded={optionsOpen} title={$i18n.text('Удерживайте кнопку для настроек отправки')}><ChatIcon name="send"/></button></form>
+  <form onsubmit={e=>{e.preventDefault();void send();}}>{@render agentControls?.(() => void send(true), canAsk)}<div class="composer"><textarea bind:this={composer} value={draft} oninput={e=>setDraft(e.currentTarget.value)} maxlength="600" aria-label={$i18n.text('Сообщение в канал Meshtastic')} placeholder={$i18n.text('Короткое сообщение от имени платы')} onkeydown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void send();}}}></textarea><button type="button" data-composer-toggle class="tiny" onclick={inputPanel.toggle} aria-expanded={emojiOpen} aria-label={$i18n.text(emojiOpen&&mobileInput?'Открыть клавиатуру':'Эмодзи')}><ChatIcon name={emojiOpen&&mobileInput?'keyboard':'emoji'}/></button></div><button type="button" data-composer-send class="icon primary" class:send-unavailable={!available||!composed} use:sendPress onclick={()=>void send()} oncontextmenu={e=>{e.preventDefault();if(current&&!working&&!busy)optionsOpen=true;}} disabled={!current||working||busy} aria-label={$i18n.text('Отправить')} aria-haspopup="dialog" aria-expanded={optionsOpen} title={$i18n.text('Удерживайте кнопку для настроек отправки')}><ChatIcon name="send"/></button></form>
   </div>
   <small class:danger={bytes>CHANNEL_TEXT_BYTES}>{bytes}/{CHANNEL_TEXT_BYTES} {$i18n.text('байт')}</small>
   {#if optionsOpen&&current}<dialog use:modal aria-label={$i18n.text('Настройки отправки')} oncancel={e=>{e.preventDefault();if(!working)optionsOpen=false;}}><header><h3>{$i18n.text('Настройки отправки')}</h3><button disabled={working} onclick={()=>optionsOpen=false} aria-label={$i18n.text('Закрыть')}>✕</button></header><label class="check"><input type="checkbox" checked={current.signature} disabled={working||busy} onchange={e=>void action(()=>onSignature(current!,e.currentTarget.checked))}/>{$i18n.text('Добавлять мой контакт Automesh')}</label>{#if current.signature}<p class="signature-preview"><MessageText text={channelSignature(link)} markdownLinks/></p>{/if}<p>{$i18n.text('Ссылка будет видна всем читателям канала и входит в лимит сообщения.')}</p><small>{bytes}/{CHANNEL_TEXT_BYTES} {$i18n.text('байт')}</small><footer><button disabled={working} onclick={()=>optionsOpen=false}>{$i18n.text('Готово')}</button></footer></dialog>{/if}

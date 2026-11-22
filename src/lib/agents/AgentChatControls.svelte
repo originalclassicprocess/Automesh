@@ -3,9 +3,10 @@
   import CompactDialog from '$lib/application/CompactDialog.svelte';
   import { MAX_AGENT_MINUTES, MAX_AGENT_REQUESTS, radioAgentSender, senderAgentLimit, type AgentChatPolicy } from './limits';
 
-  let { working, disabled, automatic, notice, toggleAuto, policy, save, ownBoard, knownBoards = [] }:
+  let { working, disabled, automatic, notice, toggleAuto, policy, save, ownBoard, knownBoards = [], endpoint = false, ask, canAsk = false }:
     { working: boolean; disabled: boolean; automatic: boolean; notice: string; toggleAuto: () => void;
-      policy?: AgentChatPolicy; save?: (value: AgentChatPolicy) => Promise<boolean>; ownBoard?: number; knownBoards?: number[] } = $props();
+      policy?: AgentChatPolicy; save?: (value: AgentChatPolicy) => Promise<boolean>; ownBoard?: number; knownBoards?: number[];
+      endpoint?: boolean; ask?: () => void; canAsk?: boolean } = $props();
   let open = $state(false);
   let saving = $state(false), error = $state(''), boardInput = $state('');
   let unlimited = $state(true), count = $state<number | undefined>(1), minutes = $state<number | undefined>(60);
@@ -41,7 +42,7 @@
     saving = true;
     error = '';
     try {
-      if (await save({ limit: selected ? policy.limit : value, senders })) {
+      if (await save({ ...policy, limit: selected ? policy.limit : value, senders })) {
         if (remove) { boardInput = ''; loadLimit(); }
         error = 'Лимит сохранён.';
       } else error = 'Не удалось сохранить лимит.';
@@ -55,15 +56,20 @@
 
 {#if open}
   <CompactDialog title={$i18n.text('Автоответы ИИ')} literalTitle onClose={() => open = false}>
+    {#if ask}
+      <button type="button" disabled={!canAsk || disabled} onclick={() => { open = false; ask?.(); }}>{$i18n.text('Отправить запрос ИИ в канал')}</button>
+      <p>{$i18n.text('Запрос и ответ видны участникам канала.')}</p>
+    {/if}
     <label>
       <input type="checkbox" checked={automatic} {disabled} onchange={toggleAuto} />
       <strong>{$i18n.text(native ? 'Отвечать на /ai в этом канале' : 'Отвечать этому контакту')}</strong>
     </label>
     {#if native}
-      <p>{$i18n.text('Напишите /ai и запрос. Ответ увидят участники канала. Запрос передаётся выбранной модели. После блокировки ответы нужно включить снова.')}</p>
+      <p>{$i18n.text('Чтобы отправить запрос, введите текст в поле сообщения и нажмите AI.')}</p>
     {:else}
-      <p>{$i18n.text('ИИ отвечает на новые текстовые сообщения в этом чате, пока аккаунт открыт. После блокировки разрешение нужно включить снова.')}</p>
+      <p>{$i18n.text('ИИ отвечает на новые текстовые сообщения, пока аккаунт открыт. Выбор сохранится при смене модели.')}</p>
     {/if}
+    {#if endpoint}<p>{$i18n.text('Для отправки сообщений на указанный API подтвердите автоответы после разблокировки или смены адреса.')}</p>{/if}
     {#if policy && save}
       <fieldset disabled={disabled || saving}>
         <legend>{$i18n.text('Лимит запросов в чате')}</legend>
