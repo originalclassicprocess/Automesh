@@ -1,31 +1,34 @@
-import { DEFAULT_PORTABLE_MODEL, portableModelId, type PortableDevice } from './portable-models';
-import { generatePortableReply } from './portable-client';
+import { portableModelId, type PortableDevice } from './portable-models';
+import { generatePortableReply, stopPortableModel } from './portable-client';
+import { generateFileModelReply, stopFileModel } from './file-model-client';
 
 export type AgentSettings = {
   enabled: boolean;
-  backend: 'portable' | 'browser' | 'local' | 'cloud';
+  backend: 'file' | 'portable' | 'browser' | 'local' | 'cloud';
   endpoint: string;
   model: string;
   instructions: string;
   portableDevice?: PortableDevice;
+  legacyModel?: string;
   replyLimit?: number;
 };
 
 export const emptyAgentSettings = (): AgentSettings => ({
-  enabled: false, backend: 'portable', endpoint: '', model: DEFAULT_PORTABLE_MODEL, instructions: '', portableDevice: 'wasm',
+  enabled: false, backend: 'file', endpoint: '', model: '', instructions: '', portableDevice: 'wasm',
 });
 
 export function normalizeAgentSettings(value: unknown): AgentSettings {
   const raw = value && typeof value === 'object' ? value as Partial<AgentSettings> : {};
   const text = (v: unknown, max: number) => typeof v === 'string' ? v.trim().slice(0, max) : '';
-  const backend = raw.backend === 'browser' || raw.backend === 'local' || raw.backend === 'cloud' ? raw.backend : 'portable';
+  const backend = raw.backend === 'portable' || raw.backend === 'browser' || raw.backend === 'local' || raw.backend === 'cloud' ? raw.backend : 'file';
   return {
     enabled: raw.enabled === true,
     backend,
-    endpoint: backend === 'portable' || backend === 'browser' ? '' : text(raw.endpoint, 2048),
+    endpoint: backend === 'local' || backend === 'cloud' ? text(raw.endpoint, 2048) : '',
     model: backend === 'portable' ? portableModelId(raw.model) : text(raw.model, 256), instructions: text(raw.instructions, 1024),
     ...(typeof raw.replyLimit === 'number' && Number.isSafeInteger(raw.replyLimit) && raw.replyLimit > 0 ? { replyLimit: raw.replyLimit } : {}),
-    ...(backend === 'portable' ? { portableDevice: raw.portableDevice === 'webgpu' ? 'webgpu' as const : 'wasm' as const } : {}),
+    ...(backend === 'portable' || backend === 'file' ? { portableDevice: raw.portableDevice === 'webgpu' ? 'webgpu' as const : 'wasm' as const } : {}),
+    ...(typeof raw.legacyModel === 'string' && raw.legacyModel ? { legacyModel: portableModelId(raw.legacyModel) } : {}),
   };
 }
 
@@ -46,7 +49,7 @@ export function modelEndpoint(settings: AgentSettings): string {
 // A session key is bound to the exact endpoint/backend selected by the owner.
 // Editing the model name may reuse it; changing providers never does.
 export function agentKeyFor(previous: AgentSettings, next: AgentSettings, existing: string, entered: string): string {
-  if (next.backend === 'browser' || next.backend === 'portable') return '';
+  if (next.backend !== 'local' && next.backend !== 'cloud') return '';
   return entered.trim() || (previous.backend === next.backend && previous.endpoint === next.endpoint ? existing : '');
 }
 
@@ -56,7 +59,7 @@ type BrowserSession = {
 };
 type BrowserModel = {
   availability(): Promise<string>;
-  create(options: { initialPrompts: [{ role: 'system'; content: string }]; signal: AbortSignal }): Promise<BrowserSession>;
+  create(options: { initialPrompts?: [{ role: 'system'; content: string }]; signal: AbortSignal }): Promise<BrowserSession>;
 };
 const browserModel = () => (globalThis as typeof globalThis & { LanguageModel?: BrowserModel }).LanguageModel;
 export async function modelAvailability(): Promise<string> {
@@ -105,10 +108,15 @@ async function apiError(response: Response): Promise<Error> {
 export async function generateAgentReply(settings: AgentSettings, prompt: string, key: string, signal: AbortSignal,
   request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean; radio?: boolean } = {}): Promise<string> {
   signal.throwIfAborted();
-  const system = [options.radio ? 'Ответь по-русски одним коротким предложением.' : 'Отвечай кратко по-русски.', settings.instructions].filter(Boolean).join('\n');
+  const system = settings.instructions;
   const input = prompt.slice(0, 4000);
+  const messages = [...(system ? [{ role: 'system', content: system }] : []), { role: 'user', content: input }];
   let result: unknown;
-  if (settings.backend === 'portable') {
+  if (settings.backend !== 'file') stopFileModel();
+  if (settings.backend !== 'portable') stopPortableModel();
+  if (settings.backend === 'file') {
+    result = await generateFileModelReply(settings.model, settings.portableDevice ?? 'wasm', system, input, signal, options.radio ? 48 : 128);
+  } else if (settings.backend === 'portable') {
     result = await generatePortableReply(portableModelId(settings.model), settings.portableDevice ?? 'wasm', system, input, signal);
   } else if (settings.backend === 'browser') {
     const model = browserModel();
@@ -116,7 +124,7 @@ export async function generateAgentReply(settings: AgentSettings, prompt: string
     if (!model || availability === 'unavailable') throw new Error('agent_browser_unavailable');
     if (options.allowBrowserDownload === false && availability !== 'available') throw new Error('agent_browser_download_disabled');
     signal.throwIfAborted();
-    const session = await model.create({ initialPrompts: [{ role: 'system', content: system }], signal });
+    const session = await model.create({ ...(system ? { initialPrompts: [{ role: 'system' as const, content: system }] } : {}), signal });
     try { signal.throwIfAborted(); result = await session.prompt(input, { signal }); }
     finally { session.destroy(); }
   } else {
@@ -124,7 +132,7 @@ export async function generateAgentReply(settings: AgentSettings, prompt: string
     const response = await request(url, {
       method: 'POST', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store', signal,
       headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-      body: JSON.stringify({ model: settings.model, messages: [{ role: 'system', content: system }, { role: 'user', content: input }], max_tokens: options.radio ? 64 : 96, stream: false }),
+      body: JSON.stringify({ model: settings.model, messages, max_tokens: options.radio ? 64 : 96, stream: false }),
     }).catch(() => {
       signal.throwIfAborted();
       throw new Error('agent_api_unreachable');

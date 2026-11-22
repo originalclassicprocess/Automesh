@@ -26,6 +26,16 @@ describe('chat AI request limits', () => {
     expect(reserveAgentRequest(normalizeAgentChatLimits(first, start), mesh, mesh, hour, start)).toBeNull();
   });
 
+  it('restores explicitly enabled auto-replies independently of the model', () => {
+    const stored = normalizeAgentChatLimits({ policies: {
+      [mesh]: { limit: hour, automatic: true },
+      [room]: { limit: hour },
+    } });
+    const reloaded = normalizeAgentChatLimits(JSON.parse(JSON.stringify(stored)));
+    expect(agentChatPolicy(reloaded, mesh)).toEqual({ limit: hour, automatic: true });
+    expect(agentChatPolicy(reloaded, room).automatic).toBeUndefined();
+  });
+
   it('gives the local board unlimited access by default and allows overrides for individual board IDs', () => {
     const policy = agentChatPolicy(emptyAgentChatLimits(), room);
     expect(senderAgentLimit(policy, '100', true)).toBeNull();

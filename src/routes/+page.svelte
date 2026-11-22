@@ -65,6 +65,9 @@ import SettingsLinks from '$lib/application/SettingsLinks.svelte';
 import { settingsMenu, settingsDescriptions, settingsLocation, connectionMenu, mediaSettingsMenu, type SettingsSection, type LegacySettingsSection, type ConnectionSection, type MediaSettingsSection } from '$lib/application/settings-structure';
 import AgentSettingsPanel from '$lib/agents/AgentSettings.svelte';
 import AgentChatControls from '$lib/agents/AgentChatControls.svelte';
+import AgentAskButton from '$lib/agents/AgentAskButton.svelte';
+import { clearFileModels, hasFileModel, importFileModel, removeFileModel } from '$lib/agents/file-models';
+import { stopFileModel } from '$lib/agents/file-model-client';
 import { portableDownloaded, preparePortableModel, deletePortableModel, stopPortableModel } from '$lib/agents/portable-client';
 import { portableModelId, PORTABLE_CACHE_PREFIX, type PortableProgress } from '$lib/agents/portable-models';
 import { emptyAgentSettings, normalizeAgentSettings, modelEndpoint, modelAvailability, generateAgentReply, agentKeyFor, type AgentSettings } from '$lib/agents/model';
@@ -399,9 +402,10 @@ $effect(() => {
   void agentModelRevision;
   let current = true;
   agentModelReady = enabled && (backend === 'local' || backend === 'cloud');
-  if (enabled && (backend === 'portable' || backend === 'browser')) {
-    const readiness = backend === 'portable' ? portableDownloaded(portableModelId(model)) : modelAvailability().then(value => value === 'available');
-    void readiness.then(ready => { if (current) agentModelReady = ready; });
+  if (enabled && (backend === 'file' || backend === 'portable' || backend === 'browser')) {
+    const readiness = backend === 'file' ? hasFileModel(model)
+      : backend === 'portable' ? portableDownloaded(portableModelId(model)) : modelAvailability().then(value => value === 'available');
+    void readiness.then(ready => { if (current) agentModelReady = ready; }).catch(() => {});
   }
   return () => { current = false; };
 });
@@ -2903,14 +2907,35 @@ async function sendTextOnly(admitted = false) {
 }
 
 function stopAgentRequest(): void {
-  agentController?.abort(); agentController = null; stopPortableModel(); agentBusy = false; agentProgress = null;
+  agentController?.abort(); agentController = null; stopPortableModel(); stopFileModel(); agentBusy = false; agentProgress = null;
 }
-function revokeAgentAuto(): void {
+function resetAgentRuntime(): void {
   agentPeers = []; agentQueue.length = 0; stopAgentRequest();
   agentReplyPeer = ''; agentReplyNotice = '';
 }
-function toggleAgentPeer(peer: string): void {
-  if (agentPeers.includes(peer)) {
+function agentPeerEnabled(peer: string): boolean {
+  return agentLimits.policies[peer]?.automatic === true &&
+    (!agentUsesEndpoint() || agentPeers.includes(peer));
+}
+function agentUsesEndpoint(): boolean {
+  return agentSettings.backend === 'cloud' || agentSettings.backend === 'local';
+}
+async function revokeAgentAuto(): Promise<void> {
+  resetAgentRuntime();
+  const previous = agentLimits.policies, generation = authGeneration;
+  const next = Object.fromEntries(Object.entries(previous).map(([peer, policy]) => [peer, { ...policy, automatic: false }]));
+  agentLimits = { ...agentLimits, policies: next };
+  if (!await persistLocalChats() && generation === authGeneration && agentLimits.policies === next) {
+    agentLimits = { ...agentLimits, policies: previous };
+    agentNotice = 'Не удалось сохранить настройки ИИ.';
+  }
+}
+async function toggleAgentPeer(peer: string, enabled = !agentPeerEnabled(peer)): Promise<void> {
+  if (navigationBusy() || !agentChatAvailable(peer)) return;
+  const policy = agentChatPolicy(agentLimits, peer, agentSettings.replyLimit);
+  const generation = authGeneration;
+  const next = saveAgentChatPolicy(peer, { ...policy, automatic: enabled });
+  if (!enabled) {
     agentPeers = agentPeers.filter(value => value !== peer);
     for (let index = agentQueue.length - 1; index >= 0; index--) {
       if (agentQueue[index].peer === peer) agentQueue.splice(index, 1);
@@ -2919,13 +2944,17 @@ function toggleAgentPeer(peer: string): void {
       if (agentBusy) stopAgentRequest();
       agentReplyPeer = ''; agentReplyNotice = '';
     }
-  } else if (agentModelReady && !navigationBusy() && agentChatAvailable(peer)) {
+  }
+  const backend = agentSettings.backend, endpoint = agentSettings.endpoint;
+  const saved = await next;
+  if (saved && enabled && generation === authGeneration && backend === agentSettings.backend &&
+    endpoint === agentSettings.endpoint && agentUsesEndpoint() && agentLimits.policies[peer]?.automatic && agentChatAvailable(peer) && !agentPeers.includes(peer)) {
     agentPeers = [...agentPeers, peer];
   }
 }
-function forgetAgentKey(): void { revokeAgentAuto(); agentKey = ''; }
+function forgetAgentKey(): void { resetAgentRuntime(); agentKey = ''; }
 function resetAgent(): void {
-  revokeAgentAuto(); agentSettings = emptyAgentSettings(); agentLimits = emptyAgentChatLimits(); agentKey = ''; agentNotice = ''; agentExample = '';
+  resetAgentRuntime(); agentSettings = emptyAgentSettings(); agentLimits = emptyAgentChatLimits(); agentKey = ''; agentNotice = ''; agentExample = '';
 }
 
 function agentRadioChannel(peer: string): NativeChannel | undefined {
@@ -2955,8 +2984,15 @@ async function saveAgentSettings(value: AgentSettings, key: string): Promise<boo
   const settings = normalizeAgentSettings(value);
   try { if (settings.enabled && (settings.backend === 'local' || settings.backend === 'cloud')) modelEndpoint(settings); }
   catch { agentNotice = 'Неверный адрес API или имя модели.'; return false; }
+  if (settings.enabled && settings.backend === 'file') {
+    const generation = authGeneration;
+    const exists = await hasFileModel(settings.model).catch(() => false);
+    if (generation !== authGeneration || navigationBusy() || screen !== 'account') return false;
+    if (!exists) { agentNotice = 'Выберите файл модели в настройках ИИ.'; return false; }
+  }
   const nextKey = settings.enabled ? agentKeyFor(agentSettings, settings, agentKey, key) : '';
-  revokeAgentAuto(); agentKey = ''; agentExample = '';
+  const retainedPeers = agentSettings.backend === settings.backend && agentSettings.endpoint === settings.endpoint && settings.enabled ? agentPeers : [];
+  resetAgentRuntime(); agentKey = ''; agentExample = '';
   const previous = agentSettings, owner = address, generation = authGeneration;
   agentSettings = settings;
   if (!await persistLocalChats()) {
@@ -2964,12 +3000,12 @@ async function saveAgentSettings(value: AgentSettings, key: string): Promise<boo
     return false;
   }
   if (address !== owner || authGeneration !== generation || screen !== 'account') return false;
-  agentKey = nextKey;
+  agentKey = nextKey; agentPeers = retainedPeers;
   agentNotice = 'Настройки ИИ сохранены.';
   return true;
 }
 
-async function testAgentModel(value: AgentSettings, key: string): Promise<boolean> {
+async function testAgentModel(value: AgentSettings, key: string, prompt: string): Promise<boolean> {
   if (agentBusy || navigationBusy() || screen !== 'account' || !profileNetwork) return false;
   const settings = normalizeAgentSettings(value);
   if (settings.backend === 'cloud' && networkSettings.internetEnabled === false) { agentNotice = 'Доступ к интернету отключён.'; return false; }
@@ -2980,8 +3016,7 @@ async function testAgentModel(value: AgentSettings, key: string): Promise<boolea
   agentController = controller; agentBusy = true; agentNotice = ''; agentExample = ''; agentReplyPeer = ''; agentReplyNotice = '';
   const timer = setTimeout(() => controller.abort(), 120000);
   try {
-    // Test the configured instructions with a fixed greeting, without chat data.
-    const example = await generateAgentReply(settings, 'Привет! Как дела?', selectedKey, controller.signal, fetch, { allowBrowserDownload: networkSettings.internetEnabled !== false });
+    const example = await generateAgentReply(settings, prompt, selectedKey, controller.signal, fetch, { allowBrowserDownload: networkSettings.internetEnabled !== false });
     if (controller !== agentController || owner !== address || generation !== authGeneration || controller.signal.aborted) return false;
     agentExample = example; agentModelRevision++;
     agentNotice = 'Модель доступна. Проверка прошла успешно.'; return true;
@@ -2994,9 +3029,74 @@ async function testAgentModel(value: AgentSettings, key: string): Promise<boolea
   }
 }
 
+async function addAgentFile(file: File) {
+  const generation = authGeneration;
+  agentNotice = ''; agentExample = '';
+  try { return await importFileModel(file); }
+  catch (error) {
+    if (generation === authGeneration) agentNotice = error instanceof Error && error.message.startsWith('agent_file_')
+      ? agentErrorNotice(error) : 'Не удалось сохранить модель. Проверьте свободное место.';
+  }
+}
+
+async function deleteAgentFile(id: string): Promise<boolean> {
+  const generation = authGeneration;
+  agentNotice = ''; agentExample = '';
+  if (agentSettings.backend === 'file' && id === agentSettings.model) stopAgentRequest();
+  try { await removeFileModel(id); agentModelRevision++; return true; }
+  catch { if (generation === authGeneration) agentNotice = 'Не удалось удалить файл модели.'; return false; }
+}
+
+async function askInSavedMessages(): Promise<void> {
+  const owner = address, generation = authGeneration, draft = sessionChats.byPeer[owner]?.draft;
+  if (!draft?.trim() || sessionChats.activePeer !== owner || !agentModelReady || agentBusy || navigationBusy() || pastedFiles.length) return;
+  agentReplyPeer = owner; agentReplyNotice = '';
+  if (agentSettings.backend === 'cloud' && networkSettings.internetEnabled === false) {
+    agentReplyNotice = 'Доступ к интернету отключён.';
+    return;
+  }
+  const controller = new AbortController();
+  agentController = controller; agentBusy = true;
+  const timer = setTimeout(() => controller.abort(), 120000);
+  const current = () => controller === agentController && owner === address && generation === authGeneration && !navigationBusy() && screen === 'account';
+  try {
+    const prompt = draft.trim();
+    if (prompt.length > 4000 || !textFitsLimit(prompt, false)) throw new Error('agent_saved_prompt_too_long');
+    const reply = await generateAgentReply({ ...agentSettings }, prompt, agentKey, controller.signal, fetch, { allowBrowserDownload: false });
+    if (!current() || controller.signal.aborted) return;
+    const entry = { from: owner, direction: 'outgoing' as const, delivery: 'delivered' as const, timestamp: Date.now() };
+    const questionId = crypto.randomUUID(), replyId = crypto.randomUUID();
+    sessionChats = updateConversation(sessionChats, owner, conversation => ({
+      ...conversation, draft: conversation.draft === draft ? '' : conversation.draft,
+      messages: [...conversation.messages, { ...entry, id: questionId, text: prompt },
+        { ...entry, id: replyId, text: formatAgentReply(reply, 'direct'), details: AGENT_REPLY_DETAILS }],
+    }));
+    if (!await persistLocalChats() && owner === address && generation === authGeneration) {
+      sessionChats = updateConversation(sessionChats, owner, conversation => ({
+        ...conversation, draft: conversation.draft || draft,
+        messages: conversation.messages.filter(message => message.id !== questionId && message.id !== replyId),
+      }));
+      if (current()) agentReplyNotice = 'Не удалось сохранить сообщение.';
+    }
+  } catch (error) {
+    if (current()) agentReplyNotice = agentErrorNotice(error, controller.signal.aborted);
+  } finally {
+    clearTimeout(timer);
+    if (controller === agentController) { agentController = null; agentBusy = false; }
+  }
+}
+
 function agentErrorNotice(error: unknown, cancelled = false): string {
   if (cancelled) return 'Запрос ИИ отменён.';
   const code = error instanceof Error ? error.message : '';
+  if (code === 'agent_saved_prompt_too_long') return 'Сообщение слишком длинное для этого чата.';
+  if (code === 'agent_file_format') return 'Выберите файл с расширением .gguf.';
+  if (code === 'agent_file_invalid') return 'Файл повреждён или имеет другой формат.';
+  if (code === 'agent_file_template_missing') return 'В файле GGUF отсутствует чат-шаблон. Выберите версию модели для диалогов.';
+  if (code === 'agent_file_missing') return 'Файл модели отсутствует. Выберите его снова в настройках ИИ.';
+  if (code === 'agent_file_gpu_unavailable') return 'Аппаратное ускорение WebGPU недоступно. Попробуйте режим WASM.';
+  if (code === 'agent_file_load_failed') return 'Не удалось открыть модель GGUF. Проверьте совместимость файла и свободную память или попробуйте другой режим.';
+  if (code === 'agent_file_run_failed') return 'Модель GGUF не смогла ответить. Проверьте чат-шаблон и попробуйте другую модель или режим.';
   if (code === 'agent_model_not_downloaded') return 'Сначала загрузите модель в настройках ИИ.';
   if (code === 'agent_webgpu_unavailable') return 'WebGPU недоступен. Выберите режим WASM.';
   if (code === 'agent_webgpu_failed') return 'Не удалось запустить модель через WebGPU. Выберите совместимый режим WASM.';
@@ -3039,7 +3139,7 @@ async function removeAgentModel(value: AgentSettings): Promise<void> {
   if (agentBusy || navigationBusy() || screen !== 'account' || value.backend !== 'portable') return;
   const owner = address, generation = authGeneration;
   try {
-    revokeAgentAuto(); await deletePortableModel(portableModelId(value.model));
+    resetAgentRuntime(); await deletePortableModel(portableModelId(value.model));
     if (owner === address && generation === authGeneration) { agentModelRevision++; agentNotice = 'Модель удалена с устройства.'; }
   }
   catch { if (owner === address && generation === authGeneration) agentNotice = 'Не удалось удалить модель.'; }
@@ -3050,7 +3150,7 @@ function onAgentIncoming(event: CommittedIncoming): void {
 }
 
 function enqueueAgentEvent(event: AgentEvent): void {
-  if (!agentSettings.enabled || !agentPeers.includes(event.peer)) return;
+  if (!agentModelReady || !agentPeerEnabled(event.peer)) return;
   if (event.transport === 'native-radio' && agentQueue.filter(queued => queued.transport === 'native-radio').length >= AGENT_QUEUE_SIZE) return;
   agentQueue.push(event);
   drainAgentQueue();
@@ -3060,7 +3160,7 @@ function drainAgentQueue(): void {
   if (agentBusy || navigationBusy() || !agentSettings.enabled || screen !== 'account' || !profileNetwork) return;
   while (agentQueue.length) {
     const event = agentQueue.shift()!;
-    if (!agentPeers.includes(event.peer) || !agentChatAvailable(event.peer)) continue;
+    if (!agentPeerEnabled(event.peer) || !agentChatAvailable(event.peer)) continue;
     const channel = event.transport === 'native-radio' && event.epoch === radioEpoch ? agentRadioChannel(event.peer) : undefined;
     const prompt = event.transport === 'native-radio' ? incomingNativeAgentPrompt(channel, event)
       : incomingAgentPrompt(sessionChats, address, event.peer, event);
@@ -3102,7 +3202,7 @@ async function runAgent(event: AgentEvent, prompt: string, reservation: AgentCha
     active === chat && screen === 'account' && agentSettings.enabled && agentChatAvailable(peer) &&
     (event.transport !== 'native-radio' || event.epoch === radioEpoch) &&
     !endingSession && !switchingTrust && !memoryBusy && !panicBusy && !profileSwitchBusy &&
-    agentPeers.includes(peer);
+    agentPeerEnabled(peer);
   agentController = controller; agentBusy = true;
   const timer = setTimeout(() => controller.abort(), 120000);
   try {
@@ -4681,7 +4781,7 @@ async function blockContact(peer: string): Promise<void> {
   const existing = sessionChats.byPeer[peer];
   if (!existing || existing.contact === 'blocked') return;
   calls?.revoke(peer);
-  if (agentPeers.includes(peer)) toggleAgentPeer(peer);
+  if (agentLimits.policies[peer]?.automatic) void toggleAgentPeer(peer, false);
   const previous = sessionChats;
   const accountId = address;
   sessionChats = updateConversation(sessionChats, peer, (conversation) => ({
@@ -5430,7 +5530,7 @@ async function refreshStorage(): Promise<void> {
 }
 
 function pauseFileTransfers(): void {
-  revokeAgentAuto();
+  resetAgentRuntime();
   audioTrack = null;
   offlineDelivery?.stop(); offlineDelivery = null;
   courierDelivery?.stop(); courierDelivery = null; queueOverviewOpen=false;
@@ -5542,6 +5642,7 @@ async function emergencyReset(): Promise<void> {
       clearVault: () => { clearVault(); localStorage.removeItem('debugLogs'); },
       clearCache: async () => {
         let failed = false;
+        if ('indexedDB' in window) await clearFileModels().catch(() => { failed = true; });
         if ('serviceWorker' in navigator) {
           const registrations = await navigator.serviceWorker.getRegistrations();
           for (const registration of registrations) {
@@ -6352,8 +6453,8 @@ async function changePassword(): Promise<void> {
   {#if settingsSection === 'ai' && profileNetwork}
     <div class="settings-section">
       {#key address}<AgentSettingsPanel settings={agentSettings} busy={navigationBusy()} working={agentBusy} notice={agentNotice}
-        example={agentExample} keyPresent={!!agentKey} automatic={agentPeers.length > 0} save={saveAgentSettings} test={testAgentModel} stop={stopAgentRequest} forgetKey={forgetAgentKey} revokeAuto={revokeAgentAuto}
-        prepare={prepareAgentModel} remove={removeAgentModel} progress={agentProgress} />{/key}
+        example={agentExample} keyPresent={!!agentKey} automatic={Object.values(agentLimits.policies).some(policy => policy.automatic)} save={saveAgentSettings} test={testAgentModel} stop={stopAgentRequest} forgetKey={forgetAgentKey} revokeAuto={revokeAgentAuto}
+        prepare={prepareAgentModel} remove={removeAgentModel} importModel={addAgentFile} deleteModel={deleteAgentFile} progress={agentProgress} />{/key}
     </div>
   {/if}
   {#if settingsSection === 'account'}
@@ -6496,13 +6597,13 @@ async function changePassword(): Promise<void> {
         {#key nativeSelected}<MeshtasticChannels data={meshtastic} selected={nativeSelected} live={nativeLive} connected={radioConnection==='connected'} busy={nativeSending||radioBusy} board={radioBoardLabel} link={contactLink(address)} initialUnread={nativeInitialUnread} forwardDone={nativeForwardDone}
           onSignature={setNativeSignature} onSend={sendNativeText} onReaction={sendNativeReaction} onDelete={deleteNativeMessages} onDraft={setNativeDraft} onForward={openNativeForward} onBottom={nativeBottom}
           onSettings={()=>openConnectionSection('radio')} onBack={()=>{nativeOpen=false;showChatList();}}>
-          {#snippet agentControls()}
+          {#snippet agentControls(ask, canAsk)}
             {#if agentModelReady && agentChannel}
               <AgentChatControls working={agentBusy && agentReplyPeer === radioAgentPeer} disabled={navigationBusy()}
-                automatic={agentPeers.includes(radioAgentPeer)} notice={agentReplyPeer === radioAgentPeer ? agentReplyNotice : ''}
+                automatic={agentPeerEnabled(radioAgentPeer)} endpoint={agentUsesEndpoint()} notice={agentReplyPeer === radioAgentPeer ? agentReplyNotice : ''}
                 policy={agentChatPolicy(agentLimits, radioAgentPeer)} ownBoard={agentChannel.node}
                 knownBoards={agentChannel.messages.slice(-80).filter(message => !message.outgoing).map(message => message.from)}
-                save={policy => saveAgentChatPolicy(radioAgentPeer, policy)} toggleAuto={() => toggleAgentPeer(radioAgentPeer)} />
+                save={policy => saveAgentChatPolicy(radioAgentPeer, policy)} toggleAuto={() => toggleAgentPeer(radioAgentPeer)} {ask} {canAsk} />
             {/if}
           {/snippet}
         </MeshtasticChannels>{/key}
@@ -6778,12 +6879,20 @@ async function changePassword(): Promise<void> {
           onSend={sendLibraryAsset}
           onManage={tab => { emojiOpen = false; openMediaLibrary(tab); }} /></div>{/if}
         <PastedImages files={pastedFiles} bind:preview={stagedPreview} onMove={moveStagedAttachment} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
+        {#if activeConversation.peerAddress === address && agentReplyPeer === address}
+          {#if agentBusy}<small role="status">{$i18n.text('ИИ готовит ответ…')}</small>
+          {:else if agentReplyNotice}<small role="status">{$i18n.text(agentReplyNotice)}</small>{/if}
+        {/if}
         <div class="composer">
         <div class="composer-controls composer-left">
-        {#if agentModelReady && activeConversation.contact === 'accepted' && activeConversation.peerAddress !== address}
+        {#if agentModelReady && activeConversation.peerAddress === address}
+          <AgentAskButton working={agentBusy && agentReplyPeer === address}
+            disabled={agentBusy || navigationBusy() || composerSending || !!pastedFiles.length || !activeConversation.draft.trim()}
+            ask={() => void askInSavedMessages()} />
+        {:else if agentModelReady && activeConversation.contact === 'accepted'}
           {#key activeConversation.peerAddress}
             <AgentChatControls working={agentBusy && agentReplyPeer === activeConversation.peerAddress} disabled={navigationBusy()}
-              automatic={agentPeers.includes(activeConversation.peerAddress)} notice={agentReplyPeer === activeConversation.peerAddress ? agentReplyNotice : ''}
+              automatic={agentPeerEnabled(activeConversation.peerAddress)} endpoint={agentUsesEndpoint()} notice={agentReplyPeer === activeConversation.peerAddress ? agentReplyNotice : ''}
               policy={agentChatPolicy(agentLimits, activeConversation.peerAddress, agentSettings.replyLimit)}
               save={policy => saveAgentChatPolicy(activeConversation.peerAddress, policy)}
               toggleAuto={() => toggleAgentPeer(activeConversation.peerAddress)} />

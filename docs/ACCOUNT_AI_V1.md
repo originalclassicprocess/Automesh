@@ -8,28 +8,31 @@ execute tools. The existing client controls the data supplied to it and delivery
 ## User flow
 
 1. Open **Settings → AI**, enable it and select a backend.
-2. On-device: choose Qwen2.5 0.5B (about 525 MB download) for Russian replies or
-   SmolLM2 135M (about 145 MB download), and explicitly download the weights.
-   Choose WASM or WebGPU.
+2. On-device: choose **Model file**, then choose a single `.gguf` file with
+   its chat template included. Add more files to switch between models.
+   Choose WASM for CPU inference or WebGPU for hardware acceleration.
    Browser native: check availability of the browser's own built-in model. Local: enter an
    OpenAI-compatible loopback endpoint (e.g. Ollama at
    `http://localhost:11434/v1/chat/completions`) and model name. Remote API
    accepts an HTTPS chat-completions endpoint for a cloud service or your server.
-3. Test the connection to see the model's sample answer. The test uses
-   a fixed greeting and the configured instructions. Save the settings.
+3. Enter a test prompt and check the answer. Model instructions, including
+   language preferences, are optional. Save the settings.
 4. Open an accepted contact's chat, click **AI** beside the composer and enable
-   **Reply to this contact**. New text messages receive short Russian auto-replies
+   **Reply to this contact**. New text messages receive auto-replies
    labeled `[AI]`. Repeat for each contact who should have access.
-5. In a connected Meshtastic channel, use the same **AI** button to enable
-   responses to `/ai <request>`. Replies are sent as quoted, plain-text channel
+5. In **Saved Messages**, type a question and press **AI**. The question and
+   answer are saved in the private chat. The standard Send button saves a note.
+6. In a connected Meshtastic channel, use **AI** to send a typed prompt as
+   `/ai <request>` or enable responses to such requests. Replies are sent as quoted, plain-text channel
    messages and fit the 200-byte Meshtastic limit. Regular channel messages
    are ignored by AI.
 
 ## Boundaries
 
 - Disabled by default; configuration is scoped to the account's encrypted chat
-  store. API keys and automatic reply permission are session-only. Locking,
-  switching or restoring an account clears these and aborts outstanding requests.
+  store. Per-chat auto-reply preferences survive model changes and account
+  locks. API keys and permission to send automatic requests to an endpoint
+  are session-only. Locking or switching accounts aborts outstanding requests.
 - Inference receives text from the triggering message. Files, calls, ephemeral
   messages, chat history and control messages stay out of the prompt. Reply
   generation runs sequentially. While one request is active, committed messages
@@ -52,15 +55,30 @@ execute tools. The existing client controls the data supplied to it and delivery
   radio transport and fit the encoded 320-byte payload, including metadata.
   Failed writes are not automatically replayed into the model. Model errors do
   not affect message acknowledgements, and no automatic requests are retried.
-- The browser native backend uses the optional LanguageModel API. The on-device
-  backend instead uses a bundled Transformers.js/ONNX Runtime Web worker and
-  explicitly downloaded weights. WASM with one thread is the default; WebGPU
-  can be selected on supporting devices. The model is released from memory on
+- The browser native backend uses the optional LanguageModel API. Model files
+  run through a llama.cpp worker. The legacy ONNX engine uses Transformers.js.
+  WASM is the default; WebGPU can be selected on supporting devices.
+  The model is released from memory on
   lock/switch/cancel. No inference runs in a Mesh server. SDK, CLI and MCP remain
   follow-up stages. Real mobile-device acceptance and inference benchmarks remain
   necessary before claiming universal iOS/Android support.
 
-## Portable browser runtime
+## Model files and offline use
+
+Use compatible single-file GGUF chat releases. Browser inference supports
+text requests. Available RAM, the model architecture, its quantization,
+and the browser's WebAssembly and GPU support determine what runs. The file
+size alone does not measure the memory required for inference.
+
+Automesh stores a copy of each selected model in browser storage. The picker
+uses the OS file dialog on desktop and mobile. The first test loads the
+runtime from the Automesh origin. Once cached by the service worker, it can
+open the file offline. Storage is shared across profiles on that browser
+origin, and deletion in AI settings removes only the browser copy. An
+emergency app reset clears the model library as well. Browser storage eviction
+can require importing files again.
+
+## Previously installed ONNX models
 
 The engine is a pinned build-time dependency, not a server runtime dependency.
 It loads only after user selection. The two Q8 public ONNX presets use pinned

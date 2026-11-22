@@ -65,15 +65,16 @@ assert.ok([...shell.keys()].some((url) => url.startsWith('/_app/immutable/')));
 assert.ok(![...shell.keys()].some(url => url.startsWith('/downloads/')),
   'node installers and release manifests must not be downloaded into every PWA cache');
 const workerAssets = readdirSync(resolve('.svelte-kit/output/client/_app/immutable/workers'), { recursive: true })
-  .filter(name => /(?:\.wasm$|(?:portable-worker[.-]|ort-wasm-simd-threaded).*\.(?:js|mjs)$)/.test(name))
+  .filter(name => /(?:\.wasm$|(?:(?:file-model|portable)-worker[.-]|ort-wasm-simd-threaded).*\.(?:js|mjs)$)/.test(name))
   .map(name => '/_app/immutable/workers/' + name.replaceAll('\\', '/'));
 assert.ok(workerAssets.some(url => url.endsWith('.wasm')), 'portable inference engine must be in release assets');
 assert.ok(workerAssets.every(url => !shell.has(url)), 'optional AI engine assets must not be precached');
-const optionalAsset = workerAssets.find(url => url.endsWith('.wasm'));
-let optionalResponse;
-listeners.get('fetch')({ request: { method: 'GET', mode: 'cors', url: origin + optionalAsset }, respondWith(promise) { optionalResponse = promise; } });
-assert.ok((await optionalResponse).ok);
-assert.ok(shell.has(optionalAsset), 'AI engine is cached when requested for offline use');
+for (const optionalAsset of workerAssets) {
+  let optionalResponse;
+  listeners.get('fetch')({ request: { method: 'GET', mode: 'cors', url: origin + optionalAsset }, respondWith(promise) { optionalResponse = promise; } });
+  assert.ok((await optionalResponse).ok);
+  assert.ok(shell.has(optionalAsset), 'AI engine is cached when requested for offline use');
+}
 
 let offlineResponse;
 online = false;

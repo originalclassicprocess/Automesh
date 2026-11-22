@@ -1,7 +1,7 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 
 export type AgentLimit = { count: number; minutes: number };
-export type AgentChatPolicy = { limit: AgentLimit | null; senders?: Record<string, AgentLimit | null> };
+export type AgentChatPolicy = { limit: AgentLimit | null; senders?: Record<string, AgentLimit | null>; automatic?: boolean };
 type Window = { start: number; count: number };
 export type AgentChatLimits = { policies: Record<string, AgentChatPolicy>; usage: Record<string, Window> };
 
@@ -40,7 +40,7 @@ export function normalizeAgentChatLimits(value: unknown, now = Date.now()): Agen
       const policy = limit(value);
       if (radioAgentSender(sender) === sender && policy !== undefined) senders[sender] = policy;
     }
-    state.policies[chat] = { limit: fallback, ...(Object.keys(senders).length ? { senders } : {}) };
+    state.policies[chat] = { limit: fallback, ...(row.automatic === true ? { automatic: true } : {}), ...(Object.keys(senders).length ? { senders } : {}) };
   }
   for (const [key, value] of Object.entries(object(stored.usage)).slice(-MAX_WINDOWS)) {
     const [chat, sender, extra] = key.split('/');
