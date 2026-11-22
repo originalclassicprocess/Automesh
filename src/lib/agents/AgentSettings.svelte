@@ -152,7 +152,7 @@
     <p>{$i18n.text('При проверке отправляется только тестовый запрос, без переписки.')}</p>
     {#if progress && working}<div class="result" role="status"><span>{$i18n.text(progress.importing ? 'Проверка и копирование файла' : 'Загрузка модели')} · {Math.round(progress.loaded / 1000000)} / {Math.round(progress.total / 1000000)} MB</span><progress value={progress.loaded} max={Math.max(progress.total, progress.loaded, 1)}></progress></div>
     {:else if notice || working}<div class="result" role="status">{working ? $i18n.text('Модель выполняет запрос…') : $i18n.text(notice)}</div>{/if}
-    {#if example && !working}<div class="result example"><small>{$i18n.text('Ответ на «Привет! Как дела?»')}</small><p>{example}</p></div>{/if}
+    {#if example && !working}<div class="result example"><small>{$i18n.text('Ответ модели')}</small><p>{example}</p></div>{/if}
   </div>
 </div>
 

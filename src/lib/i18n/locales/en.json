@@ -3244,5 +3244,6 @@
   "m_e765947142d5": "The GGUF model could not respond. Check the chat template and try another model or mode.",
   "m_5d63238c7163": "Could not remove the model file.",
   "m_2f947ade108d": "Choose a model file in AI settings.",
-  "m_cafdb90bba07": "The GGUF file lacks a chat template. Choose a chat-tuned build of the model."
+  "m_cafdb90bba07": "The GGUF file lacks a chat template. Choose a chat-tuned build of the model.",
+  "m_28b4e08b4990": "Model reply"
 }
