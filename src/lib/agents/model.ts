@@ -1,6 +1,7 @@
 import { portableModelId, type PortableDevice } from './portable-models';
 import { generatePortableReply, stopPortableModel } from './portable-client';
 import { generateFileModelReply, stopFileModel } from './file-model-client';
+import { normalizeFilePromptFormats, type FileModelProgress, type FilePromptFormat } from './file-model-prompt';
 
 export type AgentSettings = {
   enabled: boolean;
@@ -10,6 +11,7 @@ export type AgentSettings = {
   instructions: string;
   portableDevice?: PortableDevice;
   legacyModel?: string;
+  fileFormats?: Record<string, FilePromptFormat>;
   replyLimit?: number;
 };
 
@@ -21,6 +23,7 @@ export function normalizeAgentSettings(value: unknown): AgentSettings {
   const raw = value && typeof value === 'object' ? value as Partial<AgentSettings> : {};
   const text = (v: unknown, max: number) => typeof v === 'string' ? v.trim().slice(0, max) : '';
   const backend = raw.backend === 'portable' || raw.backend === 'browser' || raw.backend === 'local' || raw.backend === 'cloud' ? raw.backend : 'file';
+  const fileFormats = normalizeFilePromptFormats(raw.fileFormats);
   return {
     enabled: raw.enabled === true,
     backend,
@@ -29,6 +32,7 @@ export function normalizeAgentSettings(value: unknown): AgentSettings {
     ...(typeof raw.replyLimit === 'number' && Number.isSafeInteger(raw.replyLimit) && raw.replyLimit > 0 ? { replyLimit: raw.replyLimit } : {}),
     ...(backend === 'portable' || backend === 'file' ? { portableDevice: raw.portableDevice === 'webgpu' ? 'webgpu' as const : 'wasm' as const } : {}),
     ...(typeof raw.legacyModel === 'string' && raw.legacyModel ? { legacyModel: portableModelId(raw.legacyModel) } : {}),
+    ...(fileFormats ? { fileFormats } : {}),
   };
 }
 
@@ -106,7 +110,7 @@ async function apiError(response: Response): Promise<Error> {
 }
 
 export async function generateAgentReply(settings: AgentSettings, prompt: string, key: string, signal: AbortSignal,
-  request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean; radio?: boolean } = {}): Promise<string> {
+  request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean; radio?: boolean; onFileProgress?: (value: FileModelProgress) => void } = {}): Promise<string> {
   signal.throwIfAborted();
   const system = settings.instructions;
   const input = prompt.slice(0, 4000);
@@ -115,7 +119,8 @@ export async function generateAgentReply(settings: AgentSettings, prompt: string
   if (settings.backend !== 'file') stopFileModel();
   if (settings.backend !== 'portable') stopPortableModel();
   if (settings.backend === 'file') {
-    result = await generateFileModelReply(settings.model, settings.portableDevice ?? 'wasm', system, input, signal, options.radio ? 48 : 128);
+    result = await generateFileModelReply(settings.model, settings.portableDevice ?? 'wasm', system, input, signal,
+      options.radio ? 48 : 128, settings.fileFormats?.[settings.model], options.onFileProgress);
   } else if (settings.backend === 'portable') {
     result = await generatePortableReply(portableModelId(settings.model), settings.portableDevice ?? 'wasm', system, input, signal);
   } else if (settings.backend === 'browser') {

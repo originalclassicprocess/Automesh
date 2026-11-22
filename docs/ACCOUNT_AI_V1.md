@@ -8,8 +8,8 @@ execute tools. The existing client controls the data supplied to it and delivery
 ## User flow
 
 1. Open **Settings → AI**, enable it and select a backend.
-2. On-device: choose **Model file**, then choose a single `.gguf` file with
-   its chat template included. Add more files to switch between models.
+2. Under **Run in browser**, choose **Choose GGUF file**, then select a single
+   `.gguf` file from device storage. Add more files to switch between models.
    Choose WASM for CPU inference or WebGPU for hardware acceleration.
    Browser native: check availability of the browser's own built-in model. Local: enter an
    OpenAI-compatible loopback endpoint (e.g. Ollama at
@@ -65,9 +65,15 @@ execute tools. The existing client controls the data supplied to it and delivery
 
 ## Model files and offline use
 
-Use compatible single-file GGUF chat releases. Browser inference supports
-text requests. Available RAM, the model architecture, its quantization,
-and the browser's WebAssembly and GPU support determine what runs. The file
+Use compatible single-file GGUF releases. Automesh uses the embedded chat
+template when available. For files without one it uses the Phi-2 instruction
+format when the architecture is Phi-2, or runs text completion. The optional
+per-file **Prompt format** setting lets the user choose text completion or
+provide a template with a `{{prompt}}` placeholder. A fallback format
+does not guarantee that weights trained on a different format will follow
+instructions. Browser inference supports text requests. Available RAM, the model
+architecture, its quantization, and the browser's WebAssembly and GPU support
+determine what runs. The file
 size alone does not measure the memory required for inference.
 
 Automesh stores a copy of each selected model in browser storage. The picker
@@ -78,7 +84,7 @@ origin, and deletion in AI settings removes only the browser copy. An
 emergency app reset clears the model library as well. Browser storage eviction
 can require importing files again.
 
-## Previously installed ONNX models
+## ONNX download and import
 
 The engine is a pinned build-time dependency, not a server runtime dependency.
 It loads only after user selection. The two Q8 public ONNX presets use pinned

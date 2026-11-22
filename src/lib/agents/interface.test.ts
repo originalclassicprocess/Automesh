@@ -12,7 +12,7 @@ describe('account AI interface', () => {
     const html = render(AgentSettings, { props: { settings: emptyAgentSettings(), busy: false, working: false, notice: '', example: '', keyPresent: false, automatic: false, save: async () => true, test: async () => true, stop: action, forgetKey: action, revokeAuto: action } }).body;
     expect(html).toContain('Enable AI');
     expect(html).not.toContain('Requests per contact per session');
-    expect(html).toContain('Browser model');
+    expect(html).toContain('Built-in browser model');
     expect(html).toContain('Local engine (PC)');
     expect(html).toContain('Remote API');
   });

@@ -1,8 +1,9 @@
 import { Wllama } from '@wllama/wllama';
 import wasm from '@wllama/wllama/esm/wasm/wllama.wasm?url';
 import compatWasm from '@wllama/wllama-compat/wasm/wllama.wasm?url';
+import { fileModelPrompt, type FilePromptFormat } from './file-model-prompt';
 
-type Prompt = { file?: File; device: 'wasm' | 'webgpu'; system: string; input: string; maxTokens: number };
+type Prompt = { file?: File; device: 'wasm' | 'webgpu'; system: string; input: string; maxTokens: number; format?: FilePromptFormat };
 let engine: Wllama | undefined;
 
 self.onmessage = async ({ data }: MessageEvent<Prompt>) => {
@@ -15,22 +16,31 @@ self.onmessage = async ({ data }: MessageEvent<Prompt>) => {
       engine.setCompat({ wasm: new URL(compatWasm, self.location.href).href });
       await engine.loadModel([data.file], {
         n_ctx: 2048, n_parallel: 1, n_batch: 128, n_ubatch: 128,
+        warmup: false,
         n_gpu_layers: data.device === 'webgpu' ? 999 : 0
       });
-      if (!engine.getChatTemplate()) throw new Error('agent_file_template_missing');
     }
+    const model = engine!;
+    const prompt = fileModelPrompt(!!model.getChatTemplate(), model.getModelMetadata().meta['general.architecture'],
+      data.format, data.system, data.input);
     stage = 'agent_file_run_failed';
-    const answer = await engine!.createChatCompletion({
-      messages: [
-        ...(data.system ? [{ role: 'system' as const, content: data.system }] : []),
-        { role: 'user', content: data.input }
-      ],
-      stream: false,
-      max_tokens: data.maxTokens,
-    });
-    self.postMessage({ text: answer.choices[0]?.message.content });
+    self.postMessage({ progress: { stage: 'generating', format: prompt.kind } });
+    const options = { stream: false as const, max_tokens: data.maxTokens };
+    if (prompt.kind === 'chat') {
+      const answer = await model.createChatCompletion({
+        ...options,
+        messages: [
+          ...(data.system ? [{ role: 'system' as const, content: data.system }] : []),
+          { role: 'user', content: data.input }
+        ],
+      });
+      self.postMessage({ text: answer.choices[0]?.message.content });
+    } else {
+      const answer = await model.createCompletion({ ...options, prompt: prompt.prompt, stop: prompt.stop });
+      self.postMessage({ text: answer.choices[0]?.text });
+    }
   } catch (error) {
     const code = error instanceof Error ? error.message : '';
-    self.postMessage({ error: ['agent_file_gpu_unavailable', 'agent_file_template_missing'].includes(code) ? code : stage });
+    self.postMessage({ error: code === 'agent_file_gpu_unavailable' ? code : stage });
   }
 };

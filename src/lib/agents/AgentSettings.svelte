@@ -5,12 +5,13 @@
   import { PORTABLE_MODELS, portableModelId, type PortableProgress } from './portable-models';
   import { portableDownloaded, portableWeightsSaved } from './portable-client';
   import { listFileModels, type FileModel } from './file-models';
+  import { FILE_PROMPT_SLOT, MAX_FILE_PROMPT_TEMPLATE, normalizeFilePromptFormat, type FileModelProgress, type FilePromptFormat } from './file-model-prompt';
 
-  let { settings, busy, working, notice, example, keyPresent, automatic, save, test, stop, forgetKey, revokeAuto, prepare, remove, importModel, deleteModel, progress = null }:
+  let { settings, busy, working, notice, example, keyPresent, automatic, save, test, stop, forgetKey, revokeAuto, prepare, remove, importModel, deleteModel, progress = null, fileProgress = null }:
     { settings: AgentSettings; busy: boolean; working: boolean; notice: string; example: string; keyPresent: boolean; automatic: boolean;
       save: (value: AgentSettings, key: string) => Promise<boolean>; test: (value: AgentSettings, key: string, prompt: string) => Promise<boolean>;
       stop: () => void; forgetKey: () => void; revokeAuto: () => void; prepare?: (value: AgentSettings, weights?: File) => Promise<void>;
-      remove?: (value: AgentSettings) => Promise<void>; progress?: PortableProgress | null;
+      remove?: (value: AgentSettings) => Promise<void>; progress?: PortableProgress | null; fileProgress?: FileModelProgress | null;
       importModel?: (file: File) => Promise<FileModel | undefined>; deleteModel?: (id: string) => Promise<boolean> } = $props();
   let draft = $state<AgentSettings>(untrack(() => ({ ...settings })));
   let key = $state('');
@@ -25,6 +26,8 @@
   let files = $state<FileModel[]>([]);
   let fileBusy = $state(false);
   let testPrompt = $state('');
+  let fileFormat = $derived(draft.fileFormats?.[draft.model]);
+  let invalidFileFormat = $derived(draft.backend === 'file' && !!fileFormat && !normalizeFilePromptFormat(fileFormat));
   const legacy = untrack(() => settings.backend === 'portable' ? settings.model : settings.legacyModel ?? '');
   $effect(() => {
     if (draft.backend !== 'file') return;
@@ -42,18 +45,31 @@
     return () => { current = false; };
   });
   let sameEndpoint = $derived(draft.endpoint.trim() === settings.endpoint && draft.backend === settings.backend);
-  const providers = [
-    { id: 'file' as const, title: 'Файл модели', detail: 'GGUF · llama.cpp' },
-    ...(legacy ? [{ id: 'portable' as const, title: 'Ранее установленная модель', detail: 'ONNX · Transformers.js' }] : []),
-    { id: 'browser' as const, title: 'Модель браузера', detail: 'Встроенная модель браузера' },
-    { id: 'local' as const, title: 'Локальный движок (ПК)', detail: 'Ollama / LM Studio / llama.cpp' },
-    { id: 'cloud' as const, title: 'Удалённый API', detail: 'Облако или свой сервер' },
+  const providerGroups = [
+    { title: 'Запуск в браузере', providers: [
+      { id: 'file' as const, title: 'Выбрать файл GGUF', detail: 'Из хранилища устройства · llama.cpp' },
+      ...(legacy ? [{ id: 'portable' as const, title: 'Скачать или импортировать ONNX', detail: 'Transformers.js · веса и конфигурация' }] : []),
+      { id: 'browser' as const, title: 'Встроенная модель браузера', detail: 'Доступность проверяет браузер' },
+    ] },
+    { title: 'Подключение через API', providers: [
+      { id: 'local' as const, title: 'Локальный движок (ПК)', detail: 'Ollama / LM Studio / llama.cpp' },
+      { id: 'cloud' as const, title: 'Удалённый API', detail: 'Облако или свой сервер' },
+    ] },
   ];
+  const formatLabels = { chat: 'Чат-шаблон из файла', phi2: 'Формат инструкций Phi-2',
+    completion: 'Продолжение текста', custom: 'Свой шаблон' };
   const browserStatus: Record<string, string> = { available: 'Модель готова', downloadable: 'Требуется загрузка модели', downloading: 'Модель загружается', unavailable: 'Модель недоступна на этом устройстве' };
   function selectProvider(provider: AgentSettings['backend']) {
     if (draft.backend === provider) return;
     key = ''; availability = '';
     draft = { ...draft, backend: provider, endpoint: provider === settings.backend ? settings.endpoint : '', model: provider === 'portable' ? legacy : provider === settings.backend ? settings.model : '', portableDevice: provider === settings.backend ? settings.portableDevice : 'wasm', ...(legacy ? { legacyModel: legacy } : {}) };
+  }
+  function setFileFormat(format?: FilePromptFormat) {
+    if (!draft.model) return;
+    const formats = { ...draft.fileFormats };
+    if (format) formats[draft.model] = format;
+    else delete formats[draft.model];
+    draft.fileFormats = formats;
   }
   async function submit() {
     saving = true;
@@ -74,15 +90,20 @@
     {#if automatic}<div class="auto-active"><button type="button" onclick={revokeAuto}>{$i18n.text('Отключить автоответы во всех чатах')}</button></div>{/if}
     <fieldset disabled={saving || working || deleting || fileBusy}>
       <legend>{$i18n.text('Источник модели')}</legend>
-      <div class="providers">
-        {#each providers as provider}
-          <button type="button" aria-pressed={draft.backend === provider.id} class:selected={draft.backend === provider.id} onclick={() => selectProvider(provider.id)}><strong>{$i18n.text(provider.title)}</strong><small>{$i18n.text(provider.detail)}</small></button>
-        {/each}
-      </div>
+      {#each providerGroups as group}
+        <div role="group" aria-label={$i18n.text(group.title)} class="provider-group">
+          <small>{$i18n.text(group.title)}</small>
+          <div class="providers">
+            {#each group.providers as provider}
+              <button type="button" aria-pressed={draft.backend === provider.id} class:selected={draft.backend === provider.id} onclick={() => selectProvider(provider.id)}><strong>{$i18n.text(provider.title)}</strong><small>{$i18n.text(provider.detail)}</small></button>
+            {/each}
+          </div>
+        </div>
+      {/each}
       {#if draft.backend === 'file'}
-        <p>{$i18n.text('Выберите один файл GGUF с чат-шаблоном. Модель хранится в этом браузере и работает на устройстве. Совместимость зависит от модели, браузера и свободной памяти.')}</p>
+        <p>{$i18n.text('Выберите файл GGUF из хранилища устройства. Automesh подберёт формат запроса. Для запуска модели нужна свободная память.')}</p>
         <div class="row">
-          <button type="button" onclick={() => fileInput?.click()} disabled={!importModel}>{$i18n.text('Выбрать файл GGUF')}</button>
+          <button type="button" onclick={() => fileInput?.click()} disabled={!importModel}>{$i18n.text('Добавить файл GGUF')}</button>
           <input type="file" accept=".gguf" hidden bind:this={fileInput} onchange={async event => {
             const file = event.currentTarget.files?.[0];
             event.currentTarget.value = '';
@@ -104,7 +125,7 @@
             if (!deleteModel || !confirm($i18n.text('Удалить этот файл из хранилища браузера?'))) return;
             const id = draft.model;
             fileBusy = true;
-            try { if (await deleteModel(id)) { files = files.filter(entry => entry.id !== id); draft.model = ''; } }
+            try { if (await deleteModel(id)) { files = files.filter(entry => entry.id !== id); setFileFormat(); draft.model = ''; } }
             finally { fileBusy = false; }
           }}>{$i18n.text('Удалить модель')}</button>
         {/if}
@@ -112,6 +133,24 @@
           <option value="wasm">WASM — {$i18n.text('Совместимый режим')}</option>
           <option value="webgpu">WebGPU — {$i18n.text('Аппаратное ускорение')}</option>
         </select></label>
+        {#if draft.model}
+          <details>
+            <summary>{$i18n.text('Формат запроса')}</summary>
+            <select aria-label={$i18n.text('Формат запроса')} value={fileFormat?.mode ?? 'auto'} onchange={event => {
+              const mode = event.currentTarget.value;
+              setFileFormat(mode === 'completion' ? { mode } : mode === 'custom' ? { mode, template: FILE_PROMPT_SLOT } : undefined);
+            }}>
+              <option value="auto">{$i18n.text('Автоматически')}</option>
+              <option value="completion">{$i18n.text('Продолжение текста')}</option>
+              <option value="custom">{$i18n.text('Свой шаблон')}</option>
+            </select>
+            {#if fileFormat?.mode === 'custom'}
+              <label>{$i18n.text('Шаблон запроса')}<textarea rows="3" maxlength={MAX_FILE_PROMPT_TEMPLATE} value={fileFormat.template}
+                oninput={event => setFileFormat({ mode: 'custom', template: event.currentTarget.value })}></textarea></label>
+              <p>{$i18n.text('Укажите, куда подставить текст запроса. Используйте маркер')} <code>{FILE_PROMPT_SLOT}</code>.</p>
+            {/if}
+          </details>
+        {/if}
       {:else if draft.backend === 'portable'}
         <p>{$i18n.text('Модель работает на устройстве. Переписка не отправляется внешнему поставщику.')}</p>
         <strong>{model.title}</strong>
@@ -145,14 +184,16 @@
       <label>{$i18n.text('Тестовый запрос')}<input bind:value={testPrompt} maxlength="1000" placeholder={$i18n.text('Введите запрос для проверки модели')} /></label>
     </fieldset>
     <div class="row actions">
-      <button type="button" onclick={() => void test({ ...draft }, key, testPrompt.trim() || $i18n.text('Расскажи, что такое Луна, в одном предложении.'))} disabled={busy || working || saving || deleting || fileBusy || draft.backend === 'portable' && !downloaded || draft.backend === 'file' && !draft.model}>{$i18n.text('Проверить подключение')}</button>
-      <button class="primary" type="button" onclick={submit} disabled={saving || busy || working || deleting || fileBusy}>{$i18n.text('Сохранить настройки ИИ')}</button>
+      <button type="button" onclick={() => void test({ ...draft }, key, testPrompt.trim() || $i18n.text('Расскажи, что такое Луна, в одном предложении.'))} disabled={busy || working || saving || deleting || fileBusy || invalidFileFormat || draft.backend === 'portable' && !downloaded || draft.backend === 'file' && !draft.model}>{$i18n.text(draft.backend === 'file' ? 'Проверить модель' : 'Проверить подключение')}</button>
+      <button class="primary" type="button" onclick={submit} disabled={saving || busy || working || deleting || fileBusy || invalidFileFormat}>{$i18n.text('Сохранить настройки ИИ')}</button>
       {#if working}<button type="button" onclick={stop}>{$i18n.text('Отменить запрос ИИ')}</button>{/if}
     </div>
-    <p>{$i18n.text('При проверке отправляется только тестовый запрос, без переписки.')}</p>
+    {#if draft.backend !== 'file'}<p>{$i18n.text('При проверке отправляется только тестовый запрос, без переписки.')}</p>{/if}
     {#if progress && working}<div class="result" role="status"><span>{$i18n.text(progress.importing ? 'Проверка и копирование файла' : 'Загрузка модели')} · {Math.round(progress.loaded / 1000000)} / {Math.round(progress.total / 1000000)} MB</span><progress value={progress.loaded} max={Math.max(progress.total, progress.loaded, 1)}></progress></div>
-    {:else if notice || working}<div class="result" role="status">{working ? $i18n.text('Модель выполняет запрос…') : $i18n.text(notice)}</div>{/if}
-    {#if example && !working}<div class="result example"><small>{$i18n.text('Ответ модели')}</small><p>{example}</p></div>{/if}
+    {:else if notice || working}<div class="result" role="status">{working ? $i18n.text(fileProgress?.stage === 'loading' ? 'Открываем GGUF и загружаем модель в память…' : fileProgress?.stage === 'generating' ? 'Модель готова и формирует ответ…' : 'Модель выполняет запрос…') : $i18n.text(notice)}</div>{/if}
+    {#if example && !working}<div class="result example">
+      <small>{$i18n.text('Ответ модели')}{#if fileProgress?.stage === 'generating'} · {$i18n.text(formatLabels[fileProgress.format])}{/if}</small><p>{example}</p>
+    </div>{/if}
   </div>
 </div>
 
@@ -161,6 +202,8 @@
   fieldset { min-width:0; border:0; margin:0; padding:0; }
   legend { font-weight:600; margin-bottom:8px; }
   .providers { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr)); gap:8px; }
+  .provider-group { display:grid; gap:6px; }
+  details > :not(summary) { margin-top:8px; }
   .providers button { text-align:left; display:flex; flex-direction:column; gap:5px; padding:11px; min-width:0; }
   .providers button.selected { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
   label:not(.toggle) { display:grid; gap:6px; margin:12px 0; }
