@@ -68,6 +68,7 @@ import AgentChatControls from '$lib/agents/AgentChatControls.svelte';
 import AgentAskButton from '$lib/agents/AgentAskButton.svelte';
 import { clearFileModels, hasFileModel, importFileModel, removeFileModel } from '$lib/agents/file-models';
 import { stopFileModel } from '$lib/agents/file-model-client';
+import type { FileModelProgress } from '$lib/agents/file-model-prompt';
 import { portableDownloaded, preparePortableModel, deletePortableModel, stopPortableModel } from '$lib/agents/portable-client';
 import { portableModelId, PORTABLE_CACHE_PREFIX, type PortableProgress } from '$lib/agents/portable-models';
 import { emptyAgentSettings, normalizeAgentSettings, modelEndpoint, modelAvailability, generateAgentReply, agentKeyFor, type AgentSettings } from '$lib/agents/model';
@@ -396,6 +397,7 @@ const agentQueue: AgentEvent[] = [];
 let agentLimits = $state.raw(emptyAgentChatLimits());
 let agentKey = $state('');
 let agentProgress = $state<PortableProgress | null>(null);
+let agentFileProgress = $state<FileModelProgress | null>(null);
 let agentController: AbortController | null = null;
 $effect(() => {
   const { enabled, backend, model } = agentSettings;
@@ -2907,7 +2909,7 @@ async function sendTextOnly(admitted = false) {
 }
 
 function stopAgentRequest(): void {
-  agentController?.abort(); agentController = null; stopPortableModel(); stopFileModel(); agentBusy = false; agentProgress = null;
+  agentController?.abort(); agentController = null; stopPortableModel(); stopFileModel(); agentBusy = false; agentProgress = null; agentFileProgress = null;
 }
 function resetAgentRuntime(): void {
   agentPeers = []; agentQueue.length = 0; stopAgentRequest();
@@ -3013,15 +3015,18 @@ async function testAgentModel(value: AgentSettings, key: string, prompt: string)
   catch { agentNotice = 'Неверный адрес API или имя модели.'; return false; }
   const controller = new AbortController(), owner = address, generation = authGeneration;
   const selectedKey = agentKeyFor(agentSettings, settings, agentKey, key);
-  agentController = controller; agentBusy = true; agentNotice = ''; agentExample = ''; agentReplyPeer = ''; agentReplyNotice = '';
-  const timer = setTimeout(() => controller.abort(), 120000);
+  agentController = controller; agentBusy = true; agentNotice = ''; agentExample = ''; agentReplyPeer = ''; agentReplyNotice = ''; agentFileProgress = null;
+  const timer = setTimeout(() => controller.abort(new Error('agent_timeout')), settings.backend === 'file' ? 300000 : 120000);
   try {
-    const example = await generateAgentReply(settings, prompt, selectedKey, controller.signal, fetch, { allowBrowserDownload: networkSettings.internetEnabled !== false });
+    const example = await generateAgentReply(settings, prompt, selectedKey, controller.signal, fetch, {
+      allowBrowserDownload: networkSettings.internetEnabled !== false,
+      onFileProgress: progress => { if (controller === agentController) agentFileProgress = progress; },
+    });
     if (controller !== agentController || owner !== address || generation !== authGeneration || controller.signal.aborted) return false;
     agentExample = example; agentModelRevision++;
     agentNotice = 'Модель доступна. Проверка прошла успешно.'; return true;
   } catch (error) {
-    if (agentController === controller) agentNotice = agentErrorNotice(error, controller.signal.aborted);
+    if (agentController === controller) agentNotice = agentErrorNotice(controller.signal.reason ?? error, controller.signal.aborted, agentFileProgress);
     return false;
   } finally {
     clearTimeout(timer);
@@ -3056,13 +3061,14 @@ async function askInSavedMessages(): Promise<void> {
     return;
   }
   const controller = new AbortController();
+  const settings = { ...agentSettings };
   agentController = controller; agentBusy = true;
-  const timer = setTimeout(() => controller.abort(), 120000);
+  const timer = setTimeout(() => controller.abort(new Error('agent_timeout')), settings.backend === 'file' ? 300000 : 120000);
   const current = () => controller === agentController && owner === address && generation === authGeneration && !navigationBusy() && screen === 'account';
   try {
     const prompt = draft.trim();
     if (prompt.length > 4000 || !textFitsLimit(prompt, false)) throw new Error('agent_saved_prompt_too_long');
-    const reply = await generateAgentReply({ ...agentSettings }, prompt, agentKey, controller.signal, fetch, { allowBrowserDownload: false });
+    const reply = await generateAgentReply(settings, prompt, agentKey, controller.signal, fetch, { allowBrowserDownload: false });
     if (!current() || controller.signal.aborted) return;
     const entry = { from: owner, direction: 'outgoing' as const, delivery: 'delivered' as const, timestamp: Date.now() };
     const questionId = crypto.randomUUID(), replyId = crypto.randomUUID();
@@ -3079,20 +3085,22 @@ async function askInSavedMessages(): Promise<void> {
       if (current()) agentReplyNotice = 'Не удалось сохранить сообщение.';
     }
   } catch (error) {
-    if (current()) agentReplyNotice = agentErrorNotice(error, controller.signal.aborted);
+    if (current()) agentReplyNotice = agentErrorNotice(controller.signal.reason ?? error, controller.signal.aborted);
   } finally {
     clearTimeout(timer);
     if (controller === agentController) { agentController = null; agentBusy = false; }
   }
 }
 
-function agentErrorNotice(error: unknown, cancelled = false): string {
-  if (cancelled) return 'Запрос ИИ отменён.';
+function agentErrorNotice(error: unknown, cancelled = false, fileProgress: FileModelProgress | null = null): string {
   const code = error instanceof Error ? error.message : '';
+  if (code === 'agent_timeout') return fileProgress?.stage === 'loading'
+    ? 'Модель не успела загрузиться в память. Попробуйте другой режим или файл меньшего размера.'
+    : 'Модель не успела ответить за отведённое время.';
+  if (cancelled) return 'Запрос ИИ отменён.';
   if (code === 'agent_saved_prompt_too_long') return 'Сообщение слишком длинное для этого чата.';
   if (code === 'agent_file_format') return 'Выберите файл с расширением .gguf.';
   if (code === 'agent_file_invalid') return 'Файл повреждён или имеет другой формат.';
-  if (code === 'agent_file_template_missing') return 'В файле GGUF отсутствует чат-шаблон. Выберите версию модели для диалогов.';
   if (code === 'agent_file_missing') return 'Файл модели отсутствует. Выберите его снова в настройках ИИ.';
   if (code === 'agent_file_gpu_unavailable') return 'Аппаратное ускорение WebGPU недоступно. Попробуйте режим WASM.';
   if (code === 'agent_file_load_failed') return 'Не удалось открыть модель GGUF. Проверьте совместимость файла и свободную память или попробуйте другой режим.';
@@ -6454,7 +6462,7 @@ async function changePassword(): Promise<void> {
     <div class="settings-section">
       {#key address}<AgentSettingsPanel settings={agentSettings} busy={navigationBusy()} working={agentBusy} notice={agentNotice}
         example={agentExample} keyPresent={!!agentKey} automatic={Object.values(agentLimits.policies).some(policy => policy.automatic)} save={saveAgentSettings} test={testAgentModel} stop={stopAgentRequest} forgetKey={forgetAgentKey} revokeAuto={revokeAgentAuto}
-        prepare={prepareAgentModel} remove={removeAgentModel} importModel={addAgentFile} deleteModel={deleteAgentFile} progress={agentProgress} />{/key}
+        prepare={prepareAgentModel} remove={removeAgentModel} importModel={addAgentFile} deleteModel={deleteAgentFile} progress={agentProgress} fileProgress={agentFileProgress} />{/key}
     </div>
   {/if}
   {#if settingsSection === 'account'}
