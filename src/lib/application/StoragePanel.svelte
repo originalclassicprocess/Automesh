@@ -5,13 +5,15 @@
   import HelpInfo from './HelpInfo.svelte';
   import StorageFilePreview from './StorageFilePreview.svelte';
   import ChoiceMenu from './ChoiceMenu.svelte';
+  import type { Snippet } from 'svelte';
   let { files, historyBytes, otherBytes, cacheBytes, originUsage, quota, volatile, busy, error,
-    refresh, clean, download, chats = [], name = peer => peer, openChat, urls = {}, loadPreview }: {
+    refresh, clean, download, chats = [], name = peer => peer, openChat, urls = {}, loadPreview, modelStorage }: {
     files: ManagedFile[]; historyBytes: number; otherBytes: number; cacheBytes: number;
     originUsage?: number; quota?: number; volatile: boolean; busy: boolean; error: string;
     refresh: () => void; clean: (kind: string, ids: string[]) => void; download: (peer: string, id: string) => void;
     chats?: ChatStorageUsage[]; name?: (peer: string) => string; openChat?: (peer: string) => void;
     urls?: Record<string,string>; loadPreview?: (file:ManagedFile)=>Promise<Blob|null>;
+    modelStorage?: Snippet;
   } = $props();
   let category = $state('all'), query = $state(''), from = $state(''), to = $state(''), sort = $state('size');
   let peer = $state<string | null>(null), selected = $state<string[]>([]), limit = $state(36), allChats = $state(false);
@@ -46,6 +48,7 @@
   </div>
   {#if volatile}<p class="note">{$i18n.text('Недоверенный режим: новая переписка находится в памяти вкладки. Здесь также видны оставшиеся данные прошлых доверенных сеансов.')}</p>{/if}
   {#if error}<p role="alert">{$i18n.text(error)}</p>{/if}
+  {@render modelStorage?.()}
   <details class="chats" open><summary>{$i18n.text('По чатам')}</summary>
     <div class="chat-list">{#each chats.slice(0,allChats?chats.length:6) as group (group.peer)}<button class:chosen={peer===group.peer} onclick={()=>showChat(group.peer)}><span class="chat-name">{group.peer?name(group.peer):$i18n.text('Файлы вне истории')}<small>{group.files} {$i18n.text('файлов')} · {group.messages} {$i18n.text('сообщений')}</small></span><span class="chat-size"><strong>{$i18n.system(formatBytes(group.bytes+group.historyBytes))}</strong><small>{group.historyBytes?$i18n.text('с учётом оценки переписки'):''} ›</small></span></button>{:else}<p class="note">{$i18n.text('Здесь пока нет данных.')}</p>{/each}</div>
     {#if chats.length>6}<button onclick={()=>allChats=!allChats}>{allChats?$i18n.text('Свернуть'):$i18n.text('Все чаты')}</button>{/if}

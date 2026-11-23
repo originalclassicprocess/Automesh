@@ -1,3 +1,5 @@
+import type { AgentTurn } from './local-chat';
+
 export type FilePromptFormat = { mode: 'completion' } | { mode: 'custom'; template: string };
 export type FilePromptKind = 'chat' | 'phi2' | 'completion' | 'custom';
 export type FileModelProgress = { stage: 'loading' } | { stage: 'generating'; format: FilePromptKind };
@@ -25,11 +27,16 @@ export function normalizeFilePromptFormats(value: unknown): Record<string, FileP
 }
 
 export function fileModelPrompt(hasChatTemplate: boolean, architecture: string | undefined, format: FilePromptFormat | undefined,
-  system: string, input: string): { kind: 'chat' } | { kind: Exclude<FilePromptKind, 'chat'>; prompt: string; stop?: string[] } {
+  system: string, input: string, history: AgentTurn[] = []): { kind: 'chat' } | { kind: Exclude<FilePromptKind, 'chat'>; prompt: string; stop?: string[] } {
   const text = system ? `${system}\n\n${input}` : input;
-  if (format?.mode === 'custom') return { kind: 'custom', prompt: format.template.replaceAll(FILE_PROMPT_SLOT, () => text) };
-  if (format?.mode === 'completion') return { kind: 'completion', prompt: text };
+  const custom = format?.mode === 'custom' ? format.template : undefined;
+  const completion = history.length ? `${history.map(turn => turn.content).join('\n\n')}\n\n${text}` : text;
+  if (custom) return { kind: 'custom', prompt: custom.replaceAll(FILE_PROMPT_SLOT, () => completion) };
+  if (format?.mode === 'completion') return { kind: 'completion', prompt: completion };
   if (hasChatTemplate) return { kind: 'chat' };
-  if (architecture === 'phi2') return { kind: 'phi2', prompt: `Instruct: ${text}\nOutput:`, stop: ['\nInstruct:', '\nOutput:'] };
-  return { kind: 'completion', prompt: text };
+  if (architecture === 'phi2') {
+    const previous = history.map(turn => turn.role === 'user' ? `Instruct: ${turn.content}\n` : `Output: ${turn.content}\n\n`).join('');
+    return { kind: 'phi2', prompt: `${previous}Instruct: ${text}\nOutput:`, stop: ['\nInstruct:', '\nOutput:'] };
+  }
+  return { kind: 'completion', prompt: completion };
 }

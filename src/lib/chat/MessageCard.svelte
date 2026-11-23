@@ -4,7 +4,7 @@
   import ChatIcon from './ChatIcon.svelte';
   import { selectionGesture } from './message-selection-gesture';
   let { children, outgoing = false, sticker = false, selecting = false, selected = false, highlighted = false, busy = false, preview, onSelect, onBeginSelect,onReaction,reactionBusy=false,reactionOpen=false }:
-    { children: Snippet; outgoing?: boolean; sticker?: boolean; selecting?: boolean; selected?: boolean; highlighted?: boolean; busy?: boolean; preview: string; onSelect: () => void; onBeginSelect?: () => void;onReaction?:()=>void;reactionBusy?:boolean;reactionOpen?:boolean } = $props();
+    { children: Snippet; outgoing?: boolean; sticker?: boolean; selecting?: boolean; selected?: boolean; highlighted?: boolean; busy?: boolean; preview: string; onSelect?: () => void; onBeginSelect?: () => void;onReaction?:()=>void;reactionBusy?:boolean;reactionOpen?:boolean } = $props();
 </script>
 <div class="chat-message" use:selectionGesture={{canBegin:()=>!selecting&&!busy&&!!onBeginSelect,onBegin:()=>onBeginSelect?.()}} class:outgoing class:sticker class:has-reaction={!!onReaction&&!selecting} class:touch-selectable={!!onBeginSelect} class:selectable={selecting} class:selected class:highlighted>
   {#if selecting}

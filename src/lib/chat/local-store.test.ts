@@ -9,6 +9,7 @@ import { callRecordLabel } from '$lib/calls/history';
 import {portableChatData} from '$lib/backup/full-backup';
 import {dataOnlyChatData} from '$lib/backup/data-backup';
 import {dataDestinationEmpty} from '$lib/backup/data-backup-browser';
+import { recentAgentTurns } from '$lib/agents/local-chat';
 
 const accountId = encodeAccountId(new Uint8Array(20).fill(1));
 const otherId = encodeAccountId(new Uint8Array(20).fill(2));
@@ -21,6 +22,28 @@ describe('encrypted local chat data', () => {
     const sealed = await sealChatData(key, accountId, data);
     expect(new TextDecoder().decode(sealed.cipher)).not.toContain('model.example.test');
     expect((await openSealedChatData(key, accountId, sealed)).agentSettings).toEqual(data.agentSettings);
+    await expect(openSealedChatData(key, otherId, sealed)).rejects.toThrow('account_mismatch');
+  });
+  it('encrypts the local AI transcript separately and uses only completed recent turns for context', async () => {
+    const key = await deriveChatStoreKey(new Uint8Array(32).fill(27), accountId);
+    const localAgentHistory: NonNullable<LocalChatData['localAgentHistory']> = [
+      { id: crypto.randomUUID(), role: 'user', content: 'Private assistant question', timestamp: 1 },
+      { id: crypto.randomUUID(), role: 'assistant', content: 'Private assistant answer', timestamp: 2 },
+      { id: crypto.randomUUID(), role: 'user', content: 'Unanswered earlier prompt', timestamp: 3 },
+    ];
+    const data: LocalChatData = { selfNickname: '', readReceiptsEnabled: true, autoLockMinutes: 15, peerReadPreferences: {}, aliases: {}, declaredNames: {}, peerPublicKeys: {},
+      chats: { order: [], byPeer: {} }, localAgentHistory, localAgentModelId: crypto.randomUUID() };
+    const sealed = await sealChatData(key, accountId, data);
+    expect(new TextDecoder().decode(sealed.cipher)).not.toContain('Private assistant');
+    const restored = await openSealedChatData(key, accountId, sealed);
+    const history = restored.localAgentHistory!;
+    expect(history).toEqual(localAgentHistory);
+    expect(restored.localAgentModelId).toBe(data.localAgentModelId);
+    expect(dataOnlyChatData(data).localAgentHistory).toBeUndefined();
+    expect(recentAgentTurns(history, 'Follow-up')).toEqual([
+      { role: 'user', content: 'Private assistant question' },
+      { role: 'assistant', content: 'Private assistant answer' },
+    ]);
     await expect(openSealedChatData(key, otherId, sealed)).rejects.toThrow('account_mismatch');
   });
   it('encrypts native channel history separately from account chats and retains it in portable data without radio secrets',async()=>{

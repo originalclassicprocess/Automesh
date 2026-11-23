@@ -2,8 +2,9 @@ import { Wllama } from '@wllama/wllama';
 import wasm from '@wllama/wllama/esm/wasm/wllama.wasm?url';
 import compatWasm from '@wllama/wllama-compat/wasm/wllama.wasm?url';
 import { fileModelPrompt, type FilePromptFormat } from './file-model-prompt';
+import type { AgentTurn } from './local-chat';
 
-type Prompt = { file?: File; device: 'wasm' | 'webgpu'; system: string; input: string; maxTokens: number; format?: FilePromptFormat };
+type Prompt = { file?: File; device: 'wasm' | 'webgpu'; system: string; input: string; maxTokens: number; format?: FilePromptFormat; history?: AgentTurn[] };
 let engine: Wllama | undefined;
 
 self.onmessage = async ({ data }: MessageEvent<Prompt>) => {
@@ -22,7 +23,7 @@ self.onmessage = async ({ data }: MessageEvent<Prompt>) => {
     }
     const model = engine!;
     const prompt = fileModelPrompt(!!model.getChatTemplate(), model.getModelMetadata().meta['general.architecture'],
-      data.format, data.system, data.input);
+      data.format, data.system, data.input, data.history);
     stage = 'agent_file_run_failed';
     self.postMessage({ progress: { stage: 'generating', format: prompt.kind } });
     const options = { stream: false as const, max_tokens: data.maxTokens };
@@ -31,6 +32,7 @@ self.onmessage = async ({ data }: MessageEvent<Prompt>) => {
         ...options,
         messages: [
           ...(data.system ? [{ role: 'system' as const, content: data.system }] : []),
+          ...(data.history ?? []),
           { role: 'user', content: data.input }
         ],
       });

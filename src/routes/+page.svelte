@@ -65,12 +65,15 @@ import SettingsLinks from '$lib/application/SettingsLinks.svelte';
 import { settingsMenu, settingsDescriptions, settingsLocation, connectionMenu, mediaSettingsMenu, type SettingsSection, type LegacySettingsSection, type ConnectionSection, type MediaSettingsSection } from '$lib/application/settings-structure';
 import AgentSettingsPanel from '$lib/agents/AgentSettings.svelte';
 import AgentChatControls from '$lib/agents/AgentChatControls.svelte';
-import AgentAskButton from '$lib/agents/AgentAskButton.svelte';
-import { clearFileModels, hasFileModel, importFileModel, removeFileModel } from '$lib/agents/file-models';
-import { stopFileModel } from '$lib/agents/file-model-client';
+import LocalAgentChat from '$lib/agents/LocalAgentChat.svelte';
+import AgentStoragePanel from '$lib/agents/AgentStoragePanel.svelte';
+import type { StoredAgentModel } from '$lib/agents/model-storage';
+import { MAX_LOCAL_AGENT_MESSAGES, MAX_LOCAL_AGENT_PROMPT, normalizeLocalAgentHistory, recentAgentTurns, type LocalAgentMessage } from '$lib/agents/local-chat';
+import { clearFileModels, hasFileModel, importFileModel, listFileModels, removeFileModel, type FileModel } from '$lib/agents/file-models';
+import { fileModelRuntime, stopFileModel } from '$lib/agents/file-model-client';
 import type { FileModelProgress } from '$lib/agents/file-model-prompt';
 import { portableDownloaded, preparePortableModel, deletePortableModel, stopPortableModel } from '$lib/agents/portable-client';
-import { portableModelId, PORTABLE_CACHE_PREFIX, type PortableProgress } from '$lib/agents/portable-models';
+import { portableModelId, PORTABLE_MODELS, PORTABLE_CACHE_PREFIX, type PortableProgress } from '$lib/agents/portable-models';
 import { emptyAgentSettings, normalizeAgentSettings, modelEndpoint, modelAvailability, generateAgentReply, agentKeyFor, type AgentSettings } from '$lib/agents/model';
 import { incomingAgentPrompt, incomingNativeAgentPrompt, radioAgentCommand, formatAgentReply, AGENT_QUEUE_SIZE, AGENT_REPLY_DETAILS, type AgentEvent } from '$lib/agents/runtime';
 import { agentChatPolicy, emptyAgentChatLimits, normalizeAgentChatLimits, reserveAgentRequest, senderAgentLimit, type AgentChatPolicy, type AgentChatLimits } from '$lib/agents/limits';
@@ -399,6 +402,29 @@ let agentKey = $state('');
 let agentProgress = $state<PortableProgress | null>(null);
 let agentFileProgress = $state<FileModelProgress | null>(null);
 let agentController: AbortController | null = null;
+let localAgentOpen = $state(false);
+let localAgentHistory = $state.raw<LocalAgentMessage[]>([]);
+let localAgentDraft = $state('');
+let localAgentBusy = $state(false);
+let localAgentNotice = $state('');
+let localAgentModelId = $state('');
+let localAgentModelSaving = $state(false);
+let localAgentFiles = $state.raw<FileModel[]>([]);
+let localAgentChoice = $derived(localAgentModelId || (agentSettings.backend === 'file' ? agentSettings.model : ''));
+let localAgentBuiltIn = $derived(agentSettings.backend === 'portable' ? PORTABLE_MODELS[portableModelId(agentSettings.model)].title
+  : agentSettings.backend === 'browser' ? $i18n.text('Встроенная модель браузера') : '');
+let localAgentReady = $derived(agentSettings.enabled && (localAgentChoice
+  ? localAgentFiles.some(file => file.id === localAgentChoice)
+  : agentModelReady && !agentUsesEndpoint() && agentSettings.backend !== 'file'));
+$effect(() => {
+  void agentModelRevision;
+  if (!localAgentOpen || accountView !== 'chats') return;
+  let current = true;
+  void listFileModels().then(files => { if (current) localAgentFiles = files; }).catch(() => {
+    if (current) localAgentFiles = [];
+  });
+  return () => { current = false; };
+});
 $effect(() => {
   const { enabled, backend, model } = agentSettings;
   void agentModelRevision;
@@ -818,7 +844,7 @@ $effect(() => {
   openDirectChat(id);
   status = id === address ? 'Это ваш аккаунт.' : 'Контакт открыт. Напишите первое сообщение, чтобы отправить запрос.';
 });
-type PageRoute = { screen: Screen; layer: string; view: typeof accountView; peer: string; card: string;
+type PageRoute = { screen: Screen; layer: string; view: typeof accountView; peer: string; card: string; localAgent?: boolean;
   pane: 'list' | 'chat'; settings: LegacySettingsSection; connection: ConnectionSection; media?: MediaSettingsSection; gallery: string };
 let pageNavigation = $state.raw<PageNavigation<PageRoute> | null>(null);
 let navigationAccount = '';
@@ -831,6 +857,7 @@ function currentPageRoute(): PageRoute {
   const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : editDraft ? 'message-edit' : reactionTarget ? 'reaction-picker' : stagedPreview!==null ? 'attachment-preview' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
     backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
+    ...(localAgentOpen ? { localAgent: true } : {}),
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
     connection: accountView === 'profile' && settingsSection === 'connection' ? connectionSection : 'direct',
     media: accountView === 'profile' && settingsSection === 'files' ? mediaSettingsSection : 'overview', gallery: galleryId } : { ...rootRoute(screen), layer };
@@ -931,6 +958,7 @@ function receiveNativeStatus(node:number,update:ChannelStatus){
 }
 function openNativeChannels(value?:string){
   if(navigationBusy()||voiceBusy||!meshtastic.enabled)return;
+  localAgentOpen=false;
   clearMediaPreview();selecting=false;messageTools=null;attachmentMenu=false;emojiOpen=false;nativeOpen=true;mobilePane='chat';
   selectNativeChannel(value||nativeLive[0]||(nativeListed[0]?nativeToken(nativeListed[0]):''));
 }
@@ -1010,6 +1038,8 @@ let radioConnection = $derived(radioBusy || radioChecking ? 'connecting' as cons
 const nativeListed=$derived(visibleNativeChannels(meshtastic,radioConnection==='connected'?radioSnapshot?.node:undefined,nativeLive,chatSearch));
 const conversationItems=$derived([
   ...listedPeers.map(peer=>({kind:'chat' as const,id:peer,time:peer===address?Number.MAX_SAFE_INTEGER:sessionChats.byPeer[peer]?.messages.at(-1)?.timestamp??0})),
+  ...(profileNetwork && (!chatSearch.trim() || [$i18n.text('ИИ-чат'), 'AI'].some(name => name.toLowerCase().includes(chatSearch.trim().toLowerCase())))
+    ? [{ kind: 'agent' as const, id: 'local', time: Number.MAX_SAFE_INTEGER - 1 }] : []),
   ...nativeListed.map(channel=>({kind:'radio' as const,id:nativeToken(channel),channel,time:channel.messages.at(-1)?.timestamp??0}))
 ].sort((a,b)=>b.time-a.time));
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
@@ -1674,6 +1704,8 @@ function applyChatData(saved: LocalChatData): void {
   resetAgent();
   agentSettings=normalizeAgentSettings(saved.agentSettings);
   agentLimits=normalizeAgentChatLimits(saved.agentChatLimits);
+  localAgentHistory=normalizeLocalAgentHistory(saved.localAgentHistory);
+  localAgentModelId = saved.localAgentModelId ?? '';
   notificationState = normalizeNotifications(saved.notifications);
   meshtastic=normalizeNativeChannels(saved.meshtastic);
   radioState = normalizeRadioState(saved.radioState);
@@ -1860,7 +1892,7 @@ function focusComposer(node: HTMLTextAreaElement, _peer: string) {
 }
 
 function canDropFiles(): boolean {
-  return !nativeOpen && screen === 'account' && accountView === 'chats' && !!chat && !!activeConversation &&
+  return !nativeOpen && !localAgentOpen && screen === 'account' && accountView === 'chats' && !!chat && !!activeConversation &&
     activeConversation.contact === 'accepted' && !navigationBusy() && !attachingFiles && !voiceBusy &&
     !selecting && !galleryId && !messageTools && !nodeBudgetOpen && !networkSummaryOpen && !mediaOpen;
 }
@@ -1882,7 +1914,7 @@ function openConnectionSection(section: 'direct' | 'servers' | 'outgoing' | 'inc
 
 function showChatList(): void {
   if (navigationBusy()) return;
-  nativeOpen=false;
+  nativeOpen=false; localAgentOpen=false;
   clearMediaPreview();
   messageTools = null; selecting = false; selectedMessages = []; attachmentMenu = false;
   restoringPage = true;
@@ -1990,6 +2022,8 @@ function restorePageRoute(route: PageRoute): void {
   if (route.layer !== 'media-library') { mediaOpen = false; receivedPack = null; }
   if (accountView !== route.view || peerCardAddress !== route.card) changeAccountView(route.view);
   if (route.peer && !sessionChats.byPeer[route.peer]) return;
+  localAgentOpen = route.localAgent === true && profileNetwork;
+  if (localAgentOpen) nativeOpen = false;
   sessionChats = { ...sessionChats, activePeer: route.peer };
   mobilePane = route.pane; if (reopenChat) chatOpenToken++;
   if (route.view === 'profile') {
@@ -2016,7 +2050,7 @@ function backWithinApp(): void {
   if(reactionTarget){reactionTarget=null;return;}
   if (messageTools) { messageTools = null; return; }
   if (screen === 'account' && accountView === 'profile' && !openHelp && !pendingExit && !backupOpen && !panicOpen && !memoryConfirmation && !nodeScannerOpen && !networkSummaryOpen && !nodeBudgetOpen) {
-    const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane};
+    const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane,...(localAgentOpen ? {localAgent:true} : {})};
     const parent=settingsParent(route);
     if (parent) pageNavigation?.backTo(candidate=>sameSettingsLocation(candidate,parent),parent);
     else pageNavigation?.backTo(candidate=>candidate.screen==='account'&&candidate.view!=='profile'&&!candidate.layer&&!candidate.gallery,{...route,view:'chats'});
@@ -2109,7 +2143,7 @@ function selectSettings(section: LegacySettingsSection): void {
   if (settingsSection === 'overview' && section !== 'overview' && accountView === 'profile' && !restoringPage && routerReady) {
     // Shortcut entries (indicators/profile) still get a Settings parent.
     pageNavigation?.visit({ ...rootRoute('account'), view: 'profile', settings: 'overview',
-      peer: sessionChats.activePeer, pane: mobilePane });
+      peer: sessionChats.activePeer, pane: mobilePane, ...(localAgentOpen ? { localAgent: true } : {}) });
   }
   memoryConfirmation = null;
   backupOpen = false;
@@ -2910,6 +2944,7 @@ async function sendTextOnly(admitted = false) {
 
 function stopAgentRequest(): void {
   agentController?.abort(); agentController = null; stopPortableModel(); stopFileModel(); agentBusy = false; agentProgress = null; agentFileProgress = null;
+  localAgentBusy = false;
 }
 function resetAgentRuntime(): void {
   agentPeers = []; agentQueue.length = 0; stopAgentRequest();
@@ -2957,6 +2992,8 @@ async function toggleAgentPeer(peer: string, enabled = !agentPeerEnabled(peer)):
 function forgetAgentKey(): void { resetAgentRuntime(); agentKey = ''; }
 function resetAgent(): void {
   resetAgentRuntime(); agentSettings = emptyAgentSettings(); agentLimits = emptyAgentChatLimits(); agentKey = ''; agentNotice = ''; agentExample = '';
+  localAgentOpen = false; localAgentHistory = []; localAgentDraft = ''; localAgentNotice = '';
+  localAgentModelId = ''; localAgentModelSaving = false; localAgentFiles = [];
 }
 
 function agentRadioChannel(peer: string): NativeChannel | undefined {
@@ -3037,7 +3074,11 @@ async function testAgentModel(value: AgentSettings, key: string, prompt: string)
 async function addAgentFile(file: File) {
   const generation = authGeneration;
   agentNotice = ''; agentExample = '';
-  try { return await importFileModel(file); }
+  try {
+    const imported = await importFileModel(file);
+    if (generation === authGeneration) agentModelRevision++;
+    return imported;
+  }
   catch (error) {
     if (generation === authGeneration) agentNotice = error instanceof Error && error.message.startsWith('agent_file_')
       ? agentErrorNotice(error) : 'Не удалось сохранить модель. Проверьте свободное место.';
@@ -3047,48 +3088,82 @@ async function addAgentFile(file: File) {
 async function deleteAgentFile(id: string): Promise<boolean> {
   const generation = authGeneration;
   agentNotice = ''; agentExample = '';
-  if (agentSettings.backend === 'file' && id === agentSettings.model) stopAgentRequest();
+  if ($fileModelRuntime?.id === id) stopAgentRequest();
   try { await removeFileModel(id); agentModelRevision++; return true; }
   catch { if (generation === authGeneration) agentNotice = 'Не удалось удалить файл модели.'; return false; }
 }
 
-async function askInSavedMessages(): Promise<void> {
-  const owner = address, generation = authGeneration, draft = sessionChats.byPeer[owner]?.draft;
-  if (!draft?.trim() || sessionChats.activePeer !== owner || !agentModelReady || agentBusy || navigationBusy() || pastedFiles.length) return;
-  agentReplyPeer = owner; agentReplyNotice = '';
-  if (agentSettings.backend === 'cloud' && networkSettings.internetEnabled === false) {
-    agentReplyNotice = 'Доступ к интернету отключён.';
-    return;
-  }
-  const controller = new AbortController();
-  const settings = { ...agentSettings };
-  agentController = controller; agentBusy = true;
-  const timer = setTimeout(() => controller.abort(new Error('agent_timeout')), settings.backend === 'file' ? 300000 : 120000);
-  const current = () => controller === agentController && owner === address && generation === authGeneration && !navigationBusy() && screen === 'account';
+function openLocalAgentChat(): void {
+  if (navigationBusy() || ephemeralOpening || !profileNetwork) return;
+  nativeOpen = false; localAgentOpen = true;
+  sessionChats = { ...sessionChats, activePeer: '' };
+  mobilePane = 'chat';
+  selecting = false; selectedMessages = []; messageTools = null; attachmentMenu = false;
+  chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; editDraft = null; reactionTarget = null;
+  ordinaryUnreadBoundary = ''; closeEphemeral(); clearMediaPreview();
+}
+
+async function selectLocalAgentModel(id: string): Promise<void> {
+  if (agentBusy || localAgentModelSaving || navigationBusy() || !localAgentOpen || screen !== 'account') return;
+  if (id ? !localAgentFiles.some(file => file.id === id) : !localAgentBuiltIn) return;
+  if (localAgentChoice === id) return;
+  const previous = localAgentModelId;
+  const generation = authGeneration;
+  localAgentModelSaving = true;
+  localAgentNotice = '';
+  stopFileModel();
+  stopPortableModel();
+  localAgentModelId = id;
   try {
-    const prompt = draft.trim();
-    if (prompt.length > 4000 || !textFitsLimit(prompt, false)) throw new Error('agent_saved_prompt_too_long');
-    const reply = await generateAgentReply(settings, prompt, agentKey, controller.signal, fetch, { allowBrowserDownload: false });
-    if (!current() || controller.signal.aborted) return;
-    const entry = { from: owner, direction: 'outgoing' as const, delivery: 'delivered' as const, timestamp: Date.now() };
-    const questionId = crypto.randomUUID(), replyId = crypto.randomUUID();
-    sessionChats = updateConversation(sessionChats, owner, conversation => ({
-      ...conversation, draft: conversation.draft === draft ? '' : conversation.draft,
-      messages: [...conversation.messages, { ...entry, id: questionId, text: prompt },
-        { ...entry, id: replyId, text: formatAgentReply(reply, 'direct'), details: AGENT_REPLY_DETAILS }],
-    }));
-    if (!await persistLocalChats() && owner === address && generation === authGeneration) {
-      sessionChats = updateConversation(sessionChats, owner, conversation => ({
-        ...conversation, draft: conversation.draft || draft,
-        messages: conversation.messages.filter(message => message.id !== questionId && message.id !== replyId),
-      }));
-      if (current()) agentReplyNotice = 'Не удалось сохранить сообщение.';
+    if (!await persistLocalChats() && generation === authGeneration) {
+      localAgentModelId = previous;
+      localAgentNotice = 'Не удалось сохранить выбор модели.';
+    }
+  } finally { if (generation === authGeneration) localAgentModelSaving = false; }
+}
+
+async function sendLocalAgentMessage(retry = false): Promise<void> {
+  const owner = address, generation = authGeneration, previous = localAgentHistory;
+  const last = previous.at(-1);
+  const draft = localAgentDraft;
+  const prompt = retry ? (last?.role === 'user' ? last.content : '') : draft.trim();
+  if (!prompt || prompt.length > MAX_LOCAL_AGENT_PROMPT || !localAgentOpen ||
+    !localAgentReady || agentBusy || localAgentModelSaving || navigationBusy() || screen !== 'account') return;
+  const controller = new AbortController();
+  const settings: AgentSettings = localAgentChoice
+    ? { ...agentSettings, backend: 'file', model: localAgentChoice, endpoint: '' } : { ...agentSettings };
+  agentController = controller; agentBusy = true; localAgentBusy = true; localAgentNotice = '';
+  const timer = setTimeout(() => controller.abort(new Error('agent_timeout')), settings.backend === 'file' ? 300000 : 120000);
+  const sameAccount = () => owner === address && generation === authGeneration && screen === 'account';
+  const current = () => controller === agentController && sameAccount();
+  try {
+    if (!retry) {
+      localAgentDraft = '';
+      const pending = [...previous, { id: crypto.randomUUID(), role: 'user' as const, content: prompt, timestamp: Date.now() }].slice(-MAX_LOCAL_AGENT_MESSAGES);
+      localAgentHistory = pending;
+      if (!await persistLocalChats()) {
+        if (sameAccount() && localAgentHistory === pending) { localAgentHistory = previous; localAgentDraft ||= draft; }
+        if (current()) localAgentNotice = 'Не удалось сохранить сообщение.';
+        return;
+      }
+    }
+    if (!current()) return;
+    const reply = await generateAgentReply(settings, prompt, '', controller.signal, fetch, {
+      allowBrowserDownload: false, localHistory: recentAgentTurns(retry ? previous.slice(0, -1) : previous, prompt),
+    });
+    if (!current() || navigationBusy() || controller.signal.aborted) return;
+    const committed = localAgentHistory;
+    const next = [...committed, { id: crypto.randomUUID(), role: 'assistant' as const, content: reply, timestamp: Date.now() }].slice(-MAX_LOCAL_AGENT_MESSAGES);
+    localAgentHistory = next;
+    if (!await persistLocalChats() && sameAccount() && localAgentHistory === next) {
+      localAgentHistory = committed;
+      if (current()) localAgentNotice = 'Не удалось сохранить сообщение.';
     }
   } catch (error) {
-    if (current()) agentReplyNotice = agentErrorNotice(controller.signal.reason ?? error, controller.signal.aborted);
+    if (current()) localAgentNotice = agentErrorNotice(controller.signal.reason ?? error, controller.signal.aborted);
   } finally {
     clearTimeout(timer);
-    if (controller === agentController) { agentController = null; agentBusy = false; }
+    if (controller === agentController) { agentController = null; agentBusy = false; localAgentBusy = false; }
   }
 }
 
@@ -3098,7 +3173,7 @@ function agentErrorNotice(error: unknown, cancelled = false, fileProgress: FileM
     ? 'Модель не успела загрузиться в память. Попробуйте другой режим или файл меньшего размера.'
     : 'Модель не успела ответить за отведённое время.';
   if (cancelled) return 'Запрос ИИ отменён.';
-  if (code === 'agent_saved_prompt_too_long') return 'Сообщение слишком длинное для этого чата.';
+  if (code === 'agent_chat_requires_local_model') return 'Выберите модель, которая запускается в браузере.';
   if (code === 'agent_file_format') return 'Выберите файл с расширением .gguf.';
   if (code === 'agent_file_invalid') return 'Файл повреждён или имеет другой формат.';
   if (code === 'agent_file_missing') return 'Файл модели отсутствует. Выберите его снова в настройках ИИ.';
@@ -3134,6 +3209,7 @@ async function prepareAgentModel(value: AgentSettings, weights?: File): Promise<
   const settings = normalizeAgentSettings(value), controller = new AbortController(), owner = address, generation = authGeneration;
   const current = () => agentController === controller && address === owner && generation === authGeneration && screen === 'account';
   agentController = controller; agentBusy = true; agentNotice = ''; agentProgress = null; agentReplyPeer = ''; agentReplyNotice = '';
+  stopFileModel();
   const timer = setTimeout(() => controller.abort(), 45 * 60 * 1000);
   try {
     await preparePortableModel(portableModelId(settings.model), settings.portableDevice ?? 'wasm', controller.signal,
@@ -3151,6 +3227,21 @@ async function removeAgentModel(value: AgentSettings): Promise<void> {
     if (owner === address && generation === authGeneration) { agentModelRevision++; agentNotice = 'Модель удалена с устройства.'; }
   }
   catch { if (owner === address && generation === authGeneration) agentNotice = 'Не удалось удалить модель.'; }
+}
+
+async function removeStoredAgentModel(model: StoredAgentModel): Promise<boolean> {
+  if (agentBusy || navigationBusy() || screen !== 'account') return false;
+  const generation = authGeneration;
+  try {
+    if (model.kind === 'gguf') {
+      if (!await deleteAgentFile(model.id)) return false;
+    } else {
+      await deletePortableModel(model.id);
+      if (generation === authGeneration) agentModelRevision++;
+    }
+    if (generation === authGeneration) void refreshStorage();
+    return true;
+  } catch { return false; }
 }
 
 function onAgentIncoming(event: CommittedIncoming): void {
@@ -4200,7 +4291,7 @@ async function openConversation(peer: string) {
   // Keep an unconfirmed recording with its original chat.
   if (voiceBusy && sessionChats.activePeer !== peer) return;
   ordinaryUnreadBoundary=sessionChats.byPeer[peer]?.unread?firstUnreadMessageId(sessionChats.byPeer[peer].messages)??'':'';
-  nativeOpen=false;
+  nativeOpen=false; localAgentOpen=false;
   selecting = false; selectedMessages = []; attachmentMenu = false; chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; closeEphemeral();
   messageTools = null;
   mobilePane = 'chat';
@@ -5479,6 +5570,8 @@ function chatSnapshot(): LocalChatData {
   return snapshotLocalChatData({
     agentSettings:normalizeAgentSettings(agentSettings),
     agentChatLimits:agentLimits,
+    ...(localAgentHistory.length ? { localAgentHistory } : {}),
+    ...(localAgentModelId ? { localAgentModelId } : {}),
     notifications: normalizeNotifications(notificationState),
     meshtastic,
     radioState,
@@ -6201,10 +6294,16 @@ async function changePassword(): Promise<void> {
     <StoragePanel files={storageFiles} historyBytes={storageHistoryBytes} otherBytes={storageOtherBytes}
       cacheBytes={storageCacheBytes} originUsage={storageOriginUsage} quota={storageQuota}
       volatile={!trustedSession} busy={memoryBusy || storageReading} error={storageError}
-      refresh={() => void refreshStorage()} clean={(kind, ids) => memoryConfirmation = { kind, ids }}
+      refresh={() => { agentModelRevision++; void refreshStorage(); }} clean={(kind, ids) => memoryConfirmation = { kind, ids }}
       download={(peer, id) => void downloadFile(peer, id)}
       chats={chatStorageUsage(sessionChats,storageFiles)} name={contactName} openChat={peer=>void openDirectChat(peer)}
-      loadPreview={loadStoragePreview} />
+      loadPreview={loadStoragePreview}>
+      {#snippet modelStorage()}
+        <AgentStoragePanel revision={agentModelRevision} busy={navigationBusy() || storageReading}
+          working={agentBusy} onRemove={removeStoredAgentModel}
+          onUnload={() => { if (!navigationBusy()) stopAgentRequest(); }} />
+      {/snippet}
+    </StoragePanel>
   {/if}
 
   {#if settingsSection === 'about'}<AboutProject />{/if}
@@ -6584,7 +6683,14 @@ async function changePassword(): Promise<void> {
       <ContactSearch bind:query={chatSearch} ownId={address} knownIds={sessionChats.order} onOpen={(peer, route) => void addConversation(peer, route)} />
       <div class="conversation-items">
       {#each conversationItems as item (`${item.kind}:${item.id}`)}
-        {#if item.kind==='radio'}{@const c=item.channel}{@const last=c.messages.at(-1)}
+        {#if item.kind === 'agent'}
+          <button type="button" class="conversation-row local-agent-row" aria-current={localAgentOpen ? 'true' : undefined} onclick={openLocalAgentChat}>
+            <span class="local-agent-avatar" aria-hidden="true">AI</span>
+            <span class="local-agent-row-text"><strong>{$i18n.text('ИИ-чат')}</strong>
+              <span class="chat-preview">{localAgentHistory.at(-1)?.content || $i18n.text('На этом устройстве')}</span>
+            </span>
+          </button>
+        {:else if item.kind==='radio'}{@const c=item.channel}{@const last=c.messages.at(-1)}
           <ConversationRow accountId={item.id} name={c.name||$i18n.text('По умолчанию')} conversation={nativeListConversation(c)} active={nativeOpen&&nativeSelected===item.id} onOpen={()=>openNativeChannels(item.id)}
             radio={{encryption:c.encryption,preview:last?.text||$i18n.text('Пока нет сообщений.'),status:last?.outgoing&&['queued','failed','unknown'].includes(last.status)?nativeMessageStatus(last).label:undefined}}/>
         {:else}
@@ -6599,7 +6705,13 @@ async function changePassword(): Promise<void> {
 
     <section class="conversation-pane" class:drop-active={fileDragActive} use:fileDrop aria-label={$i18n.text("Выбранный чат")}>
       {#if fileDragActive}<div class="file-drop-hint" role="status">{$i18n.text("Отпустите файлы — они отправятся в этот чат")}</div>{/if}
-      {#if nativeOpen}
+      {#if localAgentOpen}
+        <LocalAgentChat messages={localAgentHistory} bind:draft={localAgentDraft} ready={localAgentReady}
+          blocked={agentBusy || localAgentModelSaving || navigationBusy()} working={localAgentBusy} notice={localAgentNotice}
+          models={localAgentFiles} modelId={localAgentChoice} builtInModel={localAgentBuiltIn} onModelChange={id => void selectLocalAgentModel(id)}
+          onBack={showChatList} onConfigure={() => { changeAccountView('profile'); selectSettings('ai'); }}
+          onSend={retry => void sendLocalAgentMessage(retry)} onStop={() => agentController?.abort()} />
+      {:else if nativeOpen}
         {@const radioAgentPeer = 'radio:' + nativeSelected}
         {@const agentChannel = agentRadioChannel(radioAgentPeer)}
         {#key nativeSelected}<MeshtasticChannels data={meshtastic} selected={nativeSelected} live={nativeLive} connected={radioConnection==='connected'} busy={nativeSending||radioBusy} board={radioBoardLabel} link={contactLink(address)} initialUnread={nativeInitialUnread} forwardDone={nativeForwardDone}
@@ -6887,17 +6999,9 @@ async function changePassword(): Promise<void> {
           onSend={sendLibraryAsset}
           onManage={tab => { emojiOpen = false; openMediaLibrary(tab); }} /></div>{/if}
         <PastedImages files={pastedFiles} bind:preview={stagedPreview} onMove={moveStagedAttachment} disabled={composerSending || attachingFiles} onRemove={index=>pastedFiles=pastedFiles.filter((_,i)=>i!==index)} />
-        {#if activeConversation.peerAddress === address && agentReplyPeer === address}
-          {#if agentBusy}<small role="status">{$i18n.text('ИИ готовит ответ…')}</small>
-          {:else if agentReplyNotice}<small role="status">{$i18n.text(agentReplyNotice)}</small>{/if}
-        {/if}
         <div class="composer">
         <div class="composer-controls composer-left">
-        {#if agentModelReady && activeConversation.peerAddress === address}
-          <AgentAskButton working={agentBusy && agentReplyPeer === address}
-            disabled={agentBusy || navigationBusy() || composerSending || !!pastedFiles.length || !activeConversation.draft.trim()}
-            ask={() => void askInSavedMessages()} />
-        {:else if agentModelReady && activeConversation.contact === 'accepted'}
+        {#if agentModelReady && activeConversation.contact === 'accepted' && activeConversation.peerAddress !== address}
           {#key activeConversation.peerAddress}
             <AgentChatControls working={agentBusy && agentReplyPeer === activeConversation.peerAddress} disabled={navigationBusy()}
               automatic={agentPeerEnabled(activeConversation.peerAddress)} endpoint={agentUsesEndpoint()} notice={agentReplyPeer === activeConversation.peerAddress ? agentReplyNotice : ''}
