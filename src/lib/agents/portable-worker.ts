@@ -86,6 +86,7 @@ self.onmessage = async (event: MessageEvent<PortableRequest>) => {
     if (request.action === 'prepare') { send({ id: request.id, type: 'result', text: '' }); return; }
     const result = await generator([
       { role: 'system', content: request.system?.slice(0, 1400) ?? '' },
+      ...(request.history ?? []),
       { role: 'user', content: request.prompt?.slice(0, 4000) ?? '' },
     ], { max_new_tokens: PORTABLE_MODELS[request.model].maxTokens, do_sample: false, repetition_penalty: 1.1, no_repeat_ngram_size: 4 });
     const messages = result[0]?.generated_text;

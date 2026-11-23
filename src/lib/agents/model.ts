@@ -2,6 +2,7 @@ import { portableModelId, type PortableDevice } from './portable-models';
 import { generatePortableReply, stopPortableModel } from './portable-client';
 import { generateFileModelReply, stopFileModel } from './file-model-client';
 import { normalizeFilePromptFormats, type FileModelProgress, type FilePromptFormat } from './file-model-prompt';
+import type { AgentTurn } from './local-chat';
 
 export type AgentSettings = {
   enabled: boolean;
@@ -63,7 +64,7 @@ type BrowserSession = {
 };
 type BrowserModel = {
   availability(): Promise<string>;
-  create(options: { initialPrompts?: [{ role: 'system'; content: string }]; signal: AbortSignal }): Promise<BrowserSession>;
+  create(options: { initialPrompts?: ({ role: 'system'; content: string } | AgentTurn)[]; signal: AbortSignal }): Promise<BrowserSession>;
 };
 const browserModel = () => (globalThis as typeof globalThis & { LanguageModel?: BrowserModel }).LanguageModel;
 export async function modelAvailability(): Promise<string> {
@@ -110,8 +111,9 @@ async function apiError(response: Response): Promise<Error> {
 }
 
 export async function generateAgentReply(settings: AgentSettings, prompt: string, key: string, signal: AbortSignal,
-  request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean; radio?: boolean; onFileProgress?: (value: FileModelProgress) => void } = {}): Promise<string> {
+  request: typeof fetch = fetch, options: { allowBrowserDownload?: boolean; radio?: boolean; onFileProgress?: (value: FileModelProgress) => void; localHistory?: AgentTurn[] } = {}): Promise<string> {
   signal.throwIfAborted();
+  if (options.localHistory && (settings.backend === 'local' || settings.backend === 'cloud')) throw new Error('agent_chat_requires_local_model');
   const system = settings.instructions;
   const input = prompt.slice(0, 4000);
   const messages = [...(system ? [{ role: 'system', content: system }] : []), { role: 'user', content: input }];
@@ -120,16 +122,17 @@ export async function generateAgentReply(settings: AgentSettings, prompt: string
   if (settings.backend !== 'portable') stopPortableModel();
   if (settings.backend === 'file') {
     result = await generateFileModelReply(settings.model, settings.portableDevice ?? 'wasm', system, input, signal,
-      options.radio ? 48 : 128, settings.fileFormats?.[settings.model], options.onFileProgress);
+      options.radio ? 48 : 128, settings.fileFormats?.[settings.model], options.onFileProgress, options.localHistory);
   } else if (settings.backend === 'portable') {
-    result = await generatePortableReply(portableModelId(settings.model), settings.portableDevice ?? 'wasm', system, input, signal);
+    result = await generatePortableReply(portableModelId(settings.model), settings.portableDevice ?? 'wasm', system, input, signal, options.localHistory);
   } else if (settings.backend === 'browser') {
     const model = browserModel();
     const availability = await modelAvailability();
     if (!model || availability === 'unavailable') throw new Error('agent_browser_unavailable');
     if (options.allowBrowserDownload === false && availability !== 'available') throw new Error('agent_browser_download_disabled');
     signal.throwIfAborted();
-    const session = await model.create({ ...(system ? { initialPrompts: [{ role: 'system' as const, content: system }] } : {}), signal });
+    const initialPrompts = [...(system ? [{ role: 'system' as const, content: system }] : []), ...(options.localHistory ?? [])];
+    const session = await model.create({ ...(initialPrompts.length ? { initialPrompts } : {}), signal });
     try { signal.throwIfAborted(); result = await session.prompt(input, { signal }); }
     finally { session.destroy(); }
   } else {
@@ -148,6 +151,7 @@ export async function generateAgentReply(settings: AgentSettings, prompt: string
   }
   signal.throwIfAborted();
   if (typeof result !== 'string' || !result.trim()) throw new Error('agent_response_invalid');
+  if (options.localHistory) return result.trim().slice(0, 1200);
   const lines = result.trim().split(/\n+/).map(line => line.trim()).filter(Boolean);
   return [...new Set(lines)].join('\n').slice(0, 1200);
 }

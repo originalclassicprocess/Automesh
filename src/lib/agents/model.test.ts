@@ -97,4 +97,23 @@ describe('account AI model adapters', () => {
       expect(create).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); }
   });
+  it('keeps the separate chat local even if an API source was selected', async () => {
+    const request = vi.fn();
+    for (const backend of ['cloud', 'local'] as const) {
+      const settings = { ...emptyAgentSettings(), backend, enabled: true };
+      await expect(generateAgentReply(settings, 'Local message', '', new AbortController().signal, request,
+        { localHistory: [] })).rejects.toThrow('agent_chat_requires_local_model');
+    }
+    expect(request).not.toHaveBeenCalled();
+  });
+  it('gives the on-device browser model previous turns of the separate chat', async () => {
+    const create = vi.fn(async () => ({ prompt: async () => 'Still blue.\n\n **Follow-up**', destroy: () => {} }));
+    vi.stubGlobal('LanguageModel', { availability: async () => 'available', create });
+    try {
+      const localHistory = [{ role: 'user' as const, content: 'Sky color?' }, { role: 'assistant' as const, content: 'Blue.' }];
+      const result = await generateAgentReply({ ...emptyAgentSettings(), backend: 'browser' }, 'At noon?', '', new AbortController().signal, vi.fn(), { localHistory });
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ initialPrompts: localHistory }));
+      expect(result).toBe('Still blue.\n\n **Follow-up**');
+    } finally { vi.unstubAllGlobals(); }
+  });
 });

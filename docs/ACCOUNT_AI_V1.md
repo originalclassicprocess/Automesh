@@ -20,8 +20,10 @@ execute tools. The existing client controls the data supplied to it and delivery
 4. Open an accepted contact's chat, click **AI** beside the composer and enable
    **Reply to this contact**. New text messages receive auto-replies
    labeled `[AI]`. Repeat for each contact who should have access.
-5. In **Saved Messages**, type a question and press **AI**. The question and
-   answer are saved in the private chat. The standard Send button saves a note.
+5. Open **AI chat** in the chat list and send a message to the model. This
+   conversation uses a browser model and keeps its own local transcript. Recent
+   completed exchanges provide context for follow-up messages. Choose an
+   imported GGUF file in the header to change the model for this chat.
 6. In a connected Meshtastic channel, use **AI** to send a typed prompt as
    `/ai <request>` or enable responses to such requests. Replies are sent as quoted, plain-text channel
    messages and fit the 200-byte Meshtastic limit. Regular channel messages
@@ -83,6 +85,12 @@ open the file offline. Storage is shared across profiles on that browser
 origin, and deletion in AI settings removes only the browser copy. An
 emergency app reset clears the model library as well. Browser storage eviction
 can require importing files again.
+
+**Settings → Media and storage → Storage manager → AI models** lists GGUF
+files and ONNX caches for this browser. It shows the model in use in this tab.
+**Unload from memory** ends its worker. **Remove from storage** removes only
+the browser copy of the selected model. The size shown is the saved file or
+cache payload size.
 
 ## ONNX download and import
 

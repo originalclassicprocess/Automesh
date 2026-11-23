@@ -29,6 +29,8 @@ export async function restoreDataBackupToStore(full: DataBackupContents, key: Cr
   const baseline = observed ? await openSealedChatData(key, accountId, observed) : normalizeLocalChatData({}); guard();
   if (!dataDestinationEmpty(baseline, accountId)) throw new Error('backup_destination_not_empty');
   const data = { ...restoredChatData(profile),
+    ...(baseline.localAgentHistory?.length ? { localAgentHistory: baseline.localAgentHistory } : {}),
+    ...(baseline.localAgentModelId ? { localAgentModelId: baseline.localAgentModelId } : {}),
     ...(baseline.seedNoticeDismissed !== undefined ? {seedNoticeDismissed: baseline.seedNoticeDismissed} : {}),
     ...(baseline.deviceOffer !== undefined ? {deviceOffer: baseline.deviceOffer} : {}),
     ...(baseline.seedBackupVerified !== undefined ? { seedBackupVerified: baseline.seedBackupVerified } : {}),

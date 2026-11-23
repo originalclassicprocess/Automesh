@@ -1,3 +1,5 @@
+import type { AgentTurn } from './local-chat';
+
 // Public, quantized ONNX model data pinned to reviewed Hub revisions.
 // The sizes are approximate downloads (weights + tokenizer/config), not RAM.
 export const PORTABLE_MODELS = {
@@ -44,6 +46,6 @@ export function modelAssetUrlAllowed(id: PortableModelId, url: URL): boolean {
 export type PortableProgress = { file: string; loaded: number; total: number; importing?: boolean };
 export type PortableRequest = {
   id: number; model: PortableModelId; device: PortableDevice; action: 'prepare' | 'generate';
-  system?: string; prompt?: string; weights?: File; offline?: boolean;
+  system?: string; prompt?: string; weights?: File; offline?: boolean; history?: AgentTurn[];
 };
 export type PortableResponse = { id: number; type: 'progress'; progress: PortableProgress } | { id: number; type: 'result'; text: string } | { id: number; type: 'error'; code: string };
