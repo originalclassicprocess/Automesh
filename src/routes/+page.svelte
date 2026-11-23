@@ -8,6 +8,9 @@ import { removeLegacyBrowserLogs } from '$lib/application/legacy-cleanup';
 import { RecoveryController } from '$lib/application/recovery';
 import { pendingFile, pendingFileOffer, peerNeedsRecovery } from '$lib/application/delivery-work';
 import { version } from '$app/environment';
+import GroupPanel from '$lib/groups/GroupPanel.svelte';
+import { GroupController } from '$lib/groups/GroupController';
+import type { GroupRooms } from '$lib/groups/storage';
 import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -254,7 +257,7 @@ import { parseAdminConnect, type AdminConnect } from '$lib/node/admin-connect';
 import { adminConnectBridge } from '$lib/node/admin-bridge';
 import { OfflineController } from '$lib/node/offline-controller';
 import { CourierController, idleCourierStatus } from '$lib/node/courier-controller';
-import { receiveRouting, receptionChannel, receptionFailure } from '$lib/node/receive-routing';
+import { activeReceiveUrls, receiveRouting, receptionChannel, receptionFailure } from '$lib/node/receive-routing';
 import ChoiceMenu from '$lib/application/ChoiceMenu.svelte';
 import QrInput from '$lib/application/QrInput.svelte';
 import { emptyDeliveryDiagnostics } from '$lib/node/delivery-diagnostics';
@@ -406,6 +409,14 @@ let agentProgress = $state<PortableProgress | null>(null);
 let agentFileProgress = $state<FileModelProgress | null>(null);
 let agentController: AbortController | null = null;
 let localAgentOpen = $state(false);
+let groupsOpen = $state(false);
+let groupRooms = $state.raw<GroupRooms>([]);
+let groupConnectionRevision = $state(0);
+let groupController: GroupController | null = null;
+const connectedGroupPeers = $derived.by(() => {
+  void groupConnectionRevision;
+  return new Set(groupRooms.flatMap(room => room.members).filter(peer => chat?.isDirectReady(peer)));
+});
 let localAgentHistory = $state.raw<LocalAgentMessage[]>([]);
 let localAgentDraft = $state('');
 let localAgentBusy = $state(false);
@@ -532,9 +543,10 @@ async function refreshReceiveRouting(): Promise<void> {
   const transport = routedTransport;
   if (!transport || screen !== 'account' || endingSession) return;
   const config = receiveRouting(configuredNodes, networkSettings, location.href, trustedSession ? courierState : emptyCourierState());
-  const stamp = JSON.stringify([address, config, networkSettings.quickReserve]);
+  const receiveUrls = activeReceiveUrls(config, configuredNodes, trustedSession);
+  const stamp = JSON.stringify([address, config, receiveUrls, networkSettings.quickReserve]);
   if (receiveRoutingStamp === stamp) return;
-  await transport.configure(config.endpoints, networkSettings.quickReserve, config.required);
+  await transport.configure(config.endpoints, networkSettings.quickReserve, receiveUrls);
   if (routedTransport === transport && screen === 'account' && !endingSession) receiveRoutingStamp = stamp;
 }
 async function resumeDelivery(): Promise<void> {
@@ -855,7 +867,7 @@ function rootRoute(screen: Screen): PageRoute {
 }
 function currentPageRoute(): PageRoute {
   const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : editDraft ? 'message-edit' : reactionTarget ? 'reaction-picker' : stagedPreview!==null ? 'attachment-preview' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
-    backupOpen ? 'backup' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
+    backupOpen ? 'backup' : groupsOpen ? 'groups' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     ...(localAgentOpen ? { localAgent: true } : {}),
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
@@ -1595,6 +1607,7 @@ async function applyAppUpdate(): Promise<void> {
 
 function clearSensitiveData() {
   resetAgent();
+  groupController = null; groupRooms = []; groupsOpen = false;
   deliveryRecovery.reset(); receiveRecoveryBusy = false;
   if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState(); radioDiagnostics = null; radioErrorText = '';
@@ -1702,6 +1715,7 @@ async function changeOwnAvatar(file: File | null, crop?: AvatarCrop): Promise<vo
 
 function applyChatData(saved: LocalChatData): void {
   resetAgent();
+  groupRooms = (saved.experimentalGroups ?? []).filter(room => room.members.includes(address));
   agentSettings=normalizeAgentSettings(saved.agentSettings);
   agentLimits=normalizeAgentChatLimits(saved.agentChatLimits);
   localAgentHistory=normalizeLocalAgentHistory(saved.localAgentHistory);
@@ -1736,6 +1750,7 @@ function applyChatData(saved: LocalChatData): void {
 
 async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<void> {
   resetAgent();
+  groupController = null; groupRooms = []; groupsOpen = false;
   if(nativeSaveTimer){clearTimeout(nativeSaveTimer);nativeSaveTimer=null;}
   meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState();
@@ -1796,6 +1811,7 @@ function persistLocalChats(): Promise<boolean> {
     // completed ahead of it (nor leak another profile's library into this one).
     if (address === accountId && generation === authGeneration) {
       snapshot.mediaLibrary = normalizeMediaLibrary(mediaLibrary);
+      snapshot.experimentalGroups = groupRooms.length ? groupRooms : undefined;
       // Cache linking can commit ahead of this previously captured snapshot.
       // Preserve its durable references before old duplicate blobs are removed.
       preserveSnapshotMediaRefs(snapshot.chats, sessionChats);
@@ -2020,6 +2036,7 @@ function restorePageRoute(route: PageRoute): void {
   bulkConfirmation=null;
   messageTools = null;
   if (route.layer !== 'media-library') { mediaOpen = false; receivedPack = null; }
+  groupsOpen = route.layer === 'groups' && trustedSession && profileNetwork;
   if (accountView !== route.view || peerCardAddress !== route.card) changeAccountView(route.view);
   if (route.peer && !sessionChats.byPeer[route.peer]) return;
   localAgentOpen = route.localAgent === true && profileNetwork;
@@ -5102,8 +5119,9 @@ async function initializeChat() {
   if (startVersion !== chatStartVersion || generation !== authGeneration || !identity || screen !== 'account' || memoryBusy || panicBusy || !profileNetwork) return;
 
   const receiveConfig = receiveRouting(configuredNodes, networkSettings, location.href, trustedSession ? courierState : emptyCourierState());
-  const transport = new RoutedWebRTCTransport(receiveConfig.endpoints, networkSettings.quickReserve, undefined, undefined, receiveConfig.required);
-  receiveRoutingStamp = JSON.stringify([address, receiveConfig, networkSettings.quickReserve]);
+  const receiveUrls = activeReceiveUrls(receiveConfig, configuredNodes, trustedSession);
+  const transport = new RoutedWebRTCTransport(receiveConfig.endpoints, networkSettings.quickReserve, undefined, undefined, receiveUrls);
+  receiveRoutingStamp = JSON.stringify([address, receiveConfig, receiveUrls, networkSettings.quickReserve]);
   deliveryDiagnostics = emptyDeliveryDiagnostics();
   routedTransport = transport;
   const updateNodes = () => {
@@ -5113,6 +5131,32 @@ async function initializeChat() {
   };
   transport.onNodesChange(updateNodes);
   const nextChat = new ChatService(transport);
+  const groupAccount = address, groupIdentity = identity;
+  const groupActive = () => chat === nextChat && generation === authGeneration && trustedSession &&
+    screen === 'account' && !endingSession && !memoryBusy && !panicBusy;
+  const groups = new GroupController({
+    self:groupAccount, identity:groupIdentity, active:groupActive,
+    contact:peer => sessionChats.byPeer[peer]?.contact === 'accepted',
+    allowed:peer => sessionChats.byPeer[peer]?.contact !== 'blocked',
+    rooms:() => groupRooms,
+    transport:{ ready:peer => nextChat.isDirectReady(peer), send:(peer, frame) => nextChat.sendGroupFrame(peer, frame) },
+    save: async rooms => {
+      const key = chatStoreKey, epoch = storageEpoch();
+      if (!key || !groupActive()) throw new Error('group_inactive');
+      await historyWrites.enqueue(async () => {
+        requireStorageEpoch(epoch);
+        if (!groupActive()) throw new Error('group_inactive');
+        await saveLocalChatData(key, groupAccount, { ...chatSnapshot(), experimentalGroups:rooms });
+        if (generation === authGeneration && address === groupAccount) groupRooms = rooms;
+      });
+    },
+  });
+  groupController = groups;
+  nextChat.onGroupFrame((peer, frame) => groups.receive(peer, frame));
+  const groupSync = setInterval(() => {
+    if (groupActive() && !document.hidden && groupRooms.length) wakeGroupConnections();
+  }, 20_000);
+  nextChat.onDisconnect(() => clearInterval(groupSync));
   const exchange=new StickerCacheExchange({
     current:()=>chat===nextChat&&generation===authGeneration&&screen==='account'&&!endingSession&&!memoryBusy,
     accepted:peer=>sessionChats.byPeer[peer]?.contact==='accepted',
@@ -5447,6 +5491,7 @@ async function initializeChat() {
     if (chat !== nextChat) return;
     signalingStatus = transportStatus;
     if (transportStatus !== 'connected') return;
+    wakeGroupConnections();
     for (const peer of sessionChats.order) {
       if (peer === address) continue;
       if (peerNeedsRecovery(sessionChats.byPeer[peer])) {
@@ -5456,6 +5501,8 @@ async function initializeChat() {
   });
   nextChat.onPeerChange((peer, event) => {
     if (chat !== nextChat) return;
+    if (groupRooms.some(room => room.members.includes(peer.address))) groupConnectionRevision++;
+    if (event === 'joined') groups.peerOnline(peer.address);
     if (event === 'left') nextCalls.peerUnavailable(peer.address);
     // An unsolicited secure connection is not yet a chat or a request.
     if (!sessionChats.byPeer[peer.address]) return;
@@ -5572,6 +5619,7 @@ async function initializeChat() {
 
 function chatSnapshot(): LocalChatData {
   return snapshotLocalChatData({
+    ...(groupRooms.length ? { experimentalGroups:groupRooms } : {}),
     agentSettings:normalizeAgentSettings(agentSettings),
     agentChatLimits:agentLimits,
     ...(localAgentHistory.length ? { localAgentHistory } : {}),
@@ -5601,6 +5649,23 @@ function chatSnapshot(): LocalChatData {
     peerPublicKeys: { ...peerPublicKeys },
     chats: saveChats(sessionChats),
   });
+}
+
+function wakeGroupConnections(): void {
+  if (!chat || !groupController || !trustedSession || navigationBusy()) return;
+  const service = chat;
+  for (const peer of new Set(groupRooms.flatMap(room => room.members))) {
+    if (peer === address || sessionChats.byPeer[peer]?.contact === 'blocked') continue;
+    if (service.isDirectReady(peer)) groupController.peerOnline(peer);
+    else void service.connect(peer).catch(() => {});
+  }
+}
+
+async function createClosedGroup(title: string, peers: string[]): Promise<string> {
+  if (!groupController) throw new Error('group_inactive');
+  const id = await groupController.create(title, peers);
+  wakeGroupConnections();
+  return id;
 }
 
 function requestExit(mode: 'lock' | 'logout'): void {
@@ -6182,6 +6247,14 @@ async function changePassword(): Promise<void> {
     </CompactDialog>
   {/if}
 
+  {#if groupsOpen && trustedSession && profileNetwork}
+    <GroupPanel rooms={groupRooms} self={address} name={contactName} connected={connectedGroupPeers}
+      contacts={sessionChats.order.filter(peer => peer !== address && sessionChats.byPeer[peer]?.contact === 'accepted')}
+      create={createClosedGroup} accept={id => groupController?.accept(id) ?? Promise.reject(new Error('group_inactive'))}
+      send={(id, text) => groupController?.send(id, text) ?? Promise.reject(new Error('group_inactive'))}
+      direct={() => { groupsOpen = false; openConnectionSection('direct'); }}
+      sync={wakeGroupConnections} close={() => groupsOpen = false} />
+  {/if}
   {#if mediaOpen}
     {#key address}
       {@const ownerGeneration = untrack(()=>authGeneration)}
@@ -6738,6 +6811,14 @@ async function changePassword(): Promise<void> {
   <div class="chat-layout" class:show-chat={mobilePane === 'chat'} class:show-list={mobilePane === 'list'}>
     <nav class="conversation-list" aria-label={$i18n.text("Личные чаты")}>
       <ContactSearch bind:query={chatSearch} ownId={address} knownIds={sessionChats.order} onOpen={(peer, route) => void addConversation(peer, route)} />
+      {#if trustedSession && profileNetwork}
+        <button type="button" class="conversation-row" onclick={() => { groupsOpen = true; wakeGroupConnections(); }}>
+          {$i18n.text('Закрытые группы')}
+          {#if groupRooms.some(room => room.owner !== address && !room.mls && !room.draft)}
+            <span class="unread-count">{groupRooms.filter(room => room.owner !== address && !room.mls && !room.draft).length}</span>
+          {/if}
+        </button>
+      {/if}
       <div class="conversation-items">
       {#each conversationItems as item (`${item.kind}:${item.id}`)}
         {#if item.kind === 'agent'}

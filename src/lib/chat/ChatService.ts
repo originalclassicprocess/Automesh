@@ -16,6 +16,7 @@ import { encodeChatContent, decodeChatContent, type MessageDetails } from './mes
 import { normalizeAvatar } from './avatar';
 import { normalizeProfileLinks, readProfileLinksPacket, type ProfileLink } from './profile-links';
 import { CALL_PREFIX, decodeCallSignal, encodeCallSignal, type CallSignal } from '$lib/calls/protocol';
+import { GROUP_PACKET_BYTES, GROUP_PREFIX, parseGroupFrame, type GroupFrame } from '$lib/groups/protocol';
 
 // ------------------------------------------------------------
 // ChatMessage — то что видит UI
@@ -79,6 +80,7 @@ export class ChatService {
   private offlineBundleHandlers: Array<(peer: string, value: unknown) => unknown> = [];
   private courierBundleHandlers: Array<(peer: string, value: unknown) => unknown> = [];
   private deviceHandlers: Array<(peer: string, kind: DeviceControlKind, value: unknown) => unknown> = [];
+  private groupHandlers: Array<(peer: string, frame: GroupFrame) => unknown> = [];
   private contactAcceptedHandlers: Array<(peer: string) => void> = [];
   private readPreferenceHandlers: Array<(peer: string, enabled: boolean) => void> = [];
   private reactionFeatureHandlers:Array<(peer:string)=>void>=[];
@@ -254,6 +256,17 @@ export class ChatService {
       throw new Error('invalid_message_id');
     }
     await this.sendPayload(encodeChatContent(text, details), toPeerAddress, messageId);
+  }
+
+  async sendGroupFrame(peer: string, frame: GroupFrame): Promise<void> {
+    if (!this.isDirectReady(peer) || !parseGroupFrame(frame)) throw new Error('group_direct_unavailable');
+    const content = GROUP_PREFIX + JSON.stringify(frame);
+    if (new TextEncoder().encode(content).length > GROUP_PACKET_BYTES) throw new Error('group_frame_too_large');
+    await this.sendPayload(content, peer);
+  }
+
+  onGroupFrame(callback: (peer: string, frame: GroupFrame) => unknown) {
+    this.groupHandlers.push(callback);
   }
 
   async sendProfile(nickname: string, toPeerAddress: string): Promise<void> {
@@ -458,6 +471,12 @@ export class ChatService {
         return;
       }
       const content = new TextDecoder().decode(textBytes);
+      if (content.startsWith(GROUP_PREFIX)) {
+        if (textBytes.length > GROUP_PACKET_BYTES || !this.groupHandlers.length) return;
+        const frame = parseGroupFrame(JSON.parse(content.slice(GROUP_PREFIX.length)));
+        if (frame) for (const handler of this.groupHandlers) { this.requireCurrent(generation); await handler(from, frame); }
+        return;
+      }
       if (content.startsWith('\u0000automesh-devices-v2:')) {
         if (textBytes.length > 60080) throw new Error('device_control_limit');
         const prefix = '\u0000automesh-devices-v2:', rest = content.slice(prefix.length), colon = rest.indexOf(':');

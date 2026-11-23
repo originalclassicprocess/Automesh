@@ -3,6 +3,13 @@ import { validatedSignalingUrl, isLocalHost, type SignalingEndpoint } from '$lib
 import type { CourierState } from './courier-state';
 import type { NodeState } from '$lib/transport/RoutedWebRTCTransport';
 
+// Preserve a common rendezvous even when each group member prefers a
+// different delivery node. The route must already pass the network policy.
+export function activeReceiveUrls(plan: ReturnType<typeof receiveRouting>, base: SignalingEndpoint[], groups: boolean): string[] {
+  const common = groups ? base.find(endpoint => plan.endpoints.some(route => route.url === endpoint.url)) : undefined;
+  return common ? [...new Set([...plan.required, common.url])] : plan.required;
+}
+
 // A delivery role is not an optional discovery reserve. Respect explicit
 // network policy and disabled entries; never bypass a user's LAN-only choice.
 export function receiveRouting(base: SignalingEndpoint[], settings: NetworkSettings, pageUrl: string, courier: CourierState) {

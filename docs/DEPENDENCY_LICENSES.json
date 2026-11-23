@@ -338,6 +338,16 @@
       "notices": []
     },
     {
+      "name": "@noble/ciphers",
+      "version": "2.1.1",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "@noble/curves",
       "version": "2.4.0",
       "license": "MIT",
@@ -2524,6 +2534,16 @@
       "installed": true,
       "notices": [
         "license"
+      ]
+    },
+    {
+      "name": "ts-mls",
+      "version": "1.6.4",
+      "license": "MIT",
+      "development": true,
+      "installed": true,
+      "notices": [
+        "LICENSE"
       ]
     },
     {

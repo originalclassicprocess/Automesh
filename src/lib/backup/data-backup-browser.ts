@@ -30,6 +30,7 @@ export async function restoreDataBackupToStore(full: DataBackupContents, key: Cr
   if (!dataDestinationEmpty(baseline, accountId)) throw new Error('backup_destination_not_empty');
   const data = { ...restoredChatData(profile),
     ...(baseline.localAgentHistory?.length ? { localAgentHistory: baseline.localAgentHistory } : {}),
+    ...(baseline.experimentalGroups?.length ? { experimentalGroups: baseline.experimentalGroups } : {}),
     ...(baseline.localAgentModelId ? { localAgentModelId: baseline.localAgentModelId } : {}),
     ...(baseline.seedNoticeDismissed !== undefined ? {seedNoticeDismissed: baseline.seedNoticeDismissed} : {}),
     ...(baseline.deviceOffer !== undefined ? {deviceOffer: baseline.deviceOffer} : {}),

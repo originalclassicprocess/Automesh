@@ -46,7 +46,8 @@ export function referencedBackupFiles(data: LocalChatData): Map<string, { size: 
 
 // Archive user data/settings, never prekeys, relay credentials or pending jobs.
 export function portableChatData(value: LocalChatData): LocalChatData {
-  const { offlineState: _offline, courierState: _courier, radioState: _radio, notifications: _notifications, ...rest } = normalizeLocalChatData(value);
+  const { offlineState: _offline, courierState: _courier, radioState: _radio, notifications: _notifications,
+    experimentalGroups: _groups, ...rest } = normalizeLocalChatData(value);
   for (const peer of rest.chats.order) rest.chats.byPeer[peer].messages = rest.chats.byPeer[peer].messages.filter(message => !message.details?.ephemeral && !message.details?.ephemeralOpened);
   for (const peer of rest.chats.order) for (const message of rest.chats.byPeer[peer].messages) {
     delete message.deviceCopies; delete message.deviceCopyDelivery;
