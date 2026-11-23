@@ -3,10 +3,10 @@
 
 import { base, build, files, version } from '$service-worker';
 import { obsoleteCaches } from './lib/application/cache-versions';
+import { APP_CACHE_PREFIX as CACHE_PREFIX, isOptionalAiAsset } from './lib/application/app-cache';
 
 declare const self: ServiceWorkerGlobalScope;
 
-const CACHE_PREFIX = 'mesh-autonomy-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${version}`;
 const SHELL_URL = `${base}/`;
 const PUBLIC_ASSETS = files.filter((path) =>
@@ -19,13 +19,6 @@ const PUBLIC_ASSETS = files.filter((path) =>
 const OPTIONAL_AI_ASSETS = new Set(build.filter(path => /(?:(?:file-model|portable)-worker[.-]|ort-wasm-simd-threaded).*\.(?:js|mjs|wasm)$/.test(path) || path.endsWith('.wasm')));
 // Vite emits worker URL assets outside SvelteKit's `build` manifest. Restrict
 // lazy caching to the exact immutable directory and hashed runtime filenames.
-function optionalAiAsset(path: string): boolean {
-  if (OPTIONAL_AI_ASSETS.has(path)) return true;
-  const prefix = `${base}/_app/immutable/workers/assets/`;
-  if (path.startsWith(prefix) && /^(?:ort-wasm-simd-threaded(?:\.asyncify)?-[a-zA-Z0-9_-]{8}\.(?:wasm|mjs)|wllama-[a-zA-Z0-9_-]{8}\.wasm)$/.test(path.slice(prefix.length))) return true;
-  const workerPath = `${base}/_app/immutable/workers/`;
-  return path.startsWith(workerPath) && /^(?:file-model|portable)-worker-[a-zA-Z0-9_-]{8}\.js$/.test(path.slice(workerPath.length));
-}
 const PRECACHE = [...new Set([...build.filter(path => !OPTIONAL_AI_ASSETS.has(path)), ...PUBLIC_ASSETS, SHELL_URL])];
 const CACHED_ASSETS = new Set([...build, ...PUBLIC_ASSETS]);
 
@@ -122,7 +115,7 @@ self.addEventListener('fetch', (event) => {
     }
     if (cached) return cached;
     const response = await fetch(request);
-    if (optionalAiAsset(url.pathname) && response.ok && !url.search) {
+    if ((OPTIONAL_AI_ASSETS.has(url.pathname) || isOptionalAiAsset(url.pathname, base)) && response.ok && !url.search) {
       // Only known immutable build files; never cache API replies or prompts.
       await own.put(url.pathname, response.clone()).catch(() => {});
     }

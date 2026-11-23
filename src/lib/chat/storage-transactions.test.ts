@@ -4,7 +4,7 @@ import { encodeAccountId } from '$lib/addressing/bech32m.js';
 import { beginStorageReset } from '$lib/application/storage-reset';
 import { removeMessages } from './chat-actions';
 import { addMedia, emptyMediaLibrary, libraryFileId, prepareMedia } from './media-library';
-import { cleanedHistory, managedFiles } from '$lib/application/storage-summary';
+import { prepareChatStorageCleanup, managedFiles } from '$lib/application/storage-summary';
 import { restoreChats, saveChats } from './session-chats';
 import { clearAllChatStorage, deleteLocalFiles, deriveChatStoreKey, inspectChatStorage, loadLocalChatData,
   loadLocalFileData, saveChatDataWithFileDeletion, saveLocalChatData, saveLocalFileData, saveLocalSessionData, type LocalChatData } from './local-store';
@@ -30,7 +30,8 @@ describe('storage transactions', () => {
     expect(await loadLocalFileData(key,other,id)).toBeNull();
     const inventory=await inspectChatStorage(account);
     expect(managedFiles(restoreChats(data.chats),inventory,new Map()).map(f=>f.id)).toEqual([attachment]);
-    await saveChatDataWithFileDeletion(key,account,cleanedHistory({...data,mediaLibrary}),[attachment]);
+    const plan = prepareChatStorageCleanup({...data,mediaLibrary}, {kind:'all-files'}, inventory.files.map(file => file.id));
+    await saveChatDataWithFileDeletion(key,account,plan.snapshot,plan.ids);
     expect(await loadLocalFileData(key,account,id)).toEqual(gif);
     expect(await loadLocalFileData(key,account,attachment)).toBeNull();
     expect((await loadLocalChatData(key,account))?.mediaLibrary).toEqual(mediaLibrary);

@@ -8,6 +8,7 @@ import { removeLegacyBrowserLogs } from '$lib/application/legacy-cleanup';
 import { RecoveryController } from '$lib/application/recovery';
 import { pendingFile, pendingFileOffer, peerNeedsRecovery } from '$lib/application/delivery-work';
 import { version } from '$app/environment';
+import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
 import AppUpdatePanel from '$lib/application/AppUpdatePanel.svelte';
@@ -67,7 +68,7 @@ import AgentSettingsPanel from '$lib/agents/AgentSettings.svelte';
 import AgentChatControls from '$lib/agents/AgentChatControls.svelte';
 import LocalAgentChat from '$lib/agents/LocalAgentChat.svelte';
 import AgentStoragePanel from '$lib/agents/AgentStoragePanel.svelte';
-import type { StoredAgentModel } from '$lib/agents/model-storage';
+import { readStoredAgentModels, type StoredAgentModel } from '$lib/agents/model-storage';
 import { MAX_LOCAL_AGENT_MESSAGES, MAX_LOCAL_AGENT_PROMPT, normalizeLocalAgentHistory, recentAgentTurns, type LocalAgentMessage } from '$lib/agents/local-chat';
 import { clearFileModels, hasFileModel, importFileModel, listFileModels, removeFileModel, type FileModel } from '$lib/agents/file-models';
 import { fileModelRuntime, stopFileModel } from '$lib/agents/file-model-client';
@@ -182,7 +183,9 @@ import InboxSnapshot from '$lib/profiles/InboxSnapshot.svelte';
 import { prepareProfileChatContext, commitProfileChatContext, readProfileInbox, type ProfileChatContext, type ProfileInboxPage, type InboxFocus } from '$lib/profiles/chat-context';
 import { profileRegistrySnapshot, type ProfileRegistry } from '$lib/core/profiles';
 import type { OpenedBackup } from '$lib/vault/encrypted-backup';
-import { cleanedHistory, managedFiles, chatStorageUsage, type ManagedFile } from '$lib/application/storage-summary';
+import { managedFiles, chatStorageUsage, measureMediaLibrary, prepareChatStorageCleanup, sumBytes, withoutStickerPacks,
+  type LocalTranscriptStorage, type ManagedFile, type StorageCleanup, type StorageOverview } from '$lib/application/storage-summary';
+import { clearAiRuntimeCache, measureAppCache } from '$lib/application/app-cache';
 import { RESET_KEY, beginStorageReset, requireStorageEpoch, storageEpoch } from '$lib/application/storage-reset';
 import { encodeChatContent, type MessageDetails, type ReplyReference } from '$lib/chat/message-details';
 import { displayedReply, savedConversation, replyReference, replyCount, messagePreview, forwardingDetails, removeMessages, transcript } from '$lib/chat/chat-actions';
@@ -304,7 +307,7 @@ import MeshtasticChannels from '$lib/radio/MeshtasticChannels.svelte';
 import {forwardActivity,recentForwardTargets} from '$lib/chat/forward-targets';
 import TextForwardDialog, {type ForwardText,type ForwardTarget} from '$lib/chat/TextForwardDialog.svelte';
 import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
-import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,appendChannelReaction,canReactToChannelMessage,channelMessageStatus,channelSignature,nativeHistoryLimit,nativeMessageKey,nativeMessageStatus,removeNativeMessages,mergeNativeHistory,visibleNativeChannels,type ChannelMessage,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
+import {emptyNativeChannels,normalizeNativeChannels,syncNativeChannels,channelText,appendChannelMessage,appendChannelReaction,canReactToChannelMessage,channelMessageStatus,channelSignature,nativeChannelToken,nativeHistoryLimit,nativeMessageKey,nativeMessageStatus,removeNativeMessages,mergeNativeHistory,visibleNativeChannels,type ChannelMessage,type ChannelText,type ChannelStatus,type NativeChannel} from '$lib/radio/native-channels';
 import { radioError } from '$lib/radio/errors';
 import VoiceMessage from '$lib/chat/VoiceMessage.svelte';
 import InlineAudio from '$lib/chat/InlineAudio.svelte';
@@ -462,13 +465,10 @@ let memoryBusy = $state(false);
 let storageReading = $state(false);
 let storageError = $state('');
 let storageFiles = $state<ManagedFile[]>([]);
-let storageHistoryBytes = $state(0);
-let storageOtherBytes = $state(0);
-let storageCacheBytes = $state(0);
-let storageOriginUsage = $state<number | undefined>();
-let storageQuota = $state<number | undefined>();
+let storageUsage = $state.raw<StorageOverview | null>(null);
+let storageModels = $state.raw<StoredAgentModel[]>([]);
 let storageRequest = 0;
-let memoryConfirmation = $state<{ kind: string; ids: string[] } | null>(null);
+let memoryConfirmation = $state<StorageCleanup | null>(null);
 let panicOpen = $state(false);
 let panicBusy = $state(false);
 let panicError = $state('');
@@ -2046,7 +2046,11 @@ function backWithinApp(): void {
   if (emojiOpen) { emojiOpen = false; return; }
   if (chatSearchOpen) { toggleChatSearch(); return; }
   if (audioControls?.dismissOverlay()) return;
-  if (mediaOpen || receivedPack) { mediaOpen = false; receivedPack = null; return; }
+  if (mediaOpen || receivedPack) {
+    mediaOpen = false; receivedPack = null;
+    if (accountView === 'profile' && mediaSettingsSection === 'storage') void refreshStorage();
+    return;
+  }
   if(reactionTarget){reactionTarget=null;return;}
   if (messageTools) { messageTools = null; return; }
   if (screen === 'account' && accountView === 'profile' && !openHelp && !pendingExit && !backupOpen && !panicOpen && !memoryConfirmation && !nodeScannerOpen && !networkSummaryOpen && !nodeBudgetOpen) {
@@ -2512,7 +2516,7 @@ function adoptProfileContext(context: ProfileChatContext): void {
   copiedMessageId = ''; pinBusy = false;
   nodeChecks = {}; nodeStates = []; peerRoutes = {}; routedTransport = null;
   peerCardAddress = ''; peerQr = ''; shareFallbackLink = ''; copiedContactId = ''; addressCopied = false;
-  storageRequest++; storageFiles = []; storageReading = false; memoryConfirmation = null;
+  storageRequest++; storageFiles = []; storageUsage = null; storageModels = []; storageReading = false; memoryConfirmation = null;
   backupOpen = false; publicKeyOpen = false; aliasDraft = ''; chatSearch = ''; galleryId = '';
   chat = null; identity = context.provider; chatStoreKey = context.key; deviceOwnerKey = context.deviceKey ?? null; address = context.accountId;
   activeProfileId = context.profile?.id ?? ''; profileNetwork = context.network;
@@ -3239,7 +3243,7 @@ async function removeStoredAgentModel(model: StoredAgentModel): Promise<boolean>
       await deletePortableModel(model.id);
       if (generation === authGeneration) agentModelRevision++;
     }
-    if (generation === authGeneration) void refreshStorage();
+    if (generation === authGeneration) await refreshStorage();
     return true;
   } catch { return false; }
 }
@@ -5611,23 +5615,34 @@ async function refreshStorage(): Promise<void> {
   const account = address; const request = ++storageRequest;
   storageReading = true; storageError = '';
   try {
-    await historyWrites.settled(); await Promise.allSettled([...pendingFileWrites]);
-    const disk = await inspectChatStorage(account);
-    const estimate = navigator.storage?.estimate ? await navigator.storage.estimate().catch(() => ({} as StorageEstimate)) : {};
-    let cacheBytes = 0;
-    if ('caches' in window) for (const name of await caches.keys()) {
-      if (!name.startsWith('mesh-autonomy-shell-')) continue;
-      const cache = await caches.open(name);
-      for (const url of await cache.keys()) {
-        const response = await cache.match(url); if (response) cacheBytes += (await response.blob()).size;
-      }
-    }
+    await historyWrites.settled(); await Promise.allSettled([...pendingFileWrites, stickerStorageChain]);
+    const [disk, estimate, app, models] = await Promise.all([
+      inspectChatStorage(account),
+      navigator.storage?.estimate?.().catch(() => undefined),
+      'caches' in window ? measureAppCache(caches, base).catch(() => null) : null,
+      readStoredAgentModels(),
+    ]);
     if (request !== storageRequest || address !== account || screen !== 'account') return;
-    storageFiles = managedFiles(sessionChats, disk, sessionFiles);
-    storageHistoryBytes = disk.historyBytes; storageOtherBytes = disk.otherAccountBytes;
-    storageCacheBytes = cacheBytes; storageOriginUsage = estimate.usage; storageQuota = estimate.quota;
+    storageFiles = managedFiles(sessionChats, disk, sessionFiles, mediaLibrary);
+    storageModels = models.models;
+    storageUsage = { app, origin: estimate?.usage, history: disk.historyBytes, other: disk.otherAccountBytes,
+      modelBytes: sumBytes(storageModels.map(model => model.bytes ?? 0)),
+      incomplete: !app || models.incomplete || storageModels.some(model => model.bytes === null),
+      media: measureMediaLibrary(disk, mediaLibrary) };
   } catch { if (request === storageRequest) storageError = 'Не удалось измерить хранилище. Данные не удалены.'; }
   finally { if (request === storageRequest) storageReading = false; }
+}
+
+function localTranscriptUsage(): LocalTranscriptStorage[] {
+  const countBytes = (messages: readonly unknown[]) => new TextEncoder().encode(JSON.stringify(messages)).byteLength;
+  const rows: LocalTranscriptStorage[] = meshtastic.channels.filter(channel => channel.messages.length).map(channel => ({
+    title: channel.name, messages: channel.messages.length, bytes: countBytes(channel.messages),
+    action: { kind: 'radio-chat', token: nativeChannelToken(channel), name: channel.name },
+  }));
+  if (localAgentHistory.length) rows.unshift({
+    title: 'ИИ-чат', messages: localAgentHistory.length, bytes: countBytes(localAgentHistory), action: { kind: 'ai-chat' },
+  });
+  return rows;
 }
 
 function pauseFileTransfers(): void {
@@ -5652,8 +5667,27 @@ async function cleanMemory(): Promise<void> {
   const choice = memoryConfirmation;
   if (!choice || memoryBusy || endingSession || switchingTrust || authBusy || mediaBusy || screen !== 'account') return;
   if (voiceBusy || attachingFiles) { status = 'Завершите запись или добавление файлов перед очисткой.'; return; }
-  memoryBusy = true; storageError = ''; memoryConfirmation = null;
+  if (agentBusy || nativeSending) { storageError = 'Дождитесь завершения текущего действия.'; return; }
   const generation = authGeneration;
+  if (choice.kind === 'sticker-packs' || choice.kind === 'ai-runtime') {
+    memoryConfirmation = null; storageError = '';
+    try {
+      if (choice.kind === 'sticker-packs') await commitMediaLibrary(withoutStickerPacks(mediaLibrary));
+      else {
+        memoryBusy = true;
+        stopAgentRequest();
+        await clearAiRuntimeCache(caches, base);
+      }
+    } catch { if (generation === authGeneration) storageError = 'Очистка не завершена. Обновите размеры и повторите.'; }
+    finally { memoryBusy = false; }
+    if (generation === authGeneration) {
+      const cleanupError = storageError;
+      await refreshStorage();
+      if (cleanupError && generation === authGeneration) storageError = cleanupError;
+    }
+    return;
+  }
+  memoryBusy = true; storageError = ''; memoryConfirmation = null;
   const oldChat = chat; chat = null;
   const previous = sessionChats;
   const previousOffline = offlineDeliveryState; const previousCourier = courierState; const stoppingOffline = stopOfflineDelivery();
@@ -5664,35 +5698,34 @@ async function cleanMemory(): Promise<void> {
     pauseFileTransfers();
     await historyWrites.settled(); await Promise.allSettled([...pendingFileWrites]);
     if (generation !== authGeneration) return;
-    const ids = new Set(choice.ids.filter(id=>!isLibraryFileId(id)));
-    const deleteIds = choice.kind === 'history'
-      ? (await inspectChatStorage(address)).files.map(f=>f.id).filter(id=>!isLibraryFileId(id))
-      : [...ids];
-    if (choice.kind === 'history') offlineDeliveryState = { ...offlineDeliveryState, pending: [] };
-    const courierPartIds: string[] = [];
-    for (const r of courierState.incomingFiles) if (choice.kind === 'history' || ids.has(fileTransferKey(r.job.body.from, r.job.body.id))) {
-      for (let i = 0; i < r.manifest.attachment.chunks; i++) courierPartIds.push(fileTransferKey(r.job.body.from, `${r.job.body.id}:courier:${i}`));
+    const account = address, key = chatStoreKey;
+    if (!key) throw new Error('storage_unavailable');
+    const disk = (await inspectChatStorage(account)).files.map(file => file.id);
+    const baseline = trustedSession ? undefined : await loadLocalChatData(key, account);
+    if (generation !== authGeneration) return;
+    const plan = prepareChatStorageCleanup(chatSnapshot(), choice, [...disk, ...sessionFiles.keys()]);
+    const durable = baseline ? prepareChatStorageCleanup(baseline, choice, disk) : plan;
+    if (trustedSession || baseline) await saveChatDataWithFileDeletion(key, account, durable.snapshot, durable.ids);
+    else await deleteLocalFiles(account, durable.ids);
+    if (generation !== authGeneration) return;
+    const saved = plan.snapshot;
+    for (const peer of saved.chats.order) sessionChats = updateConversation(sessionChats, peer, conversation => {
+      const row = saved.chats.byPeer[peer];
+      return { ...conversation, messages: row.messages, deletedIds: row.deletedIds, unread: unreadMessageCount(row.messages),
+        ...(choice.kind === 'chat' && peer === choice.peer ? { draft: '' } : {}) };
+    });
+    if (saved.offlineState) offlineDeliveryState = saved.offlineState;
+    if (saved.courierState) courierState = saved.courierState;
+    if (saved.radioState) radioState = saved.radioState;
+    if (choice.kind === 'history' || choice.kind === 'ai-chat') {
+      localAgentHistory = []; localAgentDraft = ''; localAgentNotice = '';
     }
-    courierState = pruneCourierFiles(courierState, (peer, id) => choice.kind === 'history' || ids.has(fileTransferKey(peer, id)));
-    for (const peer of sessionChats.order) sessionChats = updateConversation(sessionChats, peer, conversation => ({
-      ...conversation, unread: choice.kind === 'history' ? 0 : conversation.unread,
-      messages: choice.kind === 'history' ? [] : conversation.messages.map(message =>
-        message.file && ids.has(fileTransferKey(peer, message.id))
-          ? { ...message, fileDeleted: true, fileStatus: 'canceled', fileAccepted: false, fileProgress: 0 } : message),
-    }));
-    if (trustedSession) {
-      if (!chatStoreKey) throw new Error('storage_unavailable');
-      await saveChatDataWithFileDeletion(chatStoreKey, address, chatSnapshot(), [...deleteIds, ...courierPartIds]);
-    } else {
-      if (!chatStoreKey) throw new Error('storage_unavailable');
-      const baseline = await loadLocalChatData(chatStoreKey, address);
-      if (generation !== authGeneration) return;
-      if (baseline) await saveChatDataWithFileDeletion(chatStoreKey, address,
-        cleanedHistory(baseline, choice.kind === 'history' ? undefined : choice.ids),
-        deleteIds);
-      else await deleteLocalFiles(address, deleteIds);
+    if ((choice.kind === 'history' || choice.kind === 'radio-chat') && saved.meshtastic) meshtastic = saved.meshtastic;
+    if (choice.kind === 'history') replyDrafts = {};
+    else if (choice.kind === 'chat') {
+      const next = { ...replyDrafts }; delete next[choice.peer]; replyDrafts = next;
     }
-    for (const [id, bytes] of sessionFiles) if (!isLibraryFileId(id) && (choice.kind === 'history' || ids.has(id))) { bytes.fill(0); sessionFiles.delete(id); }
+    for (const id of plan.ids) { sessionFiles.get(id)?.fill(0); sessionFiles.delete(id); }
     if (generation === authGeneration) status = 'Удалено с этого устройства. Копии у собеседников не изменены.';
   } catch {
     if (generation === authGeneration) {
@@ -5704,7 +5737,9 @@ async function cleanMemory(): Promise<void> {
     memoryBusy = false;
     if (generation === authGeneration) {
       if (screen === 'account' && identity && !chat) await initializeChat();
+      const cleanupError = storageError;
       await refreshStorage();
+      if (cleanupError && generation === authGeneration) storageError = cleanupError;
     }
   }
 }
@@ -5833,7 +5868,7 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
   courierStatus = idleCourierStatus();
     deliveryDiagnostics = emptyDeliveryDiagnostics(); receiveRoutingStamp = '';
   storageRequest++; storageReading = false;
-  storageFiles = []; storageError = ''; memoryConfirmation = null;
+  storageFiles = []; storageUsage = null; storageModels = []; storageError = ''; memoryConfirmation = null;
   authNickname = '';
   backupOpen = false;
   chatSearch = '';
@@ -6199,9 +6234,27 @@ async function changePassword(): Promise<void> {
 
   {#if memoryConfirmation}
     <dialog class="exit-confirm" use:memoryDialog oncancel={() => memoryConfirmation = null} aria-label={$i18n.text("Подтверждение очистки")}>
-      <p>{memoryConfirmation.kind === 'history' ? $i18n.text("Удалить всю переписку и вложения этого аккаунта? Контакты и настройки останутся.") : $i18n("m_5db0b52cd808", {v0: (memoryConfirmation.kind)})}</p>
-      <p>{$i18n.text("Это нельзя отменить. Сначала скачайте нужные файлы.")}</p>
-      <button onclick={() => void cleanMemory()}>{$i18n.text("Удалить")}</button>
+      {#if memoryConfirmation.kind === 'files'}
+        <p>{$i18n("m_5db0b52cd808", {v0: $i18n.text(memoryConfirmation.label)})}</p>
+      {:else if memoryConfirmation.kind === 'all-files'}
+        <p>{$i18n.text('Удалить все локальные файлы чатов этого профиля? Переписка, GIF и стикерпаки сохранятся.')}</p>
+      {:else if memoryConfirmation.kind === 'chat-files'}
+        <p>{$i18n.text('Удалить локальные файлы в выбранных чатах? Сообщения и библиотека сохранятся.')}</p>
+      {:else if memoryConfirmation.kind === 'chat'}
+        <p><strong>{contactName(memoryConfirmation.peer)}</strong></p>
+        <p>{$i18n.text('Удалить все сообщения и файлы этого чата из браузера? Контакт и общая библиотека сохранятся.')}</p>
+      {:else if memoryConfirmation.kind === 'ai-chat' || memoryConfirmation.kind === 'radio-chat'}
+        <p><strong>{memoryConfirmation.kind === 'ai-chat' ? $i18n.text('ИИ-чат') : memoryConfirmation.name}</strong></p>
+        <p>{$i18n.text('Удалить историю этого чата из браузера? Настройки сохранятся.')}</p>
+      {:else if memoryConfirmation.kind === 'history'}
+        <p>{$i18n.text('Удалить переписку этого профиля, включая ИИ-чат и LoRa? Карточки вложений и файлы сохранятся.')}</p>
+      {:else if memoryConfirmation.kind === 'sticker-packs'}
+        <p>{$i18n.text('Удалить все стикерпаки из библиотеки? GIF и файлы, которые используются в чатах, сохранятся.')}</p>
+      {:else}
+        <p>{$i18n.text('Очистить кэш движков ИИ? Модели останутся в браузере. Для повторной загрузки движков понадобится интернет.')}</p>
+      {/if}
+      {#if memoryConfirmation.kind !== 'ai-runtime'}<p>{$i18n.text("Это нельзя отменить. Сначала скачайте нужные файлы.")}</p>{/if}
+      <button disabled={agentBusy || nativeSending} onclick={() => void cleanMemory()}>{$i18n.text("Удалить")}</button>
       <button onclick={() => memoryConfirmation = null}>{$i18n.text("Отмена")}</button>
     </dialog>
   {/if}
@@ -6249,7 +6302,7 @@ async function changePassword(): Promise<void> {
   <SettingsMenu section={settingsSection} items={settingsMenu} descriptions={settingsDescriptions}
     backupWarning={!seedBackupVerified} onSelect={id => selectSettings(id as SettingsSection)} />
 
-  {#if settingsSection !== 'overview' && settingsSection !== 'application' && settingsSection !== 'security' && settingsSection !== 'about'}
+  {#if settingsSection !== 'overview' && settingsSection !== 'application' && settingsSection !== 'security' && settingsSection !== 'about' && !(settingsSection === 'files' && mediaSettingsSection === 'storage')}
     <p class="help-text">{$i18n.text("Для этого профиля на этом устройстве")}</p>
   {/if}
   {#if settingsSection === 'files'}
@@ -6291,16 +6344,20 @@ async function changePassword(): Promise<void> {
   {/if}
 
   {#if settingsSection === 'files' && mediaSettingsSection === 'storage'}
-    <StoragePanel files={storageFiles} historyBytes={storageHistoryBytes} otherBytes={storageOtherBytes}
-      cacheBytes={storageCacheBytes} originUsage={storageOriginUsage} quota={storageQuota}
-      volatile={!trustedSession} busy={memoryBusy || storageReading} error={storageError}
-      refresh={() => { agentModelRevision++; void refreshStorage(); }} clean={(kind, ids) => memoryConfirmation = { kind, ids }}
+    <StoragePanel files={storageFiles} usage={storageUsage}
+      packCount={mediaLibrary.packs.length} gifCount={mediaLibrary.gifs.length}
+      volatile={!trustedSession} busy={memoryBusy || storageReading || mediaBusy} error={storageError}
+      refresh={() => void refreshStorage()} clean={choice => memoryConfirmation = choice}
       download={(peer, id) => void downloadFile(peer, id)}
-      chats={chatStorageUsage(sessionChats,storageFiles)} name={contactName} openChat={peer=>void openDirectChat(peer)}
+      openLibrary={profileNetwork ? () => openMediaLibrary('stickers') : undefined}
+      openProfiles={() => { selectSettings('account'); profileManagementOpen = true; }}
+      chats={chatStorageUsage(sessionChats,storageFiles)} localChats={localTranscriptUsage()} name={contactName} openChat={peer=>void openDirectChat(peer)}
       loadPreview={loadStoragePreview}>
       {#snippet modelStorage()}
-        <AgentStoragePanel revision={agentModelRevision} busy={navigationBusy() || storageReading}
+        <AgentStoragePanel models={storageModels} aiCacheBytes={storageUsage?.app?.ai ?? 0}
+          busy={navigationBusy() || storageReading}
           working={agentBusy} onRemove={removeStoredAgentModel}
+          onClearRuntime={() => { memoryConfirmation = { kind: 'ai-runtime' }; }}
           onUnload={() => { if (!navigationBusy()) stopAgentRequest(); }} />
       {/snippet}
     </StoragePanel>
