@@ -1,7 +1,7 @@
 {
   "name": "mesh-autonomy",
   "private": true,
-  "version": "0.5.19",
+  "version": "0.5.20",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -54,13 +54,17 @@
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "svelte": "^5.55.2",
     "svelte-check": "^4.4.6",
+    "ts-mls": "1.6.4",
     "typescript": "^6.0.2",
     "vite": "^8.3.6",
     "vitest": "^4.1.12",
     "web-push": "3.6.7"
   },
   "overrides": {
-    "cookie": "^0.7.2"
+    "cookie": "^0.7.2",
+    "ts-mls": {
+      "@noble/curves": "$@noble/curves"
+    }
   },
   "dependencies": {
     "@noble/curves": "^2.2.0",

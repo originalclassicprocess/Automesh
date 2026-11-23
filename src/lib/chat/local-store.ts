@@ -21,8 +21,10 @@ import { normalizeEphemeralState } from './ephemeral';
 import { normalizeRadioState, radioDeliveries, type RadioAccountState } from '$lib/radio/account-state';
 import { normalizeNativeChannels,type NativeChannels } from '$lib/radio/native-channels';
 import { normalizeNotifications, type NotificationState } from '$lib/notifications/state';
+import { restoreGroups, type GroupRooms } from '$lib/groups/storage';
 
 export type LocalChatData = {
+  experimentalGroups?: GroupRooms;
   agentSettings?:AgentSettings;
   agentChatLimits?:AgentChatLimits;
   localAgentHistory?: LocalAgentMessage[];
@@ -284,6 +286,7 @@ function cleanData(value: unknown): LocalChatData {
   }
   return {
     ...(raw.deviceSettings !== undefined ? { deviceSettings: normalizeDeviceSettings(raw.deviceSettings) } : {}),
+    ...(raw.experimentalGroups !== undefined ? { experimentalGroups: restoreGroups(raw.experimentalGroups) } : {}),
     ...(raw.agentSettings !== undefined ? {agentSettings:normalizeAgentSettings(raw.agentSettings)} : {}),
     ...(raw.agentChatLimits !== undefined ? {agentChatLimits:normalizeAgentChatLimits(raw.agentChatLimits)} : {}),
     ...(raw.localAgentHistory !== undefined ? { localAgentHistory: normalizeLocalAgentHistory(raw.localAgentHistory) } : {}),

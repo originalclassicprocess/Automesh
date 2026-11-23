@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { receiveRouting, receptionChannel, receptionFailure } from './receive-routing';
+import { activeReceiveUrls, receiveRouting, receptionChannel, receptionFailure } from './receive-routing';
 import { emptyCourierState } from './courier-state';
 const base=[{url:'wss://chat.example/signal',kind:'internet' as const}];
 const state={...emptyCourierState(),enabled:true,node:{url:'https://node.example',nodeId:'a'.repeat(32),address:'courier'}};
 describe('delivery receive route policy',()=>{
+  it('keeps the shared meeting point active with different personal delivery nodes',()=>{
+    const settings={quickReserve:false,nodes:[]};
+    const plans=[emptyCourierState(),state,{...state,node:{...state.node,url:'https://second.example'}}]
+      .map(item=>receiveRouting(base,settings,'https://chat.example/',item));
+    expect(plans.map(plan=>activeReceiveUrls(plan,base,true))).toEqual([
+      [base[0].url], ['wss://node.example/signal',base[0].url], ['wss://second.example/signal',base[0].url],
+    ]);
+    expect(activeReceiveUrls(plans[1],base,false)).toEqual(plans[1].required);
+    const lanOnly=receiveRouting(base,{...settings,internetEnabled:false},'https://chat.example/',state);
+    expect(activeReceiveUrls(lanOnly,base,true)).toEqual([]);
+  });
   it('pins a configured delivery node independently of reserve and peer availability',()=>{
     const r=receiveRouting(base,{quickReserve:false,nodes:[]},'https://automesh.space/',state);
     expect(r.required).toEqual(['wss://node.example/signal']);expect(r.endpoints.map(e=>e.url)).toEqual([...r.required,base[0].url]);
