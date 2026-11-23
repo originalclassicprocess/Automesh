@@ -1,5 +1,6 @@
 import { listFileModels, type FileModel } from './file-models';
 import { PORTABLE_MODELS, portableCacheName, portableMarker, type PortableDevice, type PortableModelId } from './portable-models';
+import { cachedResponseBytes } from '$lib/application/app-cache';
 
 export type LocalModelRuntime = { id: string; device: PortableDevice; phase: 'loading' | 'loaded' };
 export type StoredAgentModel = (FileModel & { kind: 'gguf' }) |
@@ -13,17 +14,14 @@ export async function listCachedOnnxModels(): Promise<Extract<StoredAgentModel, 
     if (!names.has(name)) return null;
     const cache = await caches.open(name);
     const marker = portableMarker(id, location.origin);
-    const requests = (await cache.keys()).filter(request => request.url !== marker);
-    if (!requests.length) return null;
-    const sizes = await Promise.all(requests.map(async request => {
+    const requests = await cache.keys();
+    if (!requests.some(request => request.url !== marker)) return null;
+    let bytes: number | null = 0;
+    for (const request of requests) {
       const response = await cache.match(request);
-      const length = response?.headers.get('Content-Length');
-      const size = length && /^\d+$/.test(length) ? Number(length) : NaN;
-      const encoding = response?.headers.get('Content-Encoding');
-      void response?.body?.cancel().catch(() => {});
-      return Number.isSafeInteger(size) && (!encoding || encoding === 'identity') ? size : null;
-    }));
-    const bytes = sizes.every(size => size !== null) ? sizes.reduce((total, size) => total + size, 0) : null;
+      if (!response || response.type === 'opaque') { bytes = null; break; }
+      bytes += await cachedResponseBytes(response);
+    }
     return { kind: 'onnx' as const, id, name: PORTABLE_MODELS[id].title, bytes };
   }));
   return models.filter(model => model !== null);
@@ -31,4 +29,12 @@ export async function listCachedOnnxModels(): Promise<Extract<StoredAgentModel, 
 
 export async function listStoredGgufModels(): Promise<Extract<StoredAgentModel, { kind: 'gguf' }>[]> {
   return (await listFileModels()).map(file => ({ ...file, kind: 'gguf' }));
+}
+
+export async function readStoredAgentModels() {
+  const results = await Promise.allSettled([listStoredGgufModels(), listCachedOnnxModels()]);
+  return {
+    models: results.flatMap<StoredAgentModel>(result => result.status === 'fulfilled' ? result.value : []),
+    incomplete: results.some(result => result.status === 'rejected'),
+  };
 }

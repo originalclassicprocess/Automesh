@@ -1,4 +1,4 @@
-const PREFIX = 'mesh-autonomy-shell-';
+import { APP_CACHE_PREFIX as PREFIX } from './app-cache';
 
 // Never remove another app's caches, live-tab versions, or newer installations.
 // Unknown/legacy/suspended tabs conservatively keep all old app caches.

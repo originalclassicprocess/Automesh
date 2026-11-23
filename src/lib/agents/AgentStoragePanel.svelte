@@ -3,31 +3,17 @@
   import { formatBytes } from '$lib/application/storage-summary';
   import { fileModelRuntime } from './file-model-client';
   import { portableModelRuntime } from './portable-client';
-  import { listCachedOnnxModels, listStoredGgufModels, type StoredAgentModel } from './model-storage';
+  import type { StoredAgentModel } from './model-storage';
   import { PORTABLE_MODELS, portableModelId } from './portable-models';
 
-  let { revision, busy, working, onRemove, onUnload }:
-    { revision: number; busy: boolean; working: boolean;
-      onRemove: (model: StoredAgentModel) => Promise<boolean>; onUnload: () => void } = $props();
-  let models = $state.raw<StoredAgentModel[]>([]);
-  let reading = $state(true), deleting = $state(false), inventoryError = $state(false), deleteError = $state(false);
+  let { models, aiCacheBytes, busy, working, onRemove, onUnload, onClearRuntime }:
+    { models: StoredAgentModel[]; aiCacheBytes: number; busy: boolean; working: boolean;
+      onRemove: (model: StoredAgentModel) => Promise<boolean>; onUnload: () => void; onClearRuntime: () => void } = $props();
+  let deleting = $state(false), deleteError = $state(false);
   const active = $derived($fileModelRuntime ?? $portableModelRuntime);
   const activeName = $derived($fileModelRuntime
     ? models.find(model => model.kind === 'gguf' && model.id === $fileModelRuntime?.id)?.name || $i18n.text('Модель из файла GGUF')
     : $portableModelRuntime ? PORTABLE_MODELS[portableModelId($portableModelRuntime.id)].title : '');
-
-  $effect(() => {
-    void revision;
-    let current = true;
-    reading = true;
-    void Promise.allSettled([listStoredGgufModels(), listCachedOnnxModels()]).then(results => {
-      if (!current) return;
-      models = results.flatMap<StoredAgentModel>(result => result.status === 'fulfilled' ? result.value : []);
-      inventoryError = results.some(result => result.status === 'rejected');
-      reading = false;
-    });
-    return () => { current = false; };
-  });
 
   async function remove(model: StoredAgentModel) {
     if (busy || working || deleting || !confirm($i18n.text('Удалить эту модель из хранилища браузера? Файлы моделей общие для профилей Automesh в этом браузере.'))) return;
@@ -37,8 +23,10 @@
   }
 </script>
 
-<details class="model-storage" open>
+<details class="model-storage" id="storage-models">
   <summary>{$i18n.text('Модели ИИ')}</summary>
+  <p>{$i18n.text('Импорт GGUF или ONNX сохраняет копию модели в этом браузере. Во время запроса модель загружается в память вкладки, а исходный файл в папке устройства остаётся на месте.')}</p>
+  <p>{$i18n.text('Встроенные модели браузера и модели внешних движков хранятся отдельно. Браузер не сообщает Automesh их размер.')}</p>
   {#if active}
     <div class="runtime">
       <span><strong>{activeName}</strong><small>{$i18n.text(active.phase === 'loaded' ? 'В памяти этой вкладки' : 'Запуск модели…')} · {active.device === 'webgpu' ? 'WebGPU' : 'WASM'}</small></span>
@@ -47,10 +35,7 @@
   {:else if models.length}
     <p role="status">{$i18n.text('В этой вкладке модель не загружена.')}</p>
   {/if}
-  {#if inventoryError}<p role="alert">{$i18n.text('Не удалось прочитать часть хранилища моделей.')}</p>{/if}
   {#if deleteError}<p role="alert">{$i18n.text('Не удалось удалить модель.')}</p>{/if}
-  {#if reading && !models.length}<p role="status">{$i18n.text('Подождите…')}</p>
-  {:else}
     <ul>
       {#each models as model (`${model.kind}:${model.id}`)}
         <li>
@@ -58,14 +43,17 @@
             {model.kind === 'gguf' ? 'GGUF' : 'ONNX'} ·
             {model.bytes === null ? $i18n.text('Размер кэша недоступен') : $i18n.system(formatBytes(model.bytes))}
           </small></span>
-          <button type="button" onclick={() => void remove(model)} disabled={busy || working || deleting || reading}
+          <button type="button" onclick={() => void remove(model)} disabled={busy || working || deleting}
             aria-label={`${$i18n.text('Удалить модель')} · ${model.name}`} title={model.name}>{$i18n.text('Удалить из хранилища')}</button>
         </li>
       {:else}
-        {#if !inventoryError}<li class="empty">{$i18n.text('В браузере пока нет сохранённых моделей.')}</li>{/if}
+        {#if !busy}<li class="empty">{$i18n.text('В браузере пока нет сохранённых моделей.')}</li>{/if}
       {/each}
+      {#if aiCacheBytes > 0}
+        <li><span><strong>{$i18n.text('Кэш движков ИИ')}</strong><small>{$i18n.system(formatBytes(aiCacheBytes))}</small></span>
+          <button type="button" disabled={busy || working || deleting} onclick={onClearRuntime}>{$i18n.text('Очистить кэш движков')}</button></li>
+      {/if}
     </ul>
-  {/if}
 </details>
 
 <style>
