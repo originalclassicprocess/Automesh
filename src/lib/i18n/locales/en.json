@@ -3361,5 +3361,7 @@
   "m_f555f613cc31": "Join a LoRa channel",
   "m_3732d42f3674": "No accepted contacts yet.",
   "m_9827a694f987": "Add a local model in AI settings.",
-  "m_b8cc75002ba1": "Connect your radio and enable Meshtastic channels in LoRa settings."
+  "m_b8cc75002ba1": "Connect your radio and enable Meshtastic channels in LoRa settings.",
+  "m_28ec73ee59ab": "Read by",
+  "m_f82ed010cea4": "Invitation accepted. Waiting for group keys from members."
 }

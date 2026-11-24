@@ -1,13 +1,15 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
-import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupMembers, groupTitle, MAX_GROUPS, uuid } from './protocol';
+import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupMembers, groupTitle, MAX_GROUPS, uuid,
+  validGroupProof, validGroupReceipt, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
 export type GroupPost = { id: string; from: string; text: string };
-export type GroupEntry = GroupPost & { hash: string; packet: string; receivedBy?: string[] };
+export type GroupEntry = GroupPost & { hash: string; packet: string; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
   activityAt?: number;
+  welcomeProof?: GroupProof;
 };
 export type GroupRooms = GroupRoom[];
 
@@ -34,11 +36,17 @@ export function restoreGroups(value: unknown): GroupRooms {
       digest(entry.hash) && encodedMls(entry.packet, 6000)).map(entry => ({
       ...entry, receivedBy: Array.isArray(entry.receivedBy)
         ? members.filter(peer => peer !== entry.from && entry.receivedBy!.includes(peer)) : [],
+      receipts: Array.isArray(entry.receipts) ? members.flatMap(peer => {
+        if (peer === entry.from) return [];
+        const receipt = entry.receipts!.find(item => validGroupReceipt(item) && item.hash === entry.hash && item.by === peer);
+        return receipt ? [receipt] : [];
+      }) : [],
     }));
     rooms.push({ id:raw.id, title:raw.title, owner:raw.owner, members, keys, entries,
       ...(Number.isSafeInteger(raw.activityAt) && raw.activityAt > 0 ? { activityAt:raw.activityAt } : {}),
       ...(encodedMls(raw.mls, 240000) ? { mls:raw.mls } : {}),
       ...(encodedMls(raw.welcome) ? { welcome:raw.welcome } : {}),
+      ...(encodedMls(raw.welcome) && validGroupProof(raw.welcomeProof) ? { welcomeProof:raw.welcomeProof } : {}),
       ...(draft && encodedMls(draft.packet) && [draft.init, draft.leaf, draft.signature].every(key => encodedMls(key, 256))
         ? { draft:{ packet:draft.packet, init:draft.init, leaf:draft.leaf, signature:draft.signature } } : {}),
     });

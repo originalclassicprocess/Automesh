@@ -4,6 +4,7 @@ export const MAX_GROUP_MEMBERS = 10;
 export const GROUP_HISTORY = 128;
 export const GROUP_TEXT_BYTES = 2048;
 export const GROUP_PACKET_BYTES = 40 * 1024;
+export const GROUP_RECEIPT_BATCH = 24;
 export const GROUP_PREFIX = '\u0000automesh-group-v1:';
 export const MAX_GROUPS = 12;
 export const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
@@ -16,12 +17,29 @@ export const groupMembers = (value: unknown): value is string[] =>
 export const encodedMls = (value: unknown, limit = 28000): value is string =>
   typeof value === 'string' && value.length >= 4 && value.length <= limit && /^[A-Za-z0-9+/]+={0,2}$/.test(value) && value.length % 4 === 0;
 
+export type GroupProof = { publicKey: string; signature: string };
+export type GroupReceipt = GroupProof & { hash: string; by: string; state: 'received' | 'read' };
+
+export function validGroupProof(value: unknown): value is GroupProof {
+  if (!value || typeof value !== 'object') return false;
+  const { publicKey, signature } = value as GroupProof;
+  return encodedMls(publicKey, 88) && publicKey.length === 88 && encodedMls(signature, 88) && signature.length === 88;
+}
+
+export function validGroupReceipt(value: unknown): value is GroupReceipt {
+  if (!validGroupProof(value)) return false;
+  const { by, hash, state } = value as GroupReceipt;
+  return isValidAccountId(by) && digest(hash) && (state === 'received' || state === 'read');
+}
+
 export type GroupFrame =
   | { type: 'invite'; group: string; title: string; members: string[] }
   | { type: 'join' | 'welcome'; group: string; packet: string }
+  | { type: 'welcome-proof'; group: string; packet: string; proof: GroupProof }
   | { type: 'message'; group: string; packet: string }
   | { type: 'ack'; group: string; hash: string }
-  | { type: 'sync'; group: string; known: string[] };
+  | { type: 'receipts'; group: string; receipts: GroupReceipt[] }
+  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean };
 
 // The adapter supplies authenticated Mesh IDs. It owns discovery, framing,
 // reconnection and any fragmentation required by its transport.
@@ -42,9 +60,23 @@ export function parseGroupFrame(value: unknown): GroupFrame | null {
     case 'welcome':
     case 'message':
       return encodedMls(frame.packet, frame.type === 'message' ? 6000 : 28000) ? { type:frame.type, group, packet:frame.packet } : null;
-    case 'sync':
-      return Array.isArray(frame.known) && frame.known.length <= GROUP_HISTORY && frame.known.every(digest)
-        ? { type:'sync', group, known:frame.known } : null;
+    case 'welcome-proof':
+      return encodedMls(frame.packet) && validGroupProof(frame.proof)
+        ? { type:'welcome-proof', group, packet:frame.packet,
+          proof:{ publicKey:frame.proof.publicKey, signature:frame.proof.signature } } : null;
+    case 'receipts':
+      return Array.isArray(frame.receipts) && frame.receipts.length > 0 && frame.receipts.length <= GROUP_RECEIPT_BATCH &&
+        frame.receipts.every(validGroupReceipt) ? { type:'receipts', group,
+          receipts:frame.receipts.map(({ hash, by, state, publicKey, signature }) => ({ hash, by, state, publicKey, signature })) } : null;
+    case 'sync': {
+      if (!Array.isArray(frame.known) || frame.known.length > GROUP_HISTORY || !frame.known.every(digest)) return null;
+      const seen = frame.seen;
+      if (seen === undefined) return { type:'sync', group, known:frame.known };
+      if (!Array.isArray(seen) || seen.length !== frame.known.length ||
+        !seen.every(mask => Number.isInteger(mask) && mask >= 0 && mask < 2 ** (MAX_GROUP_MEMBERS * 2)) ||
+        typeof frame.hasWelcome !== 'boolean') return null;
+      return { type:'sync', group, known:frame.known, seen, hasWelcome:frame.hasWelcome };
+    }
     case 'ack':
       return digest(frame.hash) ? { type:'ack', group, hash:frame.hash } : null;
     default: return null;
