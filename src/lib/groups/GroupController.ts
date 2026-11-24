@@ -11,6 +11,7 @@ type GroupPort = {
   allowed(peer: string): boolean;
   rooms(): GroupRooms;
   save(rooms: GroupRooms): Promise<void>;
+  welcomeFailed?(group: string): void;
   transport: GroupTransport;
 };
 
@@ -53,7 +54,7 @@ export class GroupController {
       const members = [this.port.self, ...selected];
       if (!groupTitle(title) || !groupMembers(members) || selected.some(peer => !this.port.contact(peer)) ||
         this.port.rooms().length >= MAX_GROUPS) throw new Error('group_invalid_selection');
-      const room: GroupRoom = { id:crypto.randomUUID(), title, members, owner:this.port.self, keys:{}, entries:[] };
+      const room: GroupRoom = { id:crypto.randomUUID(), title, members, owner:this.port.self, keys:{}, entries:[], activityAt:Date.now() };
       await this.save(room);
       for (const peer of selected) void this.hello(room, peer);
       return room.id;
@@ -76,15 +77,15 @@ export class GroupController {
       const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim() };
       if (!room?.mls || !validPost(post)) throw new Error('group_message_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
-      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY) };
+      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
       this.relay(next, entry.packet);
     });
   }
 
-  private async hello(room: GroupRoom, peer: string) {
+  private async hello(room: GroupRoom, peer: string, repeatWelcome = false) {
     const key = `${room.id}:${peer}`;
-    const phase = `${key}:${room.mls ? 'active' : room.draft ? 'accepted' : 'invited'}`;
+    const phase = `${key}:${repeatWelcome ? 'repeat-welcome' : room.mls ? 'active' : room.draft ? 'accepted' : 'invited'}`;
     if (this.hellos.has(phase)) return;
     this.hellos.add(phase);
     try {
@@ -93,7 +94,9 @@ export class GroupController {
           await this.deliver(peer, { type:'invite', group:room.id, title:room.title, members:room.members });
           return;
         }
-        if (room.welcome && !this.welcomed.has(key)) await this.deliver(peer, { type:'welcome', group:room.id, packet:room.welcome });
+        if (room.welcome && (repeatWelcome || !this.welcomed.has(key))) {
+          await this.deliver(peer, { type:'welcome', group:room.id, packet:room.welcome });
+        }
       } else if (!room.mls && room.draft && peer === room.owner) {
         await this.deliver(peer, { type:'join', group:room.id, packet:room.draft.packet });
         return;
@@ -140,15 +143,20 @@ export class GroupController {
         if (room) {
           if (room.owner === peer && !room.mls && room.draft) void this.hello(room, peer);
         } else if (this.port.rooms().length < MAX_GROUPS) {
-          await this.save({ id:frame.group, title:frame.title, owner:peer, members:frame.members, keys:{}, entries:[] });
+          await this.save({ id:frame.group, title:frame.title, owner:peer, members:frame.members, keys:{}, entries:[], activityAt:Date.now() });
         }
         return;
       }
       if (!room?.members.includes(peer)) return;
       if (frame.type === 'join') {
         if (room.owner !== this.port.self || !this.port.contact(peer)) return;
-        if (room.mls) { void this.hello(room, peer); return; }
         if (room.keys[peer] && room.keys[peer] !== frame.packet || !await validateJoinKey(room, peer, frame.packet)) return;
+        if (room.mls) {
+          // A returning participant can still have its original join key after
+          // the creator has cached a previous sync from that participant.
+          void this.hello(room, peer, true);
+          return;
+        }
         const next = { ...room, keys:{ ...room.keys, [peer]:frame.packet } };
         if (room.members.every(member => member === this.port.self || next.keys[member])) {
           const established = { ...next, ...await establishGroup(next, this.port.identity), keys:{} };
@@ -159,8 +167,14 @@ export class GroupController {
       }
       if (frame.type === 'welcome') {
         if (room.mls || !room.draft || peer !== room.owner || !this.port.contact(peer)) return;
-        const joined = { ...room, mls:await acceptGroupWelcome(room, frame.packet), draft:undefined };
-        await this.save(joined);
+        let joined: GroupRoom;
+        try {
+          joined = { ...room, mls:await acceptGroupWelcome(room, frame.packet), draft:undefined };
+          await this.save(joined);
+        } catch {
+          if (this.port.active()) this.port.welcomeFailed?.(room.id);
+          return;
+        }
         for (const member of room.members) if (member !== this.port.self) void this.hello(joined, member);
         return;
       }
@@ -180,7 +194,7 @@ export class GroupController {
       }
       const { mls, entry } = await decryptGroupPost(room, frame.packet, hash);
       if (entry.from === this.port.self || room.entries.some(item => item.id === entry.id)) return;
-      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY) };
+      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
       void this.deliver(entry.from, { type:'ack', group:room.id, hash });
       this.relay(next, entry.packet, peer);

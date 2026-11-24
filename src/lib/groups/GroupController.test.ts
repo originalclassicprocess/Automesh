@@ -22,6 +22,7 @@ describe('experimental closed MLS groups', () => {
       return { identity, id:await accountIdFromPublicKey(publicKey) };
     }));
     const offline = new Set<string>();
+    const waitingForWelcome = new Set<string>();
     const traces: { from:string; to:string; frame:GroupFrame }[] = [];
     const peers = new Map<string, GroupController>();
     const saved = new Map<string, GroupRooms>();
@@ -34,18 +35,32 @@ describe('experimental closed MLS groups', () => {
         send:async (to, frame) => {
           if (offline.has(to)) throw new Error('unreachable');
           traces.push({ from:id, to, frame });
+          if (frame.type === 'welcome' && waitingForWelcome.has(to)) return;
           await peers.get(to)?.receive(id, frame);
         },
       },
     }));
     const [a, b, c] = ids.map(device => device.id);
+    waitingForWelcome.add(c);
     const room = await peers.get(a)!.create('Private group', [b, c]);
     await vi.waitFor(() => expect(saved.get(c)?.[0]?.id).toBe(room), { timeout:5000 });
     await peers.get(b)!.accept(room);
     await peers.get(c)!.accept(room);
+    const pending = saved.get(c)!;
+    expect(pending[0].draft).toBeTruthy();
+    await vi.waitFor(() => expect(saved.get(b)?.[0]?.mls).toBeTruthy());
+    expect(saved.get(c)?.[0]?.mls).toBeUndefined();
+    waitingForWelcome.delete(c);
+    peers.get(c)!.peerOnline(a);
     await vi.waitFor(() => {
       for (const id of [a, b, c]) expect(saved.get(id)?.[0]?.mls).toBeTruthy();
     }, { timeout:10000 });
+    // A restored browser snapshot can contain the original pending join.
+    // The creator already saw a sync from C and must send the Welcome again.
+    await peers.get(a)!.receive(c, { type:'sync', group:room, known:[] });
+    saved.set(c, pending);
+    peers.get(c)!.peerOnline(a);
+    await vi.waitFor(() => expect(saved.get(c)?.[0]?.mls).toBeTruthy());
     offline.add(c);
     await peers.get(a)!.send(room, 'The author will be offline.');
     await vi.waitFor(() => expect(saved.get(b)?.[0]?.entries).toHaveLength(1));

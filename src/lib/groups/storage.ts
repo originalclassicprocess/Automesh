@@ -7,6 +7,7 @@ export type GroupEntry = GroupPost & { hash: string; packet: string; receivedBy?
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
+  activityAt?: number;
 };
 export type GroupRooms = GroupRoom[];
 
@@ -35,6 +36,7 @@ export function restoreGroups(value: unknown): GroupRooms {
         ? members.filter(peer => peer !== entry.from && entry.receivedBy!.includes(peer)) : [],
     }));
     rooms.push({ id:raw.id, title:raw.title, owner:raw.owner, members, keys, entries,
+      ...(Number.isSafeInteger(raw.activityAt) && raw.activityAt > 0 ? { activityAt:raw.activityAt } : {}),
       ...(encodedMls(raw.mls, 240000) ? { mls:raw.mls } : {}),
       ...(encodedMls(raw.welcome) ? { welcome:raw.welcome } : {}),
       ...(draft && encodedMls(draft.packet) && [draft.init, draft.leaf, draft.signature].every(key => encodedMls(key, 256))
