@@ -5172,6 +5172,7 @@ async function initializeChat() {
     self:groupAccount, identity:groupIdentity, active:groupActive,
     contact:peer => sessionChats.byPeer[peer]?.contact === 'accepted',
     allowed:peer => sessionChats.byPeer[peer]?.contact !== 'blocked',
+    readsEnabled:() => readReceiptsEnabled,
     rooms:() => groupRooms,
     welcomeFailed:id => {
       if (groupActive() && !groupWelcomeErrors.has(id)) groupWelcomeErrors = new Set([...groupWelcomeErrors, id]);
@@ -6923,6 +6924,8 @@ async function changePassword(): Promise<void> {
           {@const groupId = activeGroup.id}
           <GroupChat room={activeGroup} self={address} name={contactName} photo={contactPhoto}
             connected={connectedGroupPeers} blocked={navigationBusy()} welcomeFailed={groupWelcomeErrors.has(groupId)}
+            readEnabled={readReceiptsEnabled && !newChatView}
+            markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
             send={text => groupController?.send(groupId, text) ?? Promise.reject(new Error('group_inactive'))}
             sync={wakeGroupConnections} direct={() => openConnectionSection('direct')} back={showChatList} />

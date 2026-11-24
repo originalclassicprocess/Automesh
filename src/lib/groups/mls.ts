@@ -7,19 +7,37 @@ import {
 } from 'ts-mls';
 import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import type { IdentityProvider } from '$lib/identity/identity';
+import { buildP256PKCS8 } from '$lib/identity/pkcs8';
 import { bytesToHex } from '$lib/message/encoding';
-import { GROUP_HISTORY, encodedMls, groupMembers } from './protocol';
+import { GROUP_HISTORY, encodedMls, groupMembers, type GroupProof, type GroupReceipt } from './protocol';
 import { validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
 
 const suiteName = 'MLS_128_DHKEMP256_AES128GCM_SHA256_P256';
 const text = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 let suite: ReturnType<typeof getCiphersuiteImpl> | undefined;
-const cryptoSuite = () => suite ??= getCiphersuiteImpl(getCiphersuiteFromName(suiteName));
+const cryptoSuite = () => suite ??= getCiphersuiteImpl(getCiphersuiteFromName(suiteName)).then(implementation => ({
+  ...implementation,
+  hpke: {
+    ...implementation.hpke,
+    async importPrivateKey(scalar) {
+      // HPKE's scalar-only PKCS#8 import can be rejected by Apple WebKit.
+      // Use the same SEC1 encoding as the account's P-256 identity importer.
+      const pkcs8 = buildP256PKCS8(scalar) as Uint8Array<ArrayBuffer>;
+      try {
+        const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name:'ECDH', namedCurve:'P-256' }, true, ['deriveBits']);
+        return key as Awaited<ReturnType<typeof implementation.hpke.importPrivateKey>>;
+      } finally { pkcs8.fill(0); }
+    },
+  },
+}));
 const bytes = (encoded: string) => Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
 const encode = (value: unknown) => text.encode(JSON.stringify(value));
 const leafProof = (room: string, signing: Uint8Array) => encode(['Automesh MLS leaf v1', room, bytesToBase64(signing)]);
 const postProof = (room: string, post: GroupPost) => encode(['Automesh group post v1', room, post.id, post.from, post.text]);
+const welcomeProof = (room: GroupRoom, packet: string) => encode(['Automesh group welcome v1', room.id, room.title, room.members, packet]);
+const receiptProof = (room: string, receipt: Pick<GroupReceipt, 'hash' | 'by' | 'state'>) =>
+  encode(['Automesh group receipt v1', room, receipt.hash, receipt.by, receipt.state]);
 
 async function verify(peer: string, publicKey: unknown, signature: unknown, data: Uint8Array) {
   try {
@@ -27,8 +45,28 @@ async function verify(peer: string, publicKey: unknown, signature: unknown, data
     const keyBytes = bytes(publicKey), sig = bytes(signature);
     if (sig.length !== 64 || await accountIdFromPublicKey(keyBytes) !== peer) return false;
     const key = await crypto.subtle.importKey('raw', keyBytes, { name:'ECDSA', namedCurve:'P-256' }, false, ['verify']);
-    return crypto.subtle.verify({ name:'ECDSA', hash:'SHA-256' }, key, sig, data as Uint8Array<ArrayBuffer>);
+    return await crypto.subtle.verify({ name:'ECDSA', hash:'SHA-256' }, key, sig, data as Uint8Array<ArrayBuffer>);
   } catch { return false; }
+}
+
+async function signProof(identity: IdentityProvider, data: Uint8Array): Promise<GroupProof> {
+  return { publicKey:bytesToBase64(await identity.getPublicKeyBytes()), signature:bytesToBase64(await identity.sign(data)) };
+}
+
+export function signGroupWelcome(room: GroupRoom, packet: string, identity: IdentityProvider): Promise<GroupProof> {
+  return signProof(identity, welcomeProof(room, packet));
+}
+
+export function verifyGroupWelcome(room: GroupRoom, packet: string, proof: GroupProof) {
+  return verify(room.owner, proof.publicKey, proof.signature, welcomeProof(room, packet));
+}
+
+export async function signGroupReceipt(room: string, receipt: Pick<GroupReceipt, 'hash' | 'by' | 'state'>, identity: IdentityProvider): Promise<GroupReceipt> {
+  return { ...receipt, ...await signProof(identity, receiptProof(room, receipt)) };
+}
+
+export function verifyGroupReceipt(room: string, receipt: GroupReceipt) {
+  return verify(receipt.by, receipt.publicKey, receipt.signature, receiptProof(room, receipt));
 }
 
 function credentialProof(credential: Credential): { peer: string; publicKey: string; proof: string } {
@@ -122,10 +160,13 @@ export async function acceptGroupWelcome(room: GroupRoom, packet: string): Promi
   const message = readPacket(packet);
   if (message.wireformat !== 'mls_welcome' || !room.draft) throw new Error('group_invalid_welcome');
   const configForRoom = config(room);
-  const state = await joinGroup(message.welcome, readPackage(room.draft.packet), privateKeys(room.draft),
-    emptyPskIndex, await cryptoSuite(), undefined, undefined, configForRoom);
-  roster(room, state);
-  return bytesToBase64(encodeGroupState(state));
+  const keys = privateKeys(room.draft);
+  try {
+    const state = await joinGroup(message.welcome, readPackage(room.draft.packet), keys,
+      emptyPskIndex, await cryptoSuite(), undefined, undefined, configForRoom);
+    roster(room, state);
+    return bytesToBase64(encodeGroupState(state));
+  } finally { Object.values(keys).forEach(zeroOutUint8Array); }
 }
 
 export async function groupPacketHash(packet: string): Promise<string> {
