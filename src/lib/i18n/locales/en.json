@@ -3351,5 +3351,15 @@
   "m_3073825486f4": "Finding members requires shared signaling or direct QR pairing.",
   "m_05ea3dad59ea": "Received by members",
   "m_080f22f0e453": "Saved on this device",
-  "m_55aa91445abe": "Experimental text chat. Group membership is fixed at creation."
+  "m_55aa91445abe": "Experimental text chat. Group membership is fixed at creation.",
+  "m_0d44bcc1021c": "Waiting to join the group",
+  "m_89c708da7a43": "Invitation accepted. Waiting for the creator to send the group keys.",
+  "m_9debd13a724e": "Could not apply the group keys. Select Refresh to request them again.",
+  "m_d8379a6b2215": "New message",
+  "m_3b5097cd9bb5": "Message a contact",
+  "m_16a20180f44c": "Start an AI chat",
+  "m_f555f613cc31": "Join a LoRa channel",
+  "m_3732d42f3674": "No accepted contacts yet.",
+  "m_9827a694f987": "Add a local model in AI settings.",
+  "m_b8cc75002ba1": "Connect your radio and enable Meshtastic channels in LoRa settings."
 }

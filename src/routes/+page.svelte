@@ -8,7 +8,10 @@ import { removeLegacyBrowserLogs } from '$lib/application/legacy-cleanup';
 import { RecoveryController } from '$lib/application/recovery';
 import { pendingFile, pendingFileOffer, peerNeedsRecovery } from '$lib/application/delivery-work';
 import { version } from '$app/environment';
-import GroupPanel from '$lib/groups/GroupPanel.svelte';
+import GroupChat from '$lib/groups/GroupChat.svelte';
+import GroupCreateDialog from '$lib/groups/GroupCreateDialog.svelte';
+import NewChatMenu, { newChatViewFromLayer, type NewChatView } from '$lib/chat/NewChatMenu.svelte';
+import NewChatPicker from '$lib/chat/NewChatPicker.svelte';
 import { GroupController } from '$lib/groups/GroupController';
 import type { GroupRooms } from '$lib/groups/storage';
 import { base } from '$app/paths';
@@ -409,7 +412,9 @@ let agentProgress = $state<PortableProgress | null>(null);
 let agentFileProgress = $state<FileModelProgress | null>(null);
 let agentController: AbortController | null = null;
 let localAgentOpen = $state(false);
-let groupsOpen = $state(false);
+let newChatView = $state<NewChatView>('');
+let selectedGroupId = $state('');
+let groupWelcomeErrors = $state.raw<ReadonlySet<string>>(new Set());
 let groupRooms = $state.raw<GroupRooms>([]);
 let groupConnectionRevision = $state(0);
 let groupController: GroupController | null = null;
@@ -424,6 +429,7 @@ let localAgentNotice = $state('');
 let localAgentModelId = $state('');
 let localAgentModelSaving = $state(false);
 let localAgentFiles = $state.raw<FileModel[]>([]);
+let localAgentFilesLoading = $state(false);
 let localAgentChoice = $derived(localAgentModelId || (agentSettings.backend === 'file' ? agentSettings.model : ''));
 let localAgentBuiltIn = $derived(agentSettings.backend === 'portable' ? PORTABLE_MODELS[portableModelId(agentSettings.model)].title
   : agentSettings.backend === 'browser' ? $i18n.text('Встроенная модель браузера') : '');
@@ -432,11 +438,15 @@ let localAgentReady = $derived(agentSettings.enabled && (localAgentChoice
   : agentModelReady && !agentUsesEndpoint() && agentSettings.backend !== 'file'));
 $effect(() => {
   void agentModelRevision;
-  if (!localAgentOpen || accountView !== 'chats') return;
+  if ((!localAgentOpen && newChatView !== 'agent') || accountView !== 'chats') {
+    localAgentFilesLoading = false;
+    return;
+  }
   let current = true;
+  localAgentFilesLoading = true;
   void listFileModels().then(files => { if (current) localAgentFiles = files; }).catch(() => {
     if (current) localAgentFiles = [];
-  });
+  }).finally(() => { if (current) localAgentFilesLoading = false; });
   return () => { current = false; };
 });
 $effect(() => {
@@ -487,6 +497,7 @@ let peerCardAddress = $state('');
 let peerQr = $state('');
 let trustedDeviceChoice = $state(true);
 let trustedSession = $state(false);
+const activeGroup = $derived(trustedSession && profileNetwork ? groupRooms.find(room => room.id === selectedGroupId) : undefined);
 let pendingExit = $state<'lock' | 'logout' | null>(null);
 let deleteHistoryChoice = $state(true);
 let endingSession = $state(false);
@@ -575,6 +586,7 @@ async function resumeDelivery(): Promise<void> {
       }
     }),
   ]);
+  if (current()) wakeGroupConnections();
 }
 let deviceRetryAfter = 0, deviceRetryDelay = 15000;
 async function recoverConfiguredDeviceNode(): Promise<void> {
@@ -856,7 +868,7 @@ $effect(() => {
   openDirectChat(id);
   status = id === address ? 'Это ваш аккаунт.' : 'Контакт открыт. Напишите первое сообщение, чтобы отправить запрос.';
 });
-type PageRoute = { screen: Screen; layer: string; view: typeof accountView; peer: string; card: string; localAgent?: boolean;
+type PageRoute = { screen: Screen; layer: string; view: typeof accountView; peer: string; card: string; localAgent?: boolean; group?: string; radio?: string;
   pane: 'list' | 'chat'; settings: LegacySettingsSection; connection: ConnectionSection; media?: MediaSettingsSection; gallery: string };
 let pageNavigation = $state.raw<PageNavigation<PageRoute> | null>(null);
 let navigationAccount = '';
@@ -867,9 +879,11 @@ function rootRoute(screen: Screen): PageRoute {
 }
 function currentPageRoute(): PageRoute {
   const layer = panicOpen ? 'panic' : memoryConfirmation ? 'memory' : editDraft ? 'message-edit' : reactionTarget ? 'reaction-picker' : stagedPreview!==null ? 'attachment-preview' : mediaOpen || receivedPack ? 'media-library' : bulkConfirmation ? 'bulk-action' : actionMode ? 'action' : pendingExit ? 'exit' : networkSummaryOpen ? 'network-summary' : nodeBudgetOpen ? 'node-budget' :
-    backupOpen ? 'backup' : groupsOpen ? 'groups' : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
+    backupOpen ? 'backup' : newChatView ? `new-chat-${newChatView}` : nodeScannerOpen ? 'scanner' : attachmentMenu ? 'attachment' : selecting ? 'selection' : openHelp ?? '';
   return screen === 'account' ? { screen, layer, view: accountView, peer: sessionChats.activePeer, card: accountView === 'peer' ? peerCardAddress : '',
     ...(localAgentOpen ? { localAgent: true } : {}),
+    ...(activeGroup ? { group: activeGroup.id } : {}),
+    ...(nativeOpen ? { radio: nativeSelected } : {}),
     pane: mobilePane, settings: accountView === 'profile' ? settingsSection : 'account',
     connection: accountView === 'profile' && settingsSection === 'connection' ? connectionSection : 'direct',
     media: accountView === 'profile' && settingsSection === 'files' ? mediaSettingsSection : 'overview', gallery: galleryId } : { ...rootRoute(screen), layer };
@@ -970,7 +984,7 @@ function receiveNativeStatus(node:number,update:ChannelStatus){
 }
 function openNativeChannels(value?:string){
   if(navigationBusy()||voiceBusy||!meshtastic.enabled)return;
-  localAgentOpen=false;
+  localAgentOpen=false; selectedGroupId='';
   clearMediaPreview();selecting=false;messageTools=null;attachmentMenu=false;emojiOpen=false;nativeOpen=true;mobilePane='chat';
   selectNativeChannel(value||nativeLive[0]||(nativeListed[0]?nativeToken(nativeListed[0]):''));
 }
@@ -1048,11 +1062,26 @@ const rememberedRadioPorts = new Map<string,SerialPortLike>();
 let radioAvailable = $derived(screen === 'account' && !!identity && profileNetwork && trustedSession && !!chatStoreKey && !endingSession && !switchingTrust);
 let radioConnection = $derived(radioBusy || radioChecking ? 'connecting' as const : radioTransportReady && radioRuntime && radioSnapshot && radioContact ? 'connected' as const : 'offline' as const);
 const nativeListed=$derived(visibleNativeChannels(meshtastic,radioConnection==='connected'?radioSnapshot?.node:undefined,nativeLive,chatSearch));
+const newChatContacts = $derived(visibleConversations(sessionChats, '', contactName, address)
+  .filter(peer => peer !== address && sessionChats.byPeer[peer]?.contact === 'accepted'));
+const newChatModels = $derived([
+  ...(localAgentBuiltIn ? [{ id:'', label:localAgentBuiltIn }] : []),
+  ...localAgentFiles.map(model => ({ id:model.id, label:model.name })),
+]);
+const newChatChannels = $derived(meshtastic.enabled && radioConnection === 'connected'
+  ? meshtastic.channels.filter(channel => nativeLive.includes(nativeToken(channel)))
+  : []);
 const conversationItems=$derived([
   ...listedPeers.map(peer=>({kind:'chat' as const,id:peer,time:peer===address?Number.MAX_SAFE_INTEGER:sessionChats.byPeer[peer]?.messages.at(-1)?.timestamp??0})),
   ...(profileNetwork && (!chatSearch.trim() || [$i18n.text('ИИ-чат'), 'AI'].some(name => name.toLowerCase().includes(chatSearch.trim().toLowerCase())))
     ? [{ kind: 'agent' as const, id: 'local', time: Number.MAX_SAFE_INTEGER - 1 }] : []),
-  ...nativeListed.map(channel=>({kind:'radio' as const,id:nativeToken(channel),channel,time:channel.messages.at(-1)?.timestamp??0}))
+  ...nativeListed.map(channel=>({kind:'radio' as const,id:nativeToken(channel),channel,time:channel.messages.at(-1)?.timestamp??0})),
+  ...(trustedSession && profileNetwork ? groupRooms
+    .filter(room => room.title.toLowerCase().includes(chatSearch.trim().toLowerCase()))
+    .map(room => ({
+      kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
+      time:room.activityAt ?? 0,
+    })) : [])
 ].sort((a,b)=>b.time-a.time));
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
   ...sessionChats.order.filter(peer=>['new','accepted'].includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false,accountId:peer,photo:contactPhoto(peer),activity:forwardActivity(sessionChats.byPeer[peer].messages)})),
@@ -1607,7 +1636,7 @@ async function applyAppUpdate(): Promise<void> {
 
 function clearSensitiveData() {
   resetAgent();
-  groupController = null; groupRooms = []; groupsOpen = false;
+  groupController = null; groupRooms = []; selectedGroupId = ''; newChatView = ''; groupWelcomeErrors = new Set();
   deliveryRecovery.reset(); receiveRecoveryBusy = false;
   if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState(); radioDiagnostics = null; radioErrorText = '';
@@ -1750,7 +1779,7 @@ function applyChatData(saved: LocalChatData): void {
 
 async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<void> {
   resetAgent();
-  groupController = null; groupRooms = []; groupsOpen = false;
+  groupController = null; groupRooms = []; selectedGroupId = ''; newChatView = ''; groupWelcomeErrors = new Set();
   if(nativeSaveTimer){clearTimeout(nativeSaveTimer);nativeSaveTimer=null;}
   meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
   disconnectRadio(); radioState = emptyRadioState();
@@ -1908,7 +1937,7 @@ function focusComposer(node: HTMLTextAreaElement, _peer: string) {
 }
 
 function canDropFiles(): boolean {
-  return !nativeOpen && !localAgentOpen && screen === 'account' && accountView === 'chats' && !!chat && !!activeConversation &&
+  return !nativeOpen && !localAgentOpen && !activeGroup && screen === 'account' && accountView === 'chats' && !!chat && !!activeConversation &&
     activeConversation.contact === 'accepted' && !navigationBusy() && !attachingFiles && !voiceBusy &&
     !selecting && !galleryId && !messageTools && !nodeBudgetOpen && !networkSummaryOpen && !mediaOpen;
 }
@@ -1930,7 +1959,7 @@ function openConnectionSection(section: 'direct' | 'servers' | 'outgoing' | 'inc
 
 function showChatList(): void {
   if (navigationBusy()) return;
-  nativeOpen=false; localAgentOpen=false;
+  nativeOpen=false; localAgentOpen=false; selectedGroupId=''; newChatView='';
   clearMediaPreview();
   messageTools = null; selecting = false; selectedMessages = []; attachmentMenu = false;
   restoringPage = true;
@@ -2036,11 +2065,15 @@ function restorePageRoute(route: PageRoute): void {
   bulkConfirmation=null;
   messageTools = null;
   if (route.layer !== 'media-library') { mediaOpen = false; receivedPack = null; }
-  groupsOpen = route.layer === 'groups' && trustedSession && profileNetwork;
   if (accountView !== route.view || peerCardAddress !== route.card) changeAccountView(route.view);
+  const composeView = newChatViewFromLayer(route.layer);
+  newChatView = route.view === 'chats' && profileNetwork && (composeView !== 'group' || trustedSession) ? composeView : '';
   if (route.peer && !sessionChats.byPeer[route.peer]) return;
   localAgentOpen = route.localAgent === true && profileNetwork;
-  if (localAgentOpen) nativeOpen = false;
+  selectedGroupId = trustedSession && profileNetwork && groupRooms.some(room => room.id === route.group) ? route.group! : '';
+  nativeOpen = !localAgentOpen && !selectedGroupId && profileNetwork && meshtastic.enabled && route.radio !== undefined &&
+    (!route.radio || meshtastic.channels.some(channel => nativeToken(channel) === route.radio));
+  if (nativeOpen && route.radio !== nativeSelected) selectNativeChannel(route.radio ?? '');
   sessionChats = { ...sessionChats, activePeer: route.peer };
   mobilePane = route.pane; if (reopenChat) chatOpenToken++;
   if (route.view === 'profile') {
@@ -2054,6 +2087,7 @@ function restorePageRoute(route: PageRoute): void {
   if (route.gallery && route.peer) void ensureImageUrl(route.peer, route.gallery);
 }
 function backWithinApp(): void {
+  if (newChatView) { finishNewChat(); return; }
   if(radioOverviewOpen){radioOverviewOpen=false;return;}
   if (navigationBusy()) return;
   if(bulkConfirmation){bulkConfirmation=null;return;}
@@ -2071,7 +2105,7 @@ function backWithinApp(): void {
   if(reactionTarget){reactionTarget=null;return;}
   if (messageTools) { messageTools = null; return; }
   if (screen === 'account' && accountView === 'profile' && !openHelp && !pendingExit && !backupOpen && !panicOpen && !memoryConfirmation && !nodeScannerOpen && !networkSummaryOpen && !nodeBudgetOpen) {
-    const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane,...(localAgentOpen ? {localAgent:true} : {})};
+    const route:PageRoute={...rootRoute('account'),view:'profile',settings:settingsSection,connection:connectionSection,media:mediaSettingsSection,peer:sessionChats.activePeer,pane:mobilePane,...(localAgentOpen ? {localAgent:true} : {}),...(activeGroup ? {group:activeGroup.id} : {})};
     const parent=settingsParent(route);
     if (parent) pageNavigation?.backTo(candidate=>sameSettingsLocation(candidate,parent),parent);
     else pageNavigation?.backTo(candidate=>candidate.screen==='account'&&candidate.view!=='profile'&&!candidate.layer&&!candidate.gallery,{...route,view:'chats'});
@@ -2143,7 +2177,7 @@ function changeAccountView(view: 'chats' | 'own' | 'profile' | 'peer'): void {
   memoryConfirmation = null;
   backupOpen = false;
   stopNodeTools();
-  if (view !== 'chats') clearMediaPreview();
+  if (view !== 'chats') { newChatView = ''; clearMediaPreview(); }
   if (view === 'profile' && accountView !== 'profile') settingsSection = 'overview';
   publicKeyOpen = false;
   accountView = view;
@@ -2164,7 +2198,7 @@ function selectSettings(section: LegacySettingsSection): void {
   if (settingsSection === 'overview' && section !== 'overview' && accountView === 'profile' && !restoringPage && routerReady) {
     // Shortcut entries (indicators/profile) still get a Settings parent.
     pageNavigation?.visit({ ...rootRoute('account'), view: 'profile', settings: 'overview',
-      peer: sessionChats.activePeer, pane: mobilePane, ...(localAgentOpen ? { localAgent: true } : {}) });
+      peer: sessionChats.activePeer, pane: mobilePane, ...(localAgentOpen ? { localAgent: true } : {}), ...(activeGroup ? { group: activeGroup.id } : {}) });
   }
   memoryConfirmation = null;
   backupOpen = false;
@@ -3116,7 +3150,7 @@ async function deleteAgentFile(id: string): Promise<boolean> {
 
 function openLocalAgentChat(): void {
   if (navigationBusy() || ephemeralOpening || !profileNetwork) return;
-  nativeOpen = false; localAgentOpen = true;
+  nativeOpen = false; localAgentOpen = true; selectedGroupId = '';
   sessionChats = { ...sessionChats, activePeer: '' };
   mobilePane = 'chat';
   selecting = false; selectedMessages = []; messageTools = null; attachmentMenu = false;
@@ -4312,7 +4346,7 @@ async function openConversation(peer: string) {
   // Keep an unconfirmed recording with its original chat.
   if (voiceBusy && sessionChats.activePeer !== peer) return;
   ordinaryUnreadBoundary=sessionChats.byPeer[peer]?.unread?firstUnreadMessageId(sessionChats.byPeer[peer].messages)??'':'';
-  nativeOpen=false; localAgentOpen=false;
+  nativeOpen=false; localAgentOpen=false; selectedGroupId='';
   selecting = false; selectedMessages = []; attachmentMenu = false; chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; closeEphemeral();
   messageTools = null;
   mobilePane = 'chat';
@@ -5132,13 +5166,16 @@ async function initializeChat() {
   transport.onNodesChange(updateNodes);
   const nextChat = new ChatService(transport);
   const groupAccount = address, groupIdentity = identity;
-  const groupActive = () => chat === nextChat && generation === authGeneration && trustedSession &&
+  const groupActive = () => chat === nextChat && generation === authGeneration && trustedSession && profileNetwork &&
     screen === 'account' && !endingSession && !memoryBusy && !panicBusy;
   const groups = new GroupController({
     self:groupAccount, identity:groupIdentity, active:groupActive,
     contact:peer => sessionChats.byPeer[peer]?.contact === 'accepted',
     allowed:peer => sessionChats.byPeer[peer]?.contact !== 'blocked',
     rooms:() => groupRooms,
+    welcomeFailed:id => {
+      if (groupActive() && !groupWelcomeErrors.has(id)) groupWelcomeErrors = new Set([...groupWelcomeErrors, id]);
+    },
     transport:{ ready:peer => nextChat.isDirectReady(peer), send:(peer, frame) => nextChat.sendGroupFrame(peer, frame) },
     save: async rooms => {
       const key = chatStoreKey, epoch = storageEpoch();
@@ -5652,7 +5689,7 @@ function chatSnapshot(): LocalChatData {
 }
 
 function wakeGroupConnections(): void {
-  if (!chat || !groupController || !trustedSession || navigationBusy()) return;
+  if (!chat || !groupController || !trustedSession || !profileNetwork || navigationBusy()) return;
   const service = chat;
   for (const peer of new Set(groupRooms.flatMap(room => room.members))) {
     if (peer === address || sessionChats.byPeer[peer]?.contact === 'blocked') continue;
@@ -5666,6 +5703,23 @@ async function createClosedGroup(title: string, peers: string[]): Promise<string
   const id = await groupController.create(title, peers);
   wakeGroupConnections();
   return id;
+}
+
+function finishNewChat(open?: () => void): void {
+  newChatView = '';
+  open?.();
+  if (routerReady) pageNavigation?.replace(currentPageRoute());
+}
+
+function openGroupChat(id: string): void {
+  if (navigationBusy() || ephemeralOpening || !trustedSession || !profileNetwork || !groupRooms.some(room => room.id === id)) return;
+  nativeOpen = false; localAgentOpen = false; selectedGroupId = id;
+  sessionChats = { ...sessionChats, activePeer: '' };
+  mobilePane = 'chat';
+  selecting = false; selectedMessages = []; messageTools = null; attachmentMenu = false;
+  chatSearchOpen = false; emojiOpen = false; sendOptionsOpen = false; editDraft = null; reactionTarget = null;
+  ordinaryUnreadBoundary = ''; closeEphemeral(); clearMediaPreview();
+  wakeGroupConnections();
 }
 
 function requestExit(mode: 'lock' | 'logout'): void {
@@ -6247,13 +6301,27 @@ async function changePassword(): Promise<void> {
     </CompactDialog>
   {/if}
 
-  {#if groupsOpen && trustedSession && profileNetwork}
-    <GroupPanel rooms={groupRooms} self={address} name={contactName} connected={connectedGroupPeers}
-      contacts={sessionChats.order.filter(peer => peer !== address && sessionChats.byPeer[peer]?.contact === 'accepted')}
-      create={createClosedGroup} accept={id => groupController?.accept(id) ?? Promise.reject(new Error('group_inactive'))}
-      send={(id, text) => groupController?.send(id, text) ?? Promise.reject(new Error('group_inactive'))}
-      direct={() => { groupsOpen = false; openConnectionSection('direct'); }}
-      sync={wakeGroupConnections} close={() => groupsOpen = false} />
+  {#if newChatView === 'group' && trustedSession && profileNetwork}
+    <GroupCreateDialog name={contactName}
+      contacts={newChatContacts}
+      create={createClosedGroup} open={id => finishNewChat(() => openGroupChat(id))} close={() => finishNewChat()} />
+  {:else if newChatView === 'contact'}
+    <NewChatPicker title={$i18n.text('Написать контакту')} kind="contact"
+      choices={newChatContacts.map(id => ({ id, label:contactName(id), photo:contactPhoto(id) }))}
+      empty="Пока нет подтверждённых контактов." blocked={navigationBusy()}
+      select={id => finishNewChat(() => { chatSearch = ''; void openConversation(id); })} close={() => finishNewChat()} />
+  {:else if newChatView === 'agent'}
+    <NewChatPicker title={$i18n.text('Выберите модель')} kind="agent" choices={newChatModels}
+      loading={localAgentFilesLoading} blocked={agentBusy || localAgentModelSaving || navigationBusy()}
+      empty="Добавьте локальную модель в настройках ИИ."
+      setup={{ label:'Настроить ИИ', run:() => { finishNewChat(); changeAccountView('profile'); selectSettings('ai'); } }}
+      select={id => finishNewChat(() => { openLocalAgentChat(); void selectLocalAgentModel(id); })} close={() => finishNewChat()} />
+  {:else if newChatView === 'radio'}
+    <NewChatPicker title={$i18n.text('Вступить в LoRa-канал')} kind="radio"
+      choices={newChatChannels.map(channel => ({ id:nativeToken(channel), label:channel.name || $i18n.text('По умолчанию'), detail:channel.boardName }))}
+      empty="Подключите плату и включите каналы Meshtastic в настройках LoRa." blocked={radioBusy || navigationBusy()}
+      setup={{ label:'Настройки LoRa', run:() => { finishNewChat(); openConnectionSection('radio'); } }}
+      select={id => finishNewChat(() => { chatSearch = ''; openNativeChannels(id); })} close={() => finishNewChat()} />
   {/if}
   {#if mediaOpen}
     {#key address}
@@ -6809,17 +6877,9 @@ async function changePassword(): Promise<void> {
     </details>
   {/if}
   <div class="chat-layout" class:show-chat={mobilePane === 'chat'} class:show-list={mobilePane === 'list'}>
-    <nav class="conversation-list" aria-label={$i18n.text("Личные чаты")}>
+    <nav class="conversation-list" aria-label={$i18n.text("Все чаты")}>
       <ContactSearch bind:query={chatSearch} ownId={address} knownIds={sessionChats.order} onOpen={(peer, route) => void addConversation(peer, route)} />
-      {#if trustedSession && profileNetwork}
-        <button type="button" class="conversation-row" onclick={() => { groupsOpen = true; wakeGroupConnections(); }}>
-          {$i18n.text('Закрытые группы')}
-          {#if groupRooms.some(room => room.owner !== address && !room.mls && !room.draft)}
-            <span class="unread-count">{groupRooms.filter(room => room.owner !== address && !room.mls && !room.draft).length}</span>
-          {/if}
-        </button>
-      {/if}
-      <div class="conversation-items">
+      <div class="conversation-items" class:with-new-chat={profileNetwork}>
       {#each conversationItems as item (`${item.kind}:${item.id}`)}
         {#if item.kind === 'agent'}
           <button type="button" class="conversation-row local-agent-row" aria-current={localAgentOpen ? 'true' : undefined} onclick={openLocalAgentChat}>
@@ -6831,6 +6891,16 @@ async function changePassword(): Promise<void> {
         {:else if item.kind==='radio'}{@const c=item.channel}{@const last=c.messages.at(-1)}
           <ConversationRow accountId={item.id} name={c.name||$i18n.text('По умолчанию')} conversation={nativeListConversation(c)} active={nativeOpen&&nativeSelected===item.id} onOpen={()=>openNativeChannels(item.id)}
             radio={{encryption:c.encryption,preview:last?.text||$i18n.text('Пока нет сообщений.'),status:last?.outgoing&&['queued','failed','unknown'].includes(last.status)?nativeMessageStatus(last).label:undefined}}/>
+        {:else if item.kind === 'group'}
+          {@const room = item.room}
+          <button type="button" class="conversation-row local-agent-row group-chat-row" aria-current={activeGroup?.id === room.id ? 'true' : undefined} onclick={() => openGroupChat(room.id)}>
+            <span class="local-agent-avatar" aria-hidden="true"><ChatIcon name="group" /></span>
+            <span class="local-agent-row-text">
+              <strong>{room.title}</strong>
+              <span class="chat-preview">{room.entries.at(-1)?.text ?? $i18n.text(room.mls ? 'Пока нет сообщений.' : room.owner === address || room.draft ? 'Ожидаем подключения к группе' : 'Приглашение в закрытую группу')}</span>
+            </span>
+            {#if item.invitation}<span class="group-invite-badge" aria-hidden="true">!</span>{/if}
+          </button>
         {:else}
           <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]} introduction={introductionStates[item.id] ? introductionLabels[introductionStates[item.id]] : undefined}
             self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)} muted={chatNotificationsMuted(notificationState,item.id,keyBudgetNow)} />
@@ -6839,11 +6909,25 @@ async function changePassword(): Promise<void> {
       {#if meshtastic.enabled&&meshtastic.channels.some(c=>!nativeLive.includes(nativeToken(c))&&c.messages.length)}<label class="native-saved-toggle"><input type="checkbox" checked={meshtastic.showAll} onchange={e=>void setNativePreferences({showAll:e.currentTarget.checked}).catch(error=>status=error.message)}/>{$i18n.text('Все сохранённые радиоканалы')}</label>{/if}
       {#if !conversationItems.length && !typedContact}<p>{$i18n.text(chatSearch?'Ничего не найдено.':'Пока нет собеседников.')}</p>{/if}
       </div>
+      {#if profileNetwork}
+        <NewChatMenu expanded={newChatView === 'menu'} disabled={navigationBusy()} groupsAvailable={trustedSession}
+          toggle={() => newChatView === 'menu' ? finishNewChat() : newChatView = 'menu'}
+          close={() => finishNewChat()} choose={action => newChatView = action} />
+      {/if}
     </nav>
 
     <section class="conversation-pane" class:drop-active={fileDragActive} use:fileDrop aria-label={$i18n.text("Выбранный чат")}>
       {#if fileDragActive}<div class="file-drop-hint" role="status">{$i18n.text("Отпустите файлы — они отправятся в этот чат")}</div>{/if}
-      {#if localAgentOpen}
+      {#if activeGroup}
+        {#key activeGroup.id}
+          {@const groupId = activeGroup.id}
+          <GroupChat room={activeGroup} self={address} name={contactName} photo={contactPhoto}
+            connected={connectedGroupPeers} blocked={navigationBusy()} welcomeFailed={groupWelcomeErrors.has(groupId)}
+            accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
+            send={text => groupController?.send(groupId, text) ?? Promise.reject(new Error('group_inactive'))}
+            sync={wakeGroupConnections} direct={() => openConnectionSection('direct')} back={showChatList} />
+        {/key}
+      {:else if localAgentOpen}
         <LocalAgentChat messages={localAgentHistory} bind:draft={localAgentDraft} ready={localAgentReady}
           blocked={agentBusy || localAgentModelSaving || navigationBusy()} working={localAgentBusy} notice={localAgentNotice}
           models={localAgentFiles} modelId={localAgentChoice} builtInModel={localAgentBuiltIn} onModelChange={id => void selectLocalAgentModel(id)}
