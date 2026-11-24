@@ -107,10 +107,18 @@ for (const path of ['nodes/LICENSE', 'nodes/packages/protocol/src', 'nodes/packa
 await bundleNotifications(destination);
 execFileSync(process.execPath, [join(root,'scripts/test-notifications-package.mjs'),destination], {stdio:'inherit',timeout:20000,windowsHide:true});
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+// Hosting installs only runtime dependencies. Exclude overrides rooted in a
+// direct build dependency only when every installed copy is development-only.
+for (const name of Object.keys(pkg.overrides ?? {})) {
+  if (!Object.hasOwn(pkg.devDependencies ?? {}, name)) continue;
+  const path = `node_modules/${name}`;
+  const copies = Object.entries(lock.packages).filter(([entry]) => entry === path || entry.endsWith(`/${path}`));
+  if (copies.length && copies.every(([, entry]) => entry.dev === true)) delete pkg.overrides[name];
+}
 pkg.scripts = { start: 'node server/app.js' }; delete pkg.devDependencies;
 pkg.engines = { node: '>=22.12.0' };
 writeFileSync(join(destination, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
-const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
 delete lock.packages[''].devDependencies;
 lock.packages[''].engines = pkg.engines;
 writeFileSync(join(destination, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
