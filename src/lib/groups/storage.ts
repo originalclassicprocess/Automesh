@@ -1,6 +1,6 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, parseGroupFrame, uuid,
-  validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReady, type GroupReceipt } from './protocol';
+  validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
 export type GroupPost = { id: string; from: string; text: string };
@@ -15,7 +15,7 @@ export type GroupRoom = {
   leaves?: GroupLeave[];
   offer?: GroupOffer;
   plan?: GroupPlan;
-  ready?: GroupReady[];
+  memberEpochs?: Record<string, number>;
   changes?: GroupChange[];
   welcomeProof?: GroupProof;
 };
@@ -71,17 +71,18 @@ export function restoreGroups(value: unknown): GroupRooms {
       };
     });
     const plan = storedFrame(raw.plan, 'group-plan', raw.id);
-    const ready = Array.isArray(raw.ready) ? raw.ready.slice(0, members.length).flatMap((value: unknown) => {
-      const frame = storedFrame(value, 'group-ready', raw.id);
-      return frame && frame.change === plan?.change && frame.epoch === plan.epoch ? [frame] : [];
-    }) : undefined;
+    const epoch = groupEpoch(raw.epoch) ? raw.epoch : undefined;
+    const memberEpochs = Object.fromEntries(members.flatMap(peer => {
+      const seen = raw.memberEpochs?.[peer];
+      return groupEpoch(seen) && seen <= (epoch ?? 1) ? [[peer, seen]] : [];
+    }));
     const changes = Array.isArray(raw.changes) ? raw.changes.slice(-GROUP_CHANGE_HISTORY).flatMap((value: GroupChange) => {
       const plan = storedFrame(value?.plan, 'group-plan', raw.id), commit = storedFrame(value?.commit, 'group-commit', raw.id);
       return plan && commit && plan.change === commit.change && plan.epoch === commit.epoch && groupMembers(value.previous)
         ? [{ plan, commit, previous:value.previous }] : [];
     }) : undefined;
     rooms.push({ id:raw.id, title:raw.title, owner:raw.owner, members, keys, entries,
-      epoch:groupEpoch(raw.epoch) ? raw.epoch : undefined,
+      epoch, memberEpochs,
       departed:typeof raw.departed === 'string' && isValidAccountId(raw.departed) ? raw.departed : undefined,
       leaving:storedFrame(raw.leaving, 'group-leave', raw.id),
       leaves:Array.isArray(raw.leaves) ? raw.leaves.slice(0, members.length).flatMap((value: unknown) => {
@@ -89,7 +90,7 @@ export function restoreGroups(value: unknown): GroupRooms {
         return frame && members.includes(frame.by) ? [frame] : [];
       }) : undefined,
       offer:storedFrame(raw.offer, 'group-offer', raw.id),
-      plan, ready, changes,
+      plan, changes,
       ...(Number.isSafeInteger(raw.activityAt) && raw.activityAt > 0 ? { activityAt:raw.activityAt } : {}),
       ...(encodedMls(raw.mls, 1048576) ? { mls:raw.mls } : {}),
       ...(encodedMls(raw.welcome) ? { welcome:raw.welcome } : {}),

@@ -40,6 +40,9 @@ export class GroupController {
   constructor(private readonly port: GroupPort) {
     this.membership = new GroupMembership({
       ...port, save:room => this.save(room), deliver:(peer, frame) => this.deliver(peer, frame),
+      changed:room => {
+        for (const peer of groupPeers(room, this.port.self)) void this.hello(room, peer);
+      },
     });
   }
 
@@ -62,6 +65,11 @@ export class GroupController {
   }
 
   private async deliver(peer: string, value: GroupFrame) {
+    if (value.type === 'message') {
+      const room = this.room(value.group);
+      if (!room?.mls || room.leaving || (room.plan && !room.plan.key) || !room.members.includes(peer) ||
+        this.peerEpochs.get(room.id + ':' + peer) !== epochOf(room)) return;
+    }
     if (this.port.active() && this.port.allowed(peer) && this.port.transport.ready(peer))
       await this.port.transport.send(peer, value).catch(() => {});
   }
@@ -132,6 +140,9 @@ export class GroupController {
       const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
       this.relay(next, { type:'message', group:id, packet:entry.packet });
+      for (const peer of groupPeers(next, this.port.self)) {
+        if (this.peerEpochs.get(id + ':' + peer) !== epochOf(next)) void this.hello(next, peer);
+      }
     });
   }
 
@@ -188,7 +199,7 @@ export class GroupController {
   private async hello(room: GroupRoom, peer: string, repeatWelcome = false) {
     const key = `${room.id}:${peer}`;
     if (room.departed) return;
-    const phase = `${key}:${repeatWelcome ? 'repeat-welcome' : room.mls ? 'active' : room.draft ? 'accepted' : 'invited'}`;
+    const phase = `${key}:${epochOf(room)}:${repeatWelcome ? 'repeat-welcome' : room.mls ? 'active' : room.draft ? 'accepted' : 'invited'}`;
     if (this.hellos.has(phase)) return;
     this.hellos.add(phase);
     try {
@@ -214,11 +225,22 @@ export class GroupController {
         await this.deliver(peer, { type:'join', group:room.id, packet:room.draft.packet });
         return;
       }
-      if (room.mls) await this.deliver(peer, {
-        type:'sync', group:room.id, known:room.entries.map(entry => entry.hash), hasWelcome:!!room.welcomeProof, epoch:epochOf(room),
-        seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, entry, receipt), 0)),
-      });
+      await this.sendSync(room.id, peer, true);
     } finally { this.hellos.delete(phase); }
+  }
+
+  private async sendSync(group: string, peer: string, requestEpoch = false) {
+    const room = this.room(group);
+    if (!room?.mls || !room.members.includes(peer)) return;
+    await this.deliver(peer, {
+      type:'sync', group, known:room.entries.map(entry => entry.hash), hasWelcome:!!room.welcomeProof,
+      epoch:epochOf(room), requestEpoch,
+      seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, entry, receipt), 0)),
+    });
+  }
+
+  peerOffline(peer: string) {
+    for (const room of this.port.rooms()) this.peerEpochs.delete(room.id + ':' + peer);
   }
 
   peerOnline(peer: string) {
@@ -342,14 +364,20 @@ export class GroupController {
       if (!room.mls || (room.leaving && frame.type !== 'sync')) return;
       if (frame.type === 'sync') {
         const epoch = frame.epoch ?? 1;
+        this.peerEpochs.set(room.id + ':' + peer, epoch);
         if (epoch !== epochOf(room)) {
           if (epoch < epochOf(room)) void this.membership.sync(room, peer, epoch);
+          else if (frame.requestEpoch) void this.sendSync(room.id, peer);
           return;
         }
-        this.peerEpochs.set(room.id + ':' + peer, epoch);
-        this.welcomed.add(`${room.id}:${peer}`);
+        this.welcomed.add(room.id + ':' + peer);
         await this.acknowledge(room, peer, frame.known);
         let current = this.room(room.id)!;
+        if (epoch > (current.memberEpochs?.[peer] ?? 1)) {
+          current = { ...current, memberEpochs:{ ...current.memberEpochs, [peer]:epoch } };
+          await this.save(current);
+        }
+        if (frame.requestEpoch) void this.sendSync(current.id, peer);
         if (frame.seen) {
           if (!frame.hasWelcome && epoch === 1) {
             current = await this.signedWelcome(current);
@@ -370,6 +398,7 @@ export class GroupController {
       }
       if (frame.type === 'ack') { await this.acknowledge(room, peer, [frame.hash]); return; }
       if (frame.type === 'receipts') { await this.receiveReceipts(room, peer, frame.receipts); return; }
+      if (room.plan && !room.plan.key) return;
       const hash = await groupPacketHash(frame.packet);
       const known = room.entries.find(entry => entry.hash === hash);
       if (known) {

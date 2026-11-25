@@ -133,12 +133,12 @@ describe('experimental closed MLS groups', () => {
       return importKey(...args);
     });
     onTestFinished(() => appleImport.mockRestore());
-    const devices = await Promise.all([11, 12, 13, 14].map(async value => {
+    const devices = await Promise.all([11, 12, 13, 14, 15].map(async value => {
       const identity = new WebCryptoIdentity();
       const { publicKey } = await identity.fromSeed(new Uint8Array(32).fill(value));
       return { identity, id:await accountIdFromPublicKey(publicKey) };
     }));
-    const [a, b, c, d] = devices.map(device => device.id);
+    const [a, b, c, d, e] = devices.map(device => device.id);
     const saved = new Map<string, GroupRooms>();
     const peers = new Map<string, GroupController>();
     const offline = new Set<string>();
@@ -218,33 +218,41 @@ describe('experimental closed MLS groups', () => {
     offline.add(b);
     offline.add(c);
     const revokedState = room(b);
-    await at(a).exclude(group, b);
-    await wait(() => expect(room(d).plan?.target).toBe(b));
-    expect(epochOf(room(a))).toBe(2);
-    await expect(at(d).send(group, 'Must wait for the other retained member')).rejects.toThrow();
-    // D's durable barrier survives a reload while C is offline.
-    peers.set(d, controller(d));
-    await expect(at(d).send(group, 'Must still wait after reload')).rejects.toThrow();
     failCommit = true;
-    offline.delete(c);
-    at(a).peerOnline(c);
-    await wait(() => expect(commitInterrupted).toBe(true));
-    expect(room(a).ready).toHaveLength(3);
-    expect(epochOf(room(a))).toBe(2);
+    await expect(at(a).exclude(group, b)).rejects.toThrow('Interrupted before saving the commit');
+    expect(commitInterrupted).toBe(true);
+    expect(room(a).plan?.target).toBe(b);
+    expect(room(d).plan).toBeUndefined();
+
+    // A plan saved by an older version resumes even while C stays offline.
     failCommit = false;
     peers.set(a, controller(a));
     await at(a).resumeMembership();
-    await roster([a,c,d], 3);
+    await wait(() => {
+      expect(room(a).members).toEqual([a,c,d]);
+      expect(epochOf(room(d))).toBe(3);
+    });
+    expect(epochOf(room(c))).toBe(2);
     expect(room(a).entries[0].audience).toEqual([a,b,c]);
+    await at(a).send(group, 'After the removal');
+    await wait(() => expect(room(d).entries.some(entry => entry.text === 'After the removal')).toBe(true));
+    const newPost = room(a).entries.at(-1)!;
+    await expect(decryptGroupPost({ ...revokedState, epoch:3 }, newPost.packet, await groupPacketHash(newPost.packet))).rejects.toThrow();
+
+    offline.delete(c);
+    missedCommit.add(c);
+    at(c).peerOnline(d);
+    await wait(() => expect(room(c).plan?.target).toBe(b));
+    expect(traces.some(({ to, frame }) => to === c && frame.type === 'message' && frame.packet === newPost.packet)).toBe(false);
+    missedCommit.delete(c);
+    at(c).peerOnline(d);
+    await roster([a,c,d], 3);
+    await wait(() => expect(room(c).entries.some(entry => entry.text === 'After the removal')).toBe(true));
     const firstPlan = traces.find(({ frame }) => frame.type === 'group-plan' && frame.epoch === 2)!.frame;
     await at(c).receive(d, firstPlan);
     expect(epochOf(room(c))).toBe(3);
     expect(room(c).plan).toBeUndefined();
 
-    await at(a).send(group, 'After the removal');
-    await wait(() => expect(room(d).entries.some(entry => entry.text === 'After the removal')).toBe(true));
-    const newPost = room(a).entries.at(-1)!;
-    await expect(decryptGroupPost({ ...revokedState, epoch:3 }, newPost.packet, await groupPacketHash(newPost.packet))).rejects.toThrow();
     offline.delete(b);
     at(b).peerOnline(c);
     await wait(() => expect(room(b).departed).toBe(b));
@@ -256,20 +264,30 @@ describe('experimental closed MLS groups', () => {
     expect(groupVisible(room(d))).toBe(false);
     expect(room(d).leaving?.by).toBe(d);
     await wait(() => expect(room(c).leaves?.some(leave => leave.by === d)).toBe(true));
-    offline.add(d);
+    offline.add(c);
     offline.delete(a);
+    at(d).peerOnline(a);
+    await wait(() => {
+      expect(epochOf(room(a))).toBe(4);
+      expect(room(a).members).toEqual([a,c]);
+    });
+    expect(epochOf(room(c))).toBe(3);
+    await wait(() => expect(room(d).departed).toBe(d));
+    offline.delete(c);
     at(c).peerOnline(a);
     await roster([a,c], 4);
-    offline.delete(d);
-    at(d).peerOnline(c);
-    await wait(() => expect(room(d).departed).toBe(d));
 
     await at(a).invite(group, b);
     await wait(() => expect(room(b).offer?.target).toBe(b));
     await at(b).accept(group);
     await roster([a,c,b], 5);
     expect(room(b).entries.some(entry => entry.text === 'After the removal')).toBe(false);
+    offline.add(b);
     await at(a).leave(group, c);
+    await wait(() => expect(epochOf(room(c))).toBe(6));
+    expect(epochOf(room(b))).toBe(5);
+    offline.delete(b);
+    at(b).peerOnline(c);
     await roster([c,b], 6);
     expect(room(c).owner).toBe(c);
     expect(room(b).owner).toBe(c);
@@ -277,6 +295,33 @@ describe('experimental closed MLS groups', () => {
     offline.add(a);
     await at(c).send(group, 'The remaining members can still talk');
     await wait(() => expect(room(b).entries.some(entry => entry.text === 'The remaining members can still talk')).toBe(true));
+
+    // B misses two changes and reconnects after the visible roster has
+    // returned to the same members. It still needs both signed Commits.
+    offline.add(b);
+    at(c).peerOffline(b);
+    await at(c).invite(group, e);
+    await wait(() => expect(room(e).offer?.target).toBe(e));
+    await at(e).accept(group);
+    await wait(() => {
+      expect(epochOf(room(c))).toBe(7);
+      expect(epochOf(room(e))).toBe(7);
+    });
+    await at(e).leave(group);
+    await wait(() => {
+      expect(epochOf(room(c))).toBe(8);
+      expect(room(e).departed).toBe(e);
+    });
+    expect(epochOf(room(b))).toBe(6);
+    const reconnect = traces.length;
+    offline.delete(b);
+    at(b).peerOnline(c);
+    await roster([c,b], 8);
+    const replayed = traces.slice(reconnect).flatMap(({ from, to, frame }) =>
+      from === c && to === b && frame.type === 'group-commit' ? [frame.epoch] : []);
+    expect([...new Set(replayed)]).toEqual([6,7]);
+    await at(b).send(group, 'Caught up on both membership changes');
+    await wait(() => expect(room(c).entries.some(entry => entry.text === 'Caught up on both membership changes')).toBe(true));
   }, 40000);
 
 });

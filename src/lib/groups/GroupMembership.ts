@@ -1,7 +1,7 @@
 import type { IdentityProvider } from '$lib/identity/identity';
 import { acceptGroupWelcome, applyGroupChange, createGroupChange, signMembership, validateJoinKey, verifyMembership } from './mls';
 import { GROUP_CHANGE_HISTORY, MAX_GROUPS, MAX_GROUP_MEMBERS, parseGroupFrame,
-  type GroupCommit, type GroupLeave, type GroupOffer, type GroupPlan, type GroupReady, type MembershipFrame } from './protocol';
+  type GroupCommit, type GroupLeave, type GroupOffer, type GroupPlan, type MembershipFrame } from './protocol';
 import { epochOf, groupAudience, groupPeers, type GroupRoom, type GroupRooms } from './storage';
 
 type MembershipPort = {
@@ -12,12 +12,12 @@ type MembershipPort = {
   rooms(): GroupRooms;
   save(room: GroupRoom): Promise<void>;
   deliver(peer: string, frame: MembershipFrame): Promise<void>;
+  changed(room: GroupRoom): void;
 };
 
 const matches = (a: { change: string; epoch: number }, b?: { change: string; epoch: number }) =>
   a.change === b?.change && a.epoch === b.epoch;
 const sameMembers = (a: string[], b: string[]) => a.length === b.length && a.every((peer, i) => peer === b[i]);
-const retained = (room: GroupRoom, plan: GroupPlan) => room.members.filter(peer => plan.members.includes(peer));
 
 // All mutations share the controller's serial queue with application messages.
 export class GroupMembership {
@@ -49,7 +49,7 @@ export class GroupMembership {
     if (room.departed || room.leaving || !room.members.includes(self)) throw new Error('group_change_unavailable');
     if (!room.mls) {
       if (room.owner === self) throw new Error('group_change_unavailable');
-      await this.port.save({ ...room, departed:self, draft:undefined, plan:undefined, ready:undefined });
+      await this.port.save({ ...room, departed:self, draft:undefined, plan:undefined });
       return;
     }
     const leaving = await signMembership({ type:'group-leave', group:room.id, epoch:epochOf(room), by:self }, identity);
@@ -72,20 +72,17 @@ export class GroupMembership {
     const plan = await signMembership({ type:'group-plan', group:room.id, epoch:epochOf(room),
       change:offer?.change ?? crypto.randomUUID(), owner:room.owner, target, nextOwner, key,
       members:offer?.members ?? room.members.filter(peer => peer !== target) }, this.port.identity);
-    if (key) await this.commit(room, plan);
-    else await this.prepare(room, plan);
-  }
-
-  private async prepare(room: GroupRoom, plan: GroupPlan, source?: string) {
-    const ready = plan.key || !room.mls || !plan.members.includes(this.port.self) ? [] : [await signMembership({
-      type:'group-ready', group:room.id, epoch:plan.epoch, change:plan.change, by:this.port.self,
-    }, this.port.identity)];
-    const next = { ...room, plan, ready, offer:plan.key ? room.offer : undefined };
-    // For removal, persist the send barrier before announcing readiness.
+    this.checkReplayWindow(room, plan);
+    if (key) {
+      await this.commit(room, plan);
+      return;
+    }
+    // Persist the authorized operation before trying the Commit. A restart can
+    // finish it without depending on any of the recipients' availability.
+    const next = { ...room, plan, offer:undefined };
     await this.port.save(next);
-    this.relay(next, plan, source);
-    for (const acknowledgement of ready) this.relay(next, acknowledgement);
-    await this.resume(next);
+    if (nextOwner === this.port.self) await this.resume(next);
+    else void this.port.deliver(nextOwner, plan);
   }
 
   async resume(room: GroupRoom) {
@@ -96,11 +93,20 @@ export class GroupMembership {
       if (request && room.owner === self && !room.leaving) await this.start(room, request.by, self);
       return;
     }
-    if (plan.key || self !== plan.nextOwner || !retained(room, plan).every(peer => room.ready?.some(ack => ack.by === peer))) return;
+    if (plan.key || self !== plan.nextOwner) return;
     await this.commit(room, plan);
   }
 
+  private checkReplayWindow(room: GroupRoom, plan: GroupPlan) {
+    const first = room.changes?.length === GROUP_CHANGE_HISTORY ? room.changes[0].plan.epoch : undefined;
+    if (first !== undefined && plan.members.some(peer => peer !== this.port.self &&
+      room.members.includes(peer) && (room.memberEpochs?.[peer] ?? 1) <= first)) {
+      throw new Error('group_change_history_pending');
+    }
+  }
+
   private async commit(room: GroupRoom, plan: GroupPlan) {
+    this.checkReplayWindow(room, plan);
     const { mls, packet, welcome } = await createGroupChange(room, plan);
     const commit = await signMembership({ type:'group-commit', group:room.id, epoch:plan.epoch, change:plan.change, packet, welcome }, this.port.identity);
     if (!parseGroupFrame(commit)) throw new Error('group_commit_too_large');
@@ -115,7 +121,10 @@ export class GroupMembership {
       type:'group-leave', group:room.id, epoch, by:this.port.self,
     }, this.port.identity) : undefined;
     const next = { ...room, mls, epoch, owner:plan.nextOwner, members:plan.members, leaving,
-      departed:removed ? this.port.self : undefined, offer:undefined, draft:undefined, keys:{}, plan:undefined, ready:undefined,
+      departed:removed ? this.port.self : undefined, offer:undefined, draft:undefined, keys:{}, plan:undefined,
+      memberEpochs:Object.fromEntries(plan.members.map(peer => [
+        peer, peer === this.port.self ? epoch : peer === plan.target ? plan.epoch : room.memberEpochs?.[peer] ?? 1,
+      ])),
       welcome:removed || !room.welcomeProof ? undefined : room.welcome,
       welcomeProof:removed ? undefined : room.welcomeProof, leaves:undefined,
       entries:room.entries.map(entry => ({ ...entry, audience:groupAudience(room, entry) })),
@@ -126,6 +135,7 @@ export class GroupMembership {
       if (peer !== this.port.self) void this.sendChange(peer, plan, commit);
     }
     if (leaving) this.relay(next, leaving);
+    this.port.changed(next);
   }
 
   private async sendChange(peer: string, plan: GroupPlan, commit: GroupCommit) {
@@ -144,9 +154,9 @@ export class GroupMembership {
       const { group, epoch, change } = room.offer;
       await this.port.deliver(peer, { type:'group-join', group, epoch, change, packet:room.draft.packet });
     }
-    if (room.plan && (room.members.includes(peer) || room.plan.target === peer)) {
-      await this.port.deliver(peer, room.plan);
-      if (room.members.includes(peer)) for (const ready of room.ready ?? []) await this.port.deliver(peer, ready);
+    if (room.plan?.nextOwner === peer) {
+      if (room.owner === this.port.self) await this.port.deliver(peer, room.plan);
+      else await this.acknowledgePlan(room, room.plan);
     }
     if (room.members.includes(peer)) {
       if (room.leaving && room.owner !== this.port.self) await this.port.deliver(peer, room.leaving);
@@ -176,11 +186,10 @@ export class GroupMembership {
         await this.start(room, peer, room.owner, frame.packet, room.offer);
         break;
       case 'group-plan':
-        await this.receivePlan(room, peer, frame);
+        await this.receivePlan(room, frame);
         break;
       case 'group-ready':
-        await this.receiveReady(room, peer, frame);
-        break;
+        break; // Older clients may still send this acknowledgement.
       case 'group-commit': {
         const plan = room.plan;
         if (!plan || !matches(frame, plan) || !!frame.welcome !== !!plan.key || !await verifyMembership(frame, plan.nextOwner)) return;
@@ -213,8 +222,12 @@ export class GroupMembership {
       epoch:offer.epoch, keys:{}, entries:room?.entries ?? [], activityAt:Date.now() });
   }
 
-  private async receivePlan(room: GroupRoom, peer: string, plan: GroupPlan) {
-    if (room.plan || plan.owner !== room.owner || !await verifyMembership(plan, room.owner)) return;
+  private async receivePlan(room: GroupRoom, plan: GroupPlan) {
+    if (room.plan) {
+      if (matches(plan, room.plan)) await this.resume(room);
+      return;
+    }
+    if (plan.owner !== room.owner || !await verifyMembership(plan, room.owner)) return;
     if (!room.mls) {
       if (!room.offer || !room.draft || plan.target !== this.port.self || !matches(plan, room.offer) ||
         plan.key !== room.draft.packet || plan.nextOwner !== room.owner || !sameMembers(plan.members, room.offer.members)) return;
@@ -224,15 +237,19 @@ export class GroupMembership {
         !await validateJoinKey({ ...room, members:plan.members }, plan.target, plan.key)) return;
     } else if (!room.members.includes(plan.target) || !sameMembers(plan.members, room.members.filter(id => id !== plan.target)) ||
       (plan.target === room.owner ? !plan.members.includes(plan.nextOwner) : plan.nextOwner !== room.owner)) return;
-    await this.prepare(room, plan, peer);
+    if (plan.nextOwner === this.port.self) this.checkReplayWindow(room, plan);
+    const next = { ...room, plan, offer:plan.key ? room.offer : undefined };
+    await this.port.save(next);
+    if (plan.nextOwner === this.port.self) await this.resume(next);
+    else await this.acknowledgePlan(next, plan);
   }
 
-  private async receiveReady(room: GroupRoom, peer: string, ready: GroupReady) {
-    if (!room.mls || !room.plan || room.plan.key || !matches(ready, room.plan) || !retained(room, room.plan).includes(ready.by) ||
-      room.ready?.some(ack => ack.by === ready.by) || !await verifyMembership(ready, ready.by)) return;
-    const next = { ...room, ready:[...(room.ready ?? []), ready] };
-    await this.port.save(next);
-    this.relay(room, ready, peer);
-    await this.resume(next);
+  private async acknowledgePlan(room: GroupRoom, plan: GroupPlan) {
+    if (plan.key || !room.mls || !plan.members.includes(this.port.self)) return;
+    // A 0.5.24 coordinator can still finish its already-announced plan.
+    // This device holds old-epoch traffic until it has the corresponding Commit.
+    const ready = await signMembership({ type:'group-ready', group:room.id, epoch:plan.epoch,
+      change:plan.change, by:this.port.self }, this.port.identity);
+    await this.port.deliver(plan.nextOwner, ready);
   }
 }

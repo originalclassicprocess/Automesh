@@ -55,7 +55,7 @@ export type GroupFrame =
   | { type: 'message'; group: string; packet: string }
   | { type: 'ack'; group: string; hash: string }
   | { type: 'receipts'; group: string; receipts: GroupReceipt[] }
-  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number };
+  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number; requestEpoch?: boolean };
 
 // The adapter supplies authenticated Mesh IDs. It owns discovery, framing,
 // reconnection and any fragmentation required by its transport.
@@ -92,7 +92,8 @@ export function parseGroupFrame(value: unknown): GroupFrame | null {
       if (!Array.isArray(seen) || seen.length !== frame.known.length ||
         !seen.every(mask => Number.isInteger(mask) && mask >= 0 && mask < 2 ** (MAX_GROUP_MEMBERS * 2)) ||
         typeof frame.hasWelcome !== 'boolean') return null;
-      return { type:'sync', group, known:frame.known, seen, hasWelcome:frame.hasWelcome, epoch:groupEpoch(frame.epoch) ? frame.epoch : undefined };
+      return { type:'sync', group, known:frame.known, seen, hasWelcome:frame.hasWelcome, epoch:groupEpoch(frame.epoch) ? frame.epoch : undefined,
+        requestEpoch:frame.requestEpoch === true };
     }
     case 'ack':
       return digest(frame.hash) ? { type:'ack', group, hash:frame.hash } : null;

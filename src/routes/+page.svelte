@@ -5545,7 +5545,10 @@ async function initializeChat() {
     if (chat !== nextChat) return;
     if (groupRooms.some(room => room.members.includes(peer.address))) groupConnectionRevision++;
     if (event === 'joined') groups.peerOnline(peer.address);
-    if (event === 'left') nextCalls.peerUnavailable(peer.address);
+    if (event === 'left') {
+      groups.peerOffline(peer.address);
+      nextCalls.peerUnavailable(peer.address);
+    }
     // An unsolicited secure connection is not yet a chat or a request.
     if (!sessionChats.byPeer[peer.address]) return;
     sessionChats = updateConversation(sessionChats, peer.address, (current) => ({
