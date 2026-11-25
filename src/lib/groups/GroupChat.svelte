@@ -181,10 +181,10 @@
 {#if failed && !membersOpen}<p role="alert">{$i18n.text('Действие с группой не выполнено. Проверьте подключение и попробуйте снова.')}</p>{/if}
 {#if room.mls}
   {#if updatingKeys}
-    <small class="membership-status" role="status">{$i18n.text('Обновляем ключи группы. Если кто-то не на связи, обновление продолжится автоматически после подключения.')}</small>
+    <small class="membership-status" role="status">{$i18n.text('Получаем обновление ключей группы. Пока можно набрать сообщение.')}</small>
   {/if}
   <form class="composer" onsubmit={event => { event.preventDefault(); submit(); }}>
-    <textarea rows="1" disabled={updatingKeys} bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
+    <textarea rows="1" bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
       aria-label={$i18n.text('Сообщение группе')} onkeydown={event => {
         if (submitOnEnter(event)) { event.preventDefault(); submit(); }
       }}></textarea>
