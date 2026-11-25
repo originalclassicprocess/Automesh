@@ -1,10 +1,18 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '$lib/message/encoding';
+import { COURIER_TTL } from '$lib/node/courier-protocol.js';
 import type { IdentityProvider } from '$lib/identity/identity';
 import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost, establishGroup, groupPacketHash,
   signGroupReceipt, signGroupWelcome, validateJoinKey, verifyGroupReceipt, verifyGroupWelcome } from './mls';
 import { GroupMembership } from './GroupMembership';
 import { GROUP_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
-  type GroupFrame, type GroupReceipt, type GroupTransport } from './protocol';
-import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupRoom, type GroupRooms } from './storage';
+  GROUP_PREFIX, type GroupFrame, type GroupReceipt, type GroupTransport } from './protocol';
+import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
+
+type GroupMessageFrame = Extract<GroupFrame, { type:'message' }>;
+export type GroupNodeReference = { group: string; hash: string };
+export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string };
+const encoder = new TextEncoder();
 
 type GroupPort = {
   self: string;
@@ -13,6 +21,7 @@ type GroupPort = {
   contact(peer: string): boolean;
   allowed(peer: string): boolean;
   readsEnabled?(): boolean;
+  nodeEnabled?(): boolean;
   rooms(): GroupRooms;
   save(rooms: GroupRooms): Promise<void>;
   welcomeFailed?(group: string): void;
@@ -138,13 +147,67 @@ export class GroupController {
       if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
       if (replyTo !== undefined && !room.entries.some(entry => entry.id === replyTo)) throw new Error('group_reply_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
-      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:post.sentAt };
+      const saved = this.port.nodeEnabled?.() ? { ...entry, nodeSince:post.sentAt } : entry;
+      const next = { ...room, mls, entries:[...room.entries, saved].slice(-GROUP_HISTORY), activityAt:post.sentAt };
       await this.save(next);
       this.relay(next, { type:'message', group:id, packet:entry.packet });
       for (const peer of groupPeers(next, this.port.self)) {
         if (this.peerEpochs.get(id + ':' + peer) !== epochOf(next)) void this.hello(next, peer);
       }
+      return entry.id;
     });
+  }
+
+  canStoreOnNode(ref: GroupNodeReference, peer: string, now = Date.now()) {
+    if (peer === this.port.self || !this.port.active() || !this.port.nodeEnabled?.() || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
+    const room = this.room(ref.group);
+    if (!room?.mls || room.departed || room.leaving || room.plan && !room.plan.key || !room.members.includes(peer)) return false;
+    const entry = room.entries.find(post => post.hash === ref.hash);
+    return !!entry?.nodeSince && now - entry.nodeSince >= 2000 && now - entry.nodeSince < COURIER_TTL &&
+      entry.from === this.port.self && entry.epoch === epochOf(room) && groupAudience(room, entry).includes(peer) &&
+      !entry.receivedBy?.includes(peer) && !entry.receipts?.some(receipt => receipt.by === peer) &&
+      entry.nodeStatus?.[peer] !== 'delivered' && entry.nodeStatus?.[peer] !== 'finished';
+  }
+
+  canReleaseNodeCopy(ref: GroupNodeReference, peer: string) {
+    const room = this.room(ref.group);
+    if (!this.port.active() || !room) return false;
+    if (room.departed || room.leaving || !room.members.includes(peer) || !this.port.allowed(peer)) return true;
+    const entry = room.entries.find(post => post.hash === ref.hash);
+    return entry?.receivedBy?.includes(peer) === true || entry?.receipts?.some(receipt => receipt.by === peer) === true;
+  }
+
+  *nodePosts(): Iterable<GroupNodePost> {
+    if (!this.port.nodeEnabled?.() || !this.port.active()) return;
+    const now = Date.now();
+    for (const room of this.port.rooms()) for (const entry of room.entries) {
+      if (!entry.nodeSince || entry.from !== this.port.self) continue;
+      const ref = { group:room.id, hash:entry.hash };
+      for (const peer of room.members) {
+        if (!this.canStoreOnNode(ref, peer, now)) continue;
+        const hex = bytesToHex(sha256(encoder.encode(JSON.stringify([room.id, entry.hash, peer]))));
+        const id = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-5' + hex.slice(13, 16) + '-8' + hex.slice(17, 20) + '-' + hex.slice(20, 32);
+        const frame: GroupMessageFrame = { type:'message', group:room.id, packet:entry.packet };
+        yield { ...ref, id, peer, content:GROUP_PREFIX + JSON.stringify(frame) };
+      }
+    }
+  }
+
+  recordNodeStatus(ref: GroupNodeReference, peer: string, status: GroupNodeStatus) {
+    return this.run(async () => {
+      const room = this.room(ref.group);
+      const entry = room?.entries.find(post => post.hash === ref.hash);
+      if (!room || !entry?.nodeSince || entry.from !== this.port.self || !groupAudience(room, entry).includes(peer) ||
+          entry.nodeStatus?.[peer] === status || entry.nodeStatus?.[peer] === 'delivered') return;
+      const updated = { ...entry, nodeStatus:{ ...entry.nodeStatus, [peer]:status } };
+      await this.save({ ...room, entries:room.entries.map(post => post === entry ? updated : post) });
+    });
+  }
+
+  async receiveNodePost(peer: string, frame: GroupMessageFrame) {
+    if (!this.port.active() || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
+    await this.receive(peer, frame, peer);
+    return this.room(frame.group)?.entries.some(entry => entry.from === peer && entry.packet === frame.packet) ?? false;
   }
 
   async markRead(id: string, hashes: string[]) {
@@ -306,7 +369,7 @@ export class GroupController {
     if (changed) await this.save({ ...room, entries });
   }
 
-  receive(peer: string, value: unknown): Promise<void> {
+  receive(peer: string, value: unknown, nodeAuthor?: string): Promise<void> {
     const frame = parseGroupFrame(value);
     if (!frame || !this.port.allowed(peer) || peer === this.port.self) return Promise.resolve();
     return this.run(async () => {
@@ -412,7 +475,7 @@ export class GroupController {
         return;
       }
       const { mls, entry } = await decryptGroupPost(room, frame.packet, hash);
-      if (entry.from === this.port.self || room.entries.some(item => item.id === entry.id)) return;
+      if (entry.from === this.port.self || (nodeAuthor && entry.from !== nodeAuthor) || room.entries.some(item => item.id === entry.id)) return;
       const received = await this.ownReceived(room, { ...entry, unread:true });
       const next = { ...room, mls, entries:[...room.entries, received].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
