@@ -5,14 +5,15 @@ import type { IdentityProvider } from '$lib/identity/identity';
 import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost, establishGroup, groupPacketHash,
   signGroupReceipt, signGroupWelcome, validateJoinKey, verifyGroupReceipt, verifyGroupWelcome } from './mls';
 import { GroupMembership } from './GroupMembership';
-import { GROUP_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
+import { GROUP_HISTORY, GROUP_KEY_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
   GROUP_PREFIX, type GroupFrame, type GroupReceipt, type GroupTransport } from './protocol';
 import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
 
 type GroupMessageFrame = Extract<GroupFrame, { type:'message' }>;
 export type GroupNodeReference = { group: string; hash: string };
-export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string };
+export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string; relay: boolean };
 const encoder = new TextEncoder();
+const availableSince = (entry: GroupEntry) => entry.nodeSince ?? entry.sentAt;
 
 type GroupPort = {
   self: string;
@@ -147,7 +148,7 @@ export class GroupController {
       if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
       if (replyTo !== undefined && !room.entries.some(entry => entry.id === replyTo)) throw new Error('group_reply_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
-      const saved = this.port.nodeEnabled?.() ? { ...entry, nodeSince:post.sentAt } : entry;
+      const saved = { ...entry, nodeSince:post.sentAt };
       const next = { ...room, mls, entries:[...room.entries, saved].slice(-GROUP_HISTORY), activityAt:post.sentAt };
       await this.save(next);
       this.relay(next, { type:'message', group:id, packet:entry.packet });
@@ -158,13 +159,21 @@ export class GroupController {
     });
   }
 
-  canStoreOnNode(ref: GroupNodeReference, peer: string, now = Date.now()) {
-    if (peer === this.port.self || !this.port.active() || !this.port.nodeEnabled?.() || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
+  canStoreOnNode(ref: GroupNodeReference, peer: string) {
+    if (!this.port.active() || !this.port.nodeEnabled?.()) return false;
     const room = this.room(ref.group);
-    if (!room?.mls || room.departed || room.leaving || room.plan && !room.plan.key || !room.members.includes(peer)) return false;
-    const entry = room.entries.find(post => post.hash === ref.hash);
-    return !!entry?.nodeSince && now - entry.nodeSince >= 2000 && now - entry.nodeSince < COURIER_TTL &&
-      entry.from === this.port.self && entry.epoch === epochOf(room) && groupAudience(room, entry).includes(peer) &&
+    const entry = room?.entries.find(post => post.hash === ref.hash);
+    return !!room && !!entry && this.canQueueNodePost(room, entry, peer, Date.now());
+  }
+
+  private canQueueNodePost(room: GroupRoom, entry: GroupEntry, peer: string, now: number) {
+    if (!room.mls || room.departed || room.leaving || room.plan && !room.plan.key) return false;
+    if (entry.from === peer || peer === this.port.self || !room.members.includes(peer) || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
+    if (!room.members.includes(entry.from) || epochOf(room) - (entry.epoch ?? 1) >= GROUP_KEY_HISTORY) return false;
+    const since = availableSince(entry);
+    const audience = groupAudience(room, entry);
+    return since !== undefined && now - since >= 2000 && now - since < COURIER_TTL &&
+      audience.includes(this.port.self) && audience.includes(peer) &&
       !entry.receivedBy?.includes(peer) && !entry.receipts?.some(receipt => receipt.by === peer) &&
       entry.nodeStatus?.[peer] !== 'delivered' && entry.nodeStatus?.[peer] !== 'finished';
   }
@@ -174,21 +183,26 @@ export class GroupController {
     if (!this.port.active() || !room) return false;
     if (room.departed || room.leaving || !room.members.includes(peer) || !this.port.allowed(peer)) return true;
     const entry = room.entries.find(post => post.hash === ref.hash);
-    return entry?.receivedBy?.includes(peer) === true || entry?.receipts?.some(receipt => receipt.by === peer) === true;
+    return entry !== undefined && (!room.members.includes(entry.from) || entry.receivedBy?.includes(peer) === true ||
+      entry.receipts?.some(receipt => receipt.by === peer) === true);
   }
 
   *nodePosts(): Iterable<GroupNodePost> {
     if (!this.port.nodeEnabled?.() || !this.port.active()) return;
     const now = Date.now();
     for (const room of this.port.rooms()) for (const entry of room.entries) {
-      if (!entry.nodeSince || entry.from !== this.port.self) continue;
+      if (availableSince(entry) === undefined) continue;
       const ref = { group:room.id, hash:entry.hash };
       for (const peer of room.members) {
-        if (!this.canStoreOnNode(ref, peer, now)) continue;
-        const hex = bytesToHex(sha256(encoder.encode(JSON.stringify([room.id, entry.hash, peer]))));
+        if (!this.canQueueNodePost(room, entry, peer, now)) continue;
+        const relay = entry.from !== this.port.self;
+        // The node indexes jobs by ID, even when several senders use it.
+        // Preserve existing author reservations and namespace relayed copies.
+        const jobKey = relay ? [room.id, entry.hash, peer, this.port.self] : [room.id, entry.hash, peer];
+        const hex = bytesToHex(sha256(encoder.encode(JSON.stringify(jobKey))));
         const id = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-5' + hex.slice(13, 16) + '-8' + hex.slice(17, 20) + '-' + hex.slice(20, 32);
         const frame: GroupMessageFrame = { type:'message', group:room.id, packet:entry.packet };
-        yield { ...ref, id, peer, content:GROUP_PREFIX + JSON.stringify(frame) };
+        yield { ...ref, id, peer, content:GROUP_PREFIX + JSON.stringify(frame), relay };
       }
     }
   }
@@ -197,17 +211,19 @@ export class GroupController {
     return this.run(async () => {
       const room = this.room(ref.group);
       const entry = room?.entries.find(post => post.hash === ref.hash);
-      if (!room || !entry?.nodeSince || entry.from !== this.port.self || !groupAudience(room, entry).includes(peer) ||
+      if (!room || !entry || entry.from === peer || !groupAudience(room, entry).includes(peer) ||
           entry.nodeStatus?.[peer] === status || entry.nodeStatus?.[peer] === 'delivered') return;
-      const updated = { ...entry, nodeStatus:{ ...entry.nodeStatus, [peer]:status } };
+      const updated = { ...entry, nodeSince:availableSince(entry) ?? Date.now(), nodeStatus:{ ...entry.nodeStatus, [peer]:status } };
       await this.save({ ...room, entries:room.entries.map(post => post === entry ? updated : post) });
     });
   }
 
-  async receiveNodePost(peer: string, frame: GroupMessageFrame) {
+  async receiveNodePost(peer: string, frame: GroupMessageFrame, node: string) {
     if (!this.port.active() || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
-    await this.receive(peer, frame, peer);
-    return this.room(frame.group)?.entries.some(entry => entry.from === peer && entry.packet === frame.packet) ?? false;
+    await this.receive(peer, frame, node);
+    const room = this.room(frame.group);
+    return !!room?.mls && room.members.includes(peer) && room.entries.some(entry =>
+      entry.packet === frame.packet && groupAudience(room, entry).includes(peer));
   }
 
   async markRead(id: string, hashes: string[]) {
@@ -369,7 +385,7 @@ export class GroupController {
     if (changed) await this.save({ ...room, entries });
   }
 
-  receive(peer: string, value: unknown, nodeAuthor?: string): Promise<void> {
+  receive(peer: string, value: unknown, node?: string): Promise<void> {
     const frame = parseGroupFrame(value);
     if (!frame || !this.port.allowed(peer) || peer === this.port.self) return Promise.resolve();
     return this.run(async () => {
@@ -475,8 +491,11 @@ export class GroupController {
         return;
       }
       const { mls, entry } = await decryptGroupPost(room, frame.packet, hash);
-      if (entry.from === this.port.self || (nodeAuthor && entry.from !== nodeAuthor) || room.entries.some(item => item.id === entry.id)) return;
-      const received = await this.ownReceived(room, { ...entry, unread:true });
+      if (entry.from === this.port.self || (node && !groupAudience(room, entry).includes(peer)) ||
+          room.entries.some(item => item.id === entry.id)) return;
+      // An accepted carrier already has these ciphertext bytes. Never queue the
+      // same packet back to it, or to the original author.
+      const received = await this.ownReceived(room, { ...entry, unread:true, route:{ peer, ...(node ? { node } : {}) }, nodeSince:Date.now(), receivedBy:[peer] });
       const next = { ...room, mls, entries:[...room.entries, received].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
       void this.deliver(entry.from, { type:'ack', group:room.id, hash });

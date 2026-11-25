@@ -32,7 +32,7 @@ export function validateQueueSource(value:unknown,from:string,to:string,allowExp
   return source;
 }
 export type CourierBundle = Signed<{ protocol: string; from: string; to: string; expiresAt: number; keys: { id: string; publicKey: string }[];
-  deliveryTtlMs?:number;retainUntil?:number;consumedKeys?:string[];requestKeys?:boolean;groupPosts?:true;keySource?:KeySource;senderQueue?:QueueSource;attachmentProtocol?: string; maxFileBytes?: number; route?: CourierRoute }>;
+  deliveryTtlMs?:number;retainUntil?:number;consumedKeys?:string[];requestKeys?:boolean;groupPosts?:true;groupRelay?:true;keySource?:KeySource;senderQueue?:QueueSource;attachmentProtocol?: string; maxFileBytes?: number; route?: CourierRoute }>;
 export type CourierPacket = Signed<{ protocol: string; from: string; to: string; id: string; keyId: string; timestamp: number; expiresAt: number; enc: string; cipher: string }>;
 export type CourierJob = Signed<{ protocol: string; from: string; to: string; courier: string; id: string; expiresAt: number; packet: string; lanOnly?: boolean; attachment?: Attachment; route?: CourierRoute }>;
 export type CourierHop = Signed<{ protocol: string; courier: string; digest: string; id: string }>;
@@ -48,7 +48,8 @@ export async function verifyCourier(value: Signed<unknown>, purpose: string, add
 export function validateCourierBundle(bundle: CourierBundle, from: string, to: string, allowExpired=false) {
   const b = bundle?.body;
   if(b?.requestKeys!==undefined&&typeof b.requestKeys!=='boolean'||b?.consumedKeys!==undefined&&(!Array.isArray(b.consumedKeys)||b.consumedKeys.length>32||new Set(b.consumedKeys).size!==b.consumedKeys.length||b.consumedKeys.some(id=>typeof id!=='string'||!/^[a-f0-9]{32}$/.test(id))))throw Error('invalid_courier_bundle');
-  if(b?.groupPosts!==undefined&&b.groupPosts!==true)throw Error('invalid_courier_bundle');
+  if (b?.groupPosts !== undefined && b.groupPosts !== true ||
+      b?.groupRelay !== undefined && (b.groupRelay !== true || b.groupPosts !== true)) throw Error('invalid_courier_bundle');
   if(b?.keySource!==undefined)validateKeySource(b.keySource);
   if(b?.senderQueue!==undefined)validateQueueSource(b.senderQueue,from,to,allowExpired);
   if(b?.retainUntil!==undefined||b?.deliveryTtlMs!==undefined){if(b.deliveryTtlMs!==COURIER_TTL)throw Error('invalid_courier_bundle');validateKeyLifetime(b.expiresAt,b.retainUntil,b.deliveryTtlMs);}
