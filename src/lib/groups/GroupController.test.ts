@@ -263,7 +263,11 @@ describe('experimental closed MLS groups', () => {
     at(b).peerOnline(c);
     await roster([a,b,c,d], 2);
     expect(room(d).entries).toHaveLength(0);
-    expect(room(b).entries[0].audience).toEqual([a,b,c]);
+    const earlier = room(b).entries[0];
+    expect(earlier.audience).toEqual([a,b,c]);
+    const priorPacket = { type:'message' as const, group, packet:earlier.packet };
+    expect(await at(d).receiveNodePost(b, priorPacket, a)).toBe(false);
+    expect(room(d).entries).toHaveLength(0);
     await at(d).send(group, 'Joined while the owner is offline');
     await wait(() => expect(room(c).entries.at(-1)?.from).toBe(d));
 
@@ -311,6 +315,8 @@ describe('experimental closed MLS groups', () => {
     await wait(() => expect(room(b).departed).toBe(b));
     expect(room(b).mls).toBeUndefined();
     expect(groupVisible(room(b))).toBe(false);
+    expect(await at(b).receiveNodePost(a,{ type:'message', group, packet:newPost.packet },a)).toBe(false);
+    expect(room(b).entries.some(entry => entry.id === newPost.id)).toBe(false);
 
     offline.add(a);
     await at(d).leave(group);

@@ -23,6 +23,7 @@
   let transcript = $state<HTMLDivElement>();
   let composer = $state<HTMLTextAreaElement>();
   let replyTo = $state('');
+  let routeId = $state('');
   let copied = $state(''), highlighted = $state(''), copyFailed = $state(false);
   let copyTimer: ReturnType<typeof setTimeout>, highlightTimer: ReturnType<typeof setTimeout>;
   let jump = $state(false);
@@ -78,6 +79,7 @@
   });
   const byId = $derived(new Map(timeline.map(entry => [entry.id, entry])));
   const replyDraft = $derived(byId.get(replyTo));
+  const routeMessage = $derived(byId.get(routeId));
   const unread = $derived(timeline.filter(entry => groupEntryUnread(entry, self)));
   const scrollMessages = $derived(timeline.map(entry => ({
     id: entry.id, direction: entry.from === self ? 'outgoing' as const : 'incoming' as const,
@@ -252,6 +254,8 @@
                 aria-label={$i18n.text('Ответить на сообщение')} title={$i18n.text('Ответить')}>↩</button>
               <button class="quick-copy" type="button" onclick={() => void copyText(message)}
                 aria-label={$i18n.text('Скопировать содержимое сообщения')} title={$i18n.text('Скопировать содержимое')}>{copied === message.id ? '✓' : '⧉'}</button>
+              <button class="quick-copy" type="button" onclick={() => { routeId = message.id; }} aria-haspopup="dialog"
+                aria-label={$i18n.text('Путь сообщения')} title={$i18n.text('Путь сообщения')}><ChatIcon name="info" /></button>
               {#if copied === message.id}<span class="copy-feedback" role="status">{$i18n.text('Текст скопирован.')}</span>{/if}
             </div>
             {#if original}
@@ -325,6 +329,45 @@
   </form>
 {/if}
 
+{#if routeMessage}
+  <CompactDialog title={$i18n.text('Путь сообщения')} literalTitle onClose={() => { routeId = ''; queueRead(); }}>
+    {#if routeMessage.route}
+      <p>{routeMessage.route.node ? $i18n.text('Получено с ноды') : $i18n.text('Получено по P2P')}</p>
+      {#if routeMessage.route.node}<p class="route-peer">{$i18n.text('Нода')} · {routeMessage.route.node}</p>{/if}
+      {#if routeMessage.route.peer !== routeMessage.from}
+        <p class="route-peer">{$i18n.text('Передал участник')} · {name(routeMessage.route.peer)}</p>
+      {/if}
+    {:else if routeMessage.from === self}
+      <p>{$i18n.text('Сохранено на этом устройстве')}</p>
+    {:else}
+      <p>{$i18n.text('Маршрут доставки неизвестен')}</p>
+    {/if}
+    {#if routeMessage.from === self || Object.keys(routeMessage.nodeStatus ?? {}).length}
+      <ul class="message-route">
+        {#each groupAudience(room, routeMessage).filter(peer => peer !== routeMessage.from && peer !== self) as peer (peer)}
+          {@const node = routeMessage.nodeStatus?.[peer]}
+          {@const receipt = routeMessage.receipts?.find(item => item.by === peer)}
+          <li>
+            <strong>{name(peer)}</strong>
+            <small>
+              {#if node === 'delivered'}
+                {$i18n.text('Доставлено через ноду')}
+                {#if receipt?.state === 'read'} · {$i18n.text('Прочитали')}{/if}
+              {:else if receipt}
+                {$i18n.text(receipt.state === 'read' ? 'Прочитали' : 'Доставлено')} · {$i18n.text('Маршрут доставки неизвестен')}
+              {:else if node === 'stored'}
+                {$i18n.text('На ноде')}
+              {:else}
+                {$i18n.text('Нет подтверждения доставки')}
+              {/if}
+            </small>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </CompactDialog>
+{/if}
+
 {#if membersOpen}
   <CompactDialog title={$i18n.text('Участники группы')} literalTitle onClose={closeMembers}>
     {#if confirming}
@@ -387,6 +430,10 @@
 <style>
   .peer-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .peer-heading .local-agent-avatar { display:grid; }
+  .quick-copy :global(svg) { display:block; width:18px; height:18px; margin:auto; }
+  .message-route { display:grid; gap:8px; list-style:none; padding:0; }
+  .message-route small { display:block; color:var(--muted); }
+  .route-peer, .message-route strong { overflow-wrap:anywhere; }
   .reply-count { margin-right:auto; font-size:inherit; }
   .quote-text { overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .unread-message { flex-shrink:0; width:7px; height:7px; border-radius:50%; background:var(--accent); }

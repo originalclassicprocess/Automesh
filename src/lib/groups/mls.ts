@@ -3,9 +3,11 @@ import {
   bytesToBase64, createApplicationMessage, createCommit, createGroup, decodeGroupState, decodeMlsMessage,
   defaultKeyPackageEqualityConfig, defaultLifetimeConfig, defaultPaddingConfig, emptyPskIndex, encodeGroupState,
   encodeMlsMessage, generateKeyPackageWithKey, getCiphersuiteFromName, getCiphersuiteImpl, joinGroup,
-  processPrivateMessage, processPublicMessage, zeroOutUint8Array, type ClientConfig, type ClientState, type Credential,
+  processPublicMessage, zeroOutUint8Array, type ClientConfig, type ClientState, type Credential,
   type KeyPackage, type PrivateKeyPackage, type Proposal,
 } from 'ts-mls';
+import { unprotectPrivateMessage } from 'ts-mls/messageProtection.js';
+import { leafToNodeIndex, toLeafIndex } from 'ts-mls/treemath.js';
 import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import type { IdentityProvider } from '$lib/identity/identity';
 import { buildP256PKCS8 } from '$lib/identity/pkcs8';
@@ -66,6 +68,8 @@ const bytes = (encoded: string) => Uint8Array.from(atob(encoded), char => char.c
 const encode = (value: unknown) => text.encode(JSON.stringify(value));
 const leafProof = (room: string, signing: Uint8Array) => encode(['Automesh MLS leaf v1', room, bytesToBase64(signing)]);
 const postProof = (room: string, post: GroupPost) => encode(['Automesh group post v1', room, post.id, post.from, post.text]);
+const postEpochProof = (room: string, epoch: number, post: GroupPost) =>
+  encode(['Automesh group post v2', room, epoch, post.id, post.from, post.text, post.sentAt ?? null, post.replyTo ?? null]);
 const postReplyProof = (room: string, post: GroupPost) => encode(['Automesh group post reply v1', room, post.id, post.replyTo]);
 const postTimeProof = (room: string, post: GroupPost) => encode(['Automesh group post time v1', room, post.id, post.sentAt]);
 const welcomeProof = (room: GroupRoom, packet: string) => encode(['Automesh group welcome v1', room.id, room.title, room.members, packet]);
@@ -287,7 +291,8 @@ export async function encryptGroupPost(room: GroupRoom, post: GroupPost, identit
   const signature = bytesToBase64(await identity.sign(postProof(room.id, post)));
   const timeSignature = groupTimestamp(post.sentAt) ? bytesToBase64(await identity.sign(postTimeProof(room.id, post))) : undefined;
   const replySignature = post.replyTo ? bytesToBase64(await identity.sign(postReplyProof(room.id, post))) : undefined;
-  const result = await createApplicationMessage(loadState(room), encode({ ...post, key, signature, timeSignature, replySignature }), await cryptoSuite());
+  const epochSignature = bytesToBase64(await identity.sign(postEpochProof(room.id, epochOf(room), post)));
+  const result = await createApplicationMessage(loadState(room), encode({ ...post, key, signature, timeSignature, replySignature, epochSignature }), await cryptoSuite());
   result.consumed.forEach(zeroOutUint8Array);
   const packet = bytesToBase64(encodeMlsMessage({ wireformat:'mls_private_message', version:'mls10', privateMessage:result.privateMessage }));
   if (!encodedMls(packet, 6000)) throw new Error('group_text_too_long');
@@ -302,23 +307,44 @@ export async function decryptGroupPost(room: GroupRoom, packet: string, hash: st
   const epoch = Number(message.privateMessage.epoch);
   const audience = epoch === epochOf(room) ? room.members : room.changes?.find(change => change.plan.epoch === epoch)?.previous;
   if (!audience) throw new Error('group_invalid_post_epoch');
-  const result = await processPrivateMessage(loadState(room), message.privateMessage, emptyPskIndex, await cryptoSuite());
-  if (result.kind !== 'applicationMessage') throw new Error('group_invalid_post');
+  const state = loadState(room);
+  const historical = epoch !== epochOf(room);
+  const previous = historical ? state.historicalReceiverData.get(BigInt(epoch)) : undefined;
+  if (historical && !previous) throw new Error('group_invalid_post_epoch');
+  const receiver = previous ?? {
+    senderDataSecret:state.keySchedule.senderDataSecret, secretTree:state.secretTree,
+    ratchetTree:state.ratchetTree, groupContext:state.groupContext,
+  };
+  const result = await unprotectPrivateMessage(receiver.senderDataSecret, message.privateMessage, receiver.secretTree,
+    receiver.ratchetTree, receiver.groupContext, state.clientConfig.keyRetentionConfig, await cryptoSuite());
+  const content = result.content.content;
+  const { sender } = content;
   try {
-    const post = JSON.parse(decoder.decode(result.message)) as Partial<GroupPost & { key: string; signature: string; timeSignature: string; replySignature: string }> | null;
-    const key = post?.key, signature = post?.signature, timeSignature = post?.timeSignature, replySignature = post?.replySignature;
-    // The public MLS API returns plaintext without the sender's leaf index.
-    // This inner proof preserves authorship when an existing member relays it.
-    if (!validPost(post) || !room.members.includes(post.from) || !audience.includes(post.from) || !await verify(post.from, key, signature, postProof(room.id, post)))
-      throw new Error('group_invalid_author');
-    const sentAt = groupTimestamp(post.sentAt) && await verify(post.from, key, timeSignature, postTimeProof(room.id, post))
+    if (content.contentType !== 'application' || sender.senderType !== 'member') throw new Error('group_invalid_post');
+    const leaf = receiver.ratchetTree[leafToNodeIndex(toLeafIndex(sender.leafIndex))];
+    const post = JSON.parse(decoder.decode(content.applicationData)) as Partial<GroupPost & {
+      key: string; signature: string; timeSignature: string; replySignature: string; epochSignature: string;
+    }> | null;
+    const { key, signature, timeSignature, replySignature, epochSignature } = post ?? {};
+    // The authenticated MLS sender must match the author even for a legacy
+    // post. A carrier forwards the original packet and never becomes its author.
+    if (!validPost(post) || leaf?.nodeType !== 'leaf' || credentialProof(leaf.leaf.credential).peer !== post.from ||
+        !room.members.includes(post.from) || !audience.includes(post.from) ||
+        !await verify(post.from, key, signature, postProof(room.id, post))) throw new Error('group_invalid_author');
+    const signedEpoch = epochSignature !== undefined;
+    if (signedEpoch && !await verify(post.from, key, epochSignature, postEpochProof(room.id, epoch, post)))
+      throw new Error('group_invalid_post_epoch_signature');
+    const sentAt = groupTimestamp(post.sentAt) && (signedEpoch || await verify(post.from, key, timeSignature, postTimeProof(room.id, post)))
       ? post.sentAt : undefined;
-    const replyTo = uuid(post.replyTo) && post.replyTo !== post.id && await verify(post.from, key, replySignature, postReplyProof(room.id, post))
-      ? post.replyTo : undefined;
+    const replyTo = uuid(post.replyTo) && post.replyTo !== post.id &&
+      (signedEpoch || await verify(post.from, key, replySignature, postReplyProof(room.id, post))) ? post.replyTo : undefined;
     const entry = { id:post.id, from:post.from, text:post.text, sentAt, replyTo, packet, hash, epoch, audience };
-    return { mls:bytesToBase64(encodeGroupState(result.newState)), entry };
+    const newState = previous
+      ? { ...state, historicalReceiverData:new Map(state.historicalReceiverData).set(BigInt(epoch), { ...previous, secretTree:result.tree }) }
+      : { ...state, secretTree:result.tree };
+    return { mls:bytesToBase64(encodeGroupState(newState)), entry };
   } finally {
-    result.message.fill(0);
+    if (content.contentType === 'application') content.applicationData.fill(0);
     result.consumed.forEach(zeroOutUint8Array);
   }
 }

@@ -40,7 +40,7 @@ type Port = { address: string; identity: IdentityProvider; state(): CourierState
     eligible(ref: GroupNodeReference, peer: string): boolean;
     release?(ref: GroupNodeReference, peer: string): boolean;
     status(ref: GroupNodeReference, peer: string, status: GroupNodeStatus): Promise<void>;
-    receive(peer: string, frame: Extract<GroupFrame, { type:'message' }>): Promise<boolean>;
+    receive(peer: string, frame: Extract<GroupFrame, { type:'message' }>, node: string): Promise<boolean>;
   };
   chats(): SessionChats; persist(): Promise<boolean>; receive(m: ChatMessage): void; committedIncoming?:CommittedIncomingListener;
   authorize?(peer: string): Promise<void>; issue?(peer: string, id: string, issue: DeliveryIssue | undefined, error?: unknown): void;
@@ -220,7 +220,7 @@ export class CourierController {
     this.current();
     const bundle = await signCourier('prekeys', { protocol: COURIER_PROTOCOL, from: this.port.address, to: peer,
       ...(route ? { route } : {}), consumedKeys, requestKeys,
-      ...(this.port.groups ? { groupPosts:true as const } : {}),
+      ...(this.port.groups ? { groupPosts:true as const, groupRelay:true as const } : {}),
       ...(this.port.files ? { attachmentProtocol: ATTACHMENT_PROTOCOL, maxFileBytes: FILE_POLICY_BYTES } : {}),
       ...(batch.every(k=>k.publishUntil!==undefined)?{deliveryTtlMs:COURIER_TTL,retainUntil:Math.min(...batch.map(k=>k.publishUntil!))+COURIER_TTL}:{}),
       ...(this.prekeysSupported&&node?{keySource:{url:node.url,nodeId:node.nodeId}}:{}),
@@ -329,30 +329,67 @@ export class CourierController {
       }
     }
   }
-  private async reserveGroupPosts(lanOnly: boolean) {
+  private async allocateCourierPrekey(peer: string, source: KeySource, reservation: string, syncRoute: boolean): Promise<PrekeyAllocation> {
+    const value = await this.requestAt(source, '/prekeys/allocate', { owner:peer, reservation });
+    validateAllocation(value, peer, this.port.address, reservation);
+    if (value.key.body.node.nodeId !== source.nodeId || value.key.body.node.url !== source.url) throw Error('invalid_prekey_allocation');
+    await verifyCourier(value.key, 'prekey', peer);
+    this.current();
+    if (this.port.state().used[value.key.body.id]) throw Error('prekey_already_used');
+    if (value.route && syncRoute) try {
+      validateCourierRoute(value.route, peer, this.port.address);
+      await verifyCourier(value.route, 'route', peer);
+      this.current();
+      const stamp = JSON.stringify(value.route);
+      if (this.syncedRoutes.get(peer) !== stamp) {
+        await this.request('/outbox/route', { route:value.route });
+        this.syncedRoutes.set(peer, stamp);
+      }
+    } catch { this.current(); }
+    return value;
+  }
+
+  private async reserveGroupPosts(lanOnly: boolean, syncRoute: boolean) {
     const groups = this.port.groups;
     const state = this.port.state();
     if (!groups || !state.enabled || !state.node) return;
-    let count = 0;
+    let count = 0, sourceFailures = 0;
     for (const post of groups.posts()) {
       const current = this.port.state();
       if (count >= 4 || current.pending.length >= 100 || Object.keys(current.used).length >= 4096) break;
       const bundle = current.bundles[post.peer];
-      if (!bundle?.body.groupPosts || bundle.body.expiresAt <= Date.now() ||
+      if (!bundle?.body.groupPosts || (post.relay && !bundle.body.groupRelay) ||
           current.pending.some(job => job.body.id === post.id) ||
           this.port.chats().byPeer[post.peer]?.contact !== 'accepted') continue;
-      const key = bundle.body.keys.find(key => !current.used[key.id]);
-      if (!key) continue;
+      const key = bundle.body.expiresAt > Date.now() ? bundle.body.keys.find(key => !current.used[key.id]) : undefined;
+      const source = bundle.body.keySource;
+      if (!key && (!source || !this.sourceAllowed(source) || sourceFailures >= 2 ||
+          Date.now() < (this.keySourceRetryAt.get(post.peer)?.at ?? 0))) continue;
+      let allocation: PrekeyAllocation | undefined;
       let job: CourierJob;
       try {
         await this.port.authorize?.(post.peer);
         this.current();
-        job = await createCourierJob(this.port.identity, this.port.address, state.node.address, bundle, key, post.id, Date.now(), post.content, lanOnly);
+        if (!key && source) {
+          try {
+            allocation = await this.allocateCourierPrekey(post.peer, source, post.id, syncRoute);
+            this.keySourceRetryAt.delete(post.peer);
+          } catch (error) {
+            this.current();
+            sourceFailures++;
+            this.keySourceRetryAt.set(post.peer,{ at:Date.now() + 5000, issue:keyLookupIssue(error) });
+          }
+        }
+        if (allocation) job = await createAllocatedCourierJob(this.port.identity, this.port.address, state.node.address, post.peer, allocation, post.id, Date.now(), post.content, lanOnly);
+        else if (key) job = await createCourierJob(this.port.identity, this.port.address, state.node.address, bundle, key, post.id, Date.now(), post.content, lanOnly);
+        else continue;
       } catch { this.current(); continue; }
       this.current();
       if (!groups.eligible(post, post.peer)) continue;
       const latest = this.port.state();
-      this.update({ ...latest, used:{ ...latest.used, [key.id]:job.body.expiresAt + 86400000 },
+      const reservedKey = allocation?.key.body ?? key!;
+      const expiry = allocation?.key.body.retainUntil ?? job.body.expiresAt;
+      this.update({ ...latest, used:{ ...latest.used, [reservedKey.id]:expiry + 86400000 },
         groupJobs:{ ...latest.groupJobs, [post.id]:{ group:post.group, hash:post.hash } }, pending:[...latest.pending, job] });
       await this.persist();
       count++;
@@ -480,17 +517,8 @@ export class CourierController {
         if(source&&!this.sourceAllowed(source))allocationFailure=new Error('prekey_source_not_approved');
         if(cached.length<=PREKEY_LOW&&source&&this.sourceAllowed(source)&&sourceFailures<2&&Date.now()>=(this.keySourceRetryAt.get(peer)?.at??0)){
           try{
-            const value=await this.requestAt(source,'/prekeys/allocate',{owner:peer,reservation:m.id});
-            validateAllocation(value,peer,this.port.address,m.id);
-            if(value.key.body.node.nodeId!==source.nodeId||value.key.body.node.url!==source.url)throw Error('invalid_prekey_allocation');
-            await verifyCourier(value.key,'prekey',peer);this.current();
-            if(this.port.state().used[value.key.body.id])throw Error('prekey_already_used');
-            allocation=value;this.keySourceRetryAt.delete(peer);
-            if(value.route&&health.routingProtocol===COURIER_ROUTE_PROTOCOL&&!lanOnly)try{
-              validateCourierRoute(value.route,peer,this.port.address);await verifyCourier(value.route,'route',peer);this.current();
-              const stamp=JSON.stringify(value.route);
-              if(this.syncedRoutes.get(peer)!==stamp){await this.request('/outbox/route',{route:value.route});this.syncedRoutes.set(peer,stamp);}
-            }catch{this.current();} // Existing optional route update never gates delivery.
+            allocation=await this.allocateCourierPrekey(peer,source,m.id,health.routingProtocol===COURIER_ROUTE_PROTOCOL&&!lanOnly);
+            this.keySourceRetryAt.delete(peer);
           }catch(error){this.current();if(error instanceof Error&&error.message==='courier_not_saved')throw error;
             allocationFailure=error;sourceFailures++;
             this.keySourceRetryAt.set(peer,{at:Date.now()+(error instanceof Error&&error.message==='prekeys_unavailable'?5000:15000),issue:keyLookupIssue(error)});}
@@ -517,7 +545,7 @@ export class CourierController {
         await this.persist(); if(allocation){delete this.keyStocks[peer];this.stockEpoch.set(peer,(this.stockEpoch.get(peer)??0)+1);} count++;
       }
     }
-    await this.reserveGroupPosts(lanOnly);
+    await this.reserveGroupPosts(lanOnly, health.routingProtocol === COURIER_ROUTE_PROTOCOL && !lanOnly);
     // Reserve AND durably commit before sending, within this pass (no extra timer).
     await this.persist();
     if (this.health.connection !== 'connected') this.report('checking');
@@ -624,7 +652,7 @@ export class CourierController {
     let content: ReturnType<typeof decodeChatContent> = null;
     if (packet.content.startsWith(GROUP_PREFIX)) {
       const frame = parseGroupFrame(JSON.parse(packet.content.slice(GROUP_PREFIX.length)));
-      if (frame?.type !== 'message' || !await this.port.groups?.receive(job.body.from, frame)) throw new Error('group_node_not_saved');
+      if (frame?.type !== 'message' || !await this.port.groups?.receive(job.body.from, frame, data.from)) throw new Error('group_node_not_saved');
       this.current();
     } else {
       content = decodeChatContent(packet.content);
@@ -691,17 +719,19 @@ export class CourierController {
       const task=(async()=>{
         const result=await this.requestAt(source,'/receive/list',{cursor:previous?.cursor??'',grant:source.grant},true);this.current();
         if(result.protocol!=='automesh-inbox-v1'||!Array.isArray(result.deliveries)||result.deliveries.length>8||typeof result.cursor!=='string'||result.cursor!==''&&!/^[a-f0-9]{32}$/.test(result.cursor))throw Error('invalid_courier_inbox');
-        let rejected=0,reason='';
+        let rejected=0,reason='',retryPage=false;
         for(const data of result.deliveries){
           try{
             if(data?.from!==source.address||data.job?.body?.from!==source.grant.body.from)throw Error('courier_identity_changed');
             await this.receive(data,this.httpReply(source));
-          }catch(error){this.current();rejected++;reason ||= deliveryFailure(error);}
+          }catch(error){
+            this.current(); rejected++; reason ||= deliveryFailure(error);
+            if (!(error instanceof Error && error.message === 'group_node_not_saved')) retryPage=true;
+          }
         }
-        // A failed save/verification MUST retain the previous page cursor.
-        // Successful entries have their own durable receipts; retrying the page
-        // neither loses the failed entry nor acknowledges it prematurely.
-        this.remoteInbox.set(key,{at:Date.now(),cursor:rejected?previous?.cursor??'':result.cursor});
+        // A group packet waiting for keys stays on the node until it receives a
+        // durable receipt. Walk the other pages, then revisit it on the next scan.
+        this.remoteInbox.set(key,{at:Date.now(),cursor:retryPage?previous?.cursor??'':result.cursor});
         this.trace({remoteInboxAt:Date.now(),remoteInboxFailure:rejected?`Не принято конвертов: ${rejected}. ${reason}`:''});
         if(result.deliveries.length||result.cursor)this.wake();
       })().catch(error=>{if(this.active)this.trace({remoteInboxFailure:`Не удалось получить очередь ноды собеседника. ${deliveryFailure(error)}`});})

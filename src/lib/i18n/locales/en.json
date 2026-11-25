@@ -3376,5 +3376,11 @@
   "m_90e850e19607": "Choose a contact",
   "m_4e313d1664c2": "Invite",
   "m_6a58b2986f9f": "Unread message",
-  "m_7142265daf6c": "Jump to unread messages"
+  "m_7142265daf6c": "Jump to unread messages",
+  "m_957c76ad5dbb": "Received from a node",
+  "m_2ba42d374c7b": "Received over P2P",
+  "m_bd9876b7146d": "Relayed by participant",
+  "m_17339c4ddf9e": "Delivery route unknown",
+  "m_963159525f46": "Delivered via a node",
+  "m_e3c401fa111c": "Delivery not confirmed"
 }

@@ -5,7 +5,8 @@ import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupM
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
 export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string };
 export type GroupNodeStatus = 'stored' | 'delivered' | 'finished';
-export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; nodeSince?: number; nodeStatus?: Record<string, GroupNodeStatus>; receivedBy?: string[]; receipts?: GroupReceipt[] };
+export type GroupRoute = { peer: string; node?: string };
+export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; route?: GroupRoute; nodeSince?: number; nodeStatus?: Record<string, GroupNodeStatus>; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
@@ -102,6 +103,8 @@ export function restoreGroups(value: unknown): GroupRooms {
           const value = entry.nodeStatus?.[peer];
           return peer !== entry.from && (value === 'stored' || value === 'delivered' || value === 'finished') ? [[peer, value]] : [];
         })) } : {}),
+        ...(isValidAccountId(entry.route?.peer ?? '') ? { route:{ peer:entry.route!.peer,
+          ...(isValidAccountId(entry.route?.node ?? '') ? { node:entry.route!.node } : {}) } } : {}),
         ...(entry.unread === true ? { unread:true as const } : {}),
         receivedBy: Array.isArray(entry.receivedBy)
           ? audience.filter(peer => peer !== entry.from && entry.receivedBy!.includes(peer)) : [],

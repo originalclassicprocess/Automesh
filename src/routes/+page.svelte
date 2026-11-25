@@ -5278,7 +5278,7 @@ async function initializeChat() {
       groups:{
         posts:() => groups.nodePosts(), eligible:(ref, peer) => groups.canStoreOnNode(ref, peer),
         release:(ref, peer) => groups.canReleaseNodeCopy(ref, peer),
-        status:(ref, peer, value) => groups.recordNodeStatus(ref, peer, value), receive:(peer, frame) => groups.receiveNodePost(peer, frame),
+        status:(ref, peer, value) => groups.recordNodeStatus(ref, peer, value), receive:(peer, frame, node) => groups.receiveNodePost(peer, frame, node),
       },
       notification: (peer,id,providers) => notificationController?.nodeWake(peer,id,providers) ?? Promise.resolve(undefined),
       activity:(peer,id,stage)=>{
