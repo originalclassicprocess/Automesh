@@ -93,6 +93,7 @@ describe('experimental closed MLS groups', () => {
     expect(entry).toMatchObject({ from:c, text:'A message without the creator online' });
     expect(saved.get(e)?.[0]?.entries).toHaveLength(0);
     expect(JSON.stringify(traces)).not.toContain(entry.text);
+
     privateReads.add(d);
     expect(groupEntryUnread(entry, d)).toBe(true);
     await peers.get(d)!.markRead(room, [entry.hash]);
@@ -159,6 +160,14 @@ describe('experimental closed MLS groups', () => {
     const [legacy] = restoreGroups([{ ...caughtUp, entries:[{ ...newer, sentAt:undefined, unread:undefined }] }]);
     expect(legacy.entries[0].sentAt).toBeUndefined();
     expect(groupEntryUnread(legacy.entries[0], d)).toBe(false);
+
+    await expect(peers.get(d)!.send(room, 'Invalid reply', crypto.randomUUID())).rejects.toThrow('group_reply_unavailable');
+    await peers.get(d)!.send(room, 'A reply to the original', entry.id);
+    await vi.waitFor(() => {
+      expect(saved.get(c)?.[0]?.entries.find(message => message.text === 'A reply to the original'))
+        .toMatchObject({ from:d, replyTo:entry.id });
+    });
+    expect(JSON.stringify(traces)).not.toContain('A reply to the original');
   }, 20000);
 
   it('adds and removes members through MLS, recovers a missed commit, and hands over administration', async () => {
