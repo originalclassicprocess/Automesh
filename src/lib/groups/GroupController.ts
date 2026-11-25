@@ -131,11 +131,12 @@ export class GroupController {
     });
   }
 
-  async send(id: string, text: string) {
+  async send(id: string, text: string, replyTo?: string) {
     return this.run(async () => {
       const room = this.room(id);
-      const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim(), sentAt:Date.now() };
+      const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim(), sentAt:Date.now(), replyTo };
       if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
+      if (replyTo !== undefined && !room.entries.some(entry => entry.id === replyTo)) throw new Error('group_reply_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
       const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:post.sentAt };
       await this.save(next);

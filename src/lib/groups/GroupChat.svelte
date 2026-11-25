@@ -17,10 +17,14 @@
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
     contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
     trackReads: boolean; markRead(hashes: string[]): Promise<void>;
-    accept(): Promise<void>; send(text: string): Promise<void>; sync(): void; direct(): void; back(): void;
+    accept(): Promise<void>; send(text: string, replyTo?: string): Promise<void>; sync(): void; direct(): void; back(): void;
   } = $props();
   let draft = $state(''), busy = $state(false), failed = $state(false);
   let transcript = $state<HTMLDivElement>();
+  let composer = $state<HTMLTextAreaElement>();
+  let replyTo = $state('');
+  let copied = $state(''), highlighted = $state(''), copyFailed = $state(false);
+  let copyTimer: ReturnType<typeof setTimeout>, highlightTimer: ReturnType<typeof setTimeout>;
   let jump = $state(false);
   const links = $derived(room.members.filter(peer => connected.has(peer)).length);
   let membersOpen = $state(false), confirming = $state<'leave' | 'exclude'>(), target = $state(''), invitee = $state('');
@@ -58,6 +62,8 @@
   const draftBytes = $derived(new TextEncoder().encode(draft.trim()).length);
   const canSend = $derived(!busy && !blocked && !updatingKeys && !!draftBytes && draftBytes <= GROUP_TEXT_BYTES);
   const timeline = $derived(groupChronology(room.entries));
+  const byId = $derived(new Map(timeline.map(entry => [entry.id, entry])));
+  const replyDraft = $derived(byId.get(replyTo));
   const unread = $derived(timeline.filter(entry => groupEntryUnread(entry, self)));
   const scrollMessages = $derived(timeline.map(entry => ({
     id: entry.id, direction: entry.from === self ? 'outgoing' as const : 'incoming' as const,
@@ -87,7 +93,11 @@
   }
 
   $effect(() => { if (trackReads && !blocked) queueRead(); });
-  onDestroy(() => { if (readFrame) cancelAnimationFrame(readFrame); });
+  onDestroy(() => {
+    if (readFrame) cancelAnimationFrame(readFrame);
+    clearTimeout(copyTimer);
+    clearTimeout(highlightTimer);
+  });
 
   function observeRead(node: HTMLElement, message: GroupEntry) {
     const { hash } = message;
@@ -119,6 +129,33 @@
     } else transcript.scrollTop = transcript.scrollHeight;
   }
 
+  function startReply(message: GroupEntry) {
+    replyTo = message.id;
+    composer?.focus();
+  }
+
+  function showOriginal(id: string) {
+    const node = transcript?.querySelector<HTMLElement>('[data-chat-message-id="' + id + '"]');
+    if (!transcript || !node) return;
+    const offset = node.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
+    transcript.scrollTo({ top:transcript.scrollTop + offset - (transcript.clientHeight - node.offsetHeight) / 2, behavior:'smooth' });
+    reviewHistory();
+    highlighted = id;
+    clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => { highlighted = ''; }, 1800);
+  }
+
+  async function copyText(message: GroupEntry) {
+    copyFailed = false;
+    try {
+      await navigator.clipboard.writeText(message.text);
+      if (!composer?.isConnected) return;
+      copied = message.id;
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => { copied = ''; }, 1800);
+    } catch { copyFailed = true; }
+  }
+
   async function act(work: () => Promise<void>) {
     if (busy || blocked) return;
     busy = true; failed = false;
@@ -129,9 +166,11 @@
   function submit() {
     if (!canSend) return;
     const value = draft;
+    const original = replyDraft?.id;
     void act(async () => {
       if (transcript) transcript.scrollTop = transcript.scrollHeight;
-      await send(value);
+      await send(value, original);
+      if (replyTo === original) replyTo = '';
       if (draft === value) draft = '';
     });
   }
@@ -165,6 +204,7 @@
     role="log" aria-label={$i18n.text('Переписка группы')} onwheel={reviewHistory} onpointerdown={reviewHistory}>
     {#if room.mls}
       {#each timeline as message, i (message.id)}
+        {@const original = message.replyTo ? byId.get(message.replyTo) : undefined}
         {@const delivered = message.receipts?.length ?? 0}
         {@const recipients = groupAudience(room, message).length - 1}
         {@const read = message.receipts?.filter(receipt => receipt.state === 'read').length ?? 0}
@@ -174,7 +214,7 @@
           <HistoryDivider timestamp={message.sentAt} />
         {/if}
         <div data-chat-message-id={message.id} use:observeRead={message}>
-          <MessageCard outgoing={message.from === self} preview={message.text}>
+          <MessageCard outgoing={message.from === self} preview={message.text} highlighted={highlighted === message.id}>
             <div class="message-header">
               <Avatar accountId={message.from} photo={photo(message.from)} size={18} />
               <strong class="message-author">{message.from === self ? $i18n.text('Вы') : name(message.from)}</strong>
@@ -184,7 +224,20 @@
               {#if groupEntryUnread(message, self)}
                 <span class="unread-message" role="img" aria-label={$i18n.text('Непрочитанное сообщение')} title={$i18n.text('Непрочитанное сообщение')}></span>
               {/if}
+              <button class="quick-reply" type="button" onclick={() => startReply(message)} disabled={blocked || busy}
+                aria-label={$i18n.text('Ответить на сообщение')} title={$i18n.text('Ответить')}>↩</button>
+              <button class="quick-copy" type="button" onclick={() => void copyText(message)}
+                aria-label={$i18n.text('Скопировать содержимое сообщения')} title={$i18n.text('Скопировать содержимое')}>{copied === message.id ? '✓' : '⧉'}</button>
+              {#if copied === message.id}<span class="copy-feedback" role="status">{$i18n.text('Текст скопирован.')}</span>{/if}
             </div>
+            {#if original}
+              <button class="reply-preview" type="button" onclick={() => showOriginal(original.id)} title={$i18n.text('Перейти к исходному сообщению')}>
+                <small>↩ {original.from === self ? $i18n.text('Вы') : name(original.from)}</small>
+                <span class="quote-text">{original.text}</span>
+              </button>
+            {:else if message.replyTo}
+              <div class="reply-preview"><small>↩ {$i18n.text('Исходное сообщение удалено или отсутствует на этом устройстве.')}</small></div>
+            {/if}
             <MessageText text={message.text} />
             <div class="message-actions">
               <span>{$i18n.text('Доставлено')} {delivered}/{recipients}</span>
@@ -218,13 +271,20 @@
   {/if}
 </div>
 
+{#if copyFailed}<p role="alert">{$i18n.text('Браузер не разрешил копирование. Можно выделить текст вручную.')}</p>{/if}
 {#if failed && !membersOpen}<p role="alert">{$i18n.text('Действие с группой не выполнено. Проверьте подключение и попробуйте снова.')}</p>{/if}
 {#if room.mls}
   {#if updatingKeys}
     <small class="membership-status" role="status">{$i18n.text('Получаем обновление ключей группы. Пока можно набрать сообщение.')}</small>
   {/if}
+  {#if replyDraft}
+    <div class="composer-reply">
+      <span>↩ {replyDraft.from === self ? $i18n.text('Вы') : name(replyDraft.from)} · {replyDraft.text}</span>
+      <button type="button" onclick={() => { replyTo = ''; composer?.focus(); }} aria-label={$i18n.text('Отменить ответ')}>✕</button>
+    </div>
+  {/if}
   <form class="composer" onsubmit={event => { event.preventDefault(); submit(); }}>
-    <textarea rows="1" bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
+    <textarea rows="1" bind:this={composer} bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
       aria-label={$i18n.text('Сообщение группе')} onkeydown={event => {
         if (submitOnEnter(event)) { event.preventDefault(); submit(); }
       }}></textarea>
@@ -296,6 +356,7 @@
 <style>
   .peer-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .peer-heading .local-agent-avatar { display:grid; }
+  .quote-text { overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .unread-message { flex-shrink:0; width:7px; height:7px; border-radius:50%; background:var(--accent); }
   .empty, .join-state { color:var(--muted); font-size:13px; }
   .join-state p:first-child, .empty { margin-top:0; }

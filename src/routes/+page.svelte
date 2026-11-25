@@ -6945,7 +6945,7 @@ async function changePassword(): Promise<void> {
             trackReads={!newChatView}
             markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
-            send={text => groupController?.send(groupId, text) ?? Promise.reject(new Error('group_inactive'))}
+            send={(text, replyTo) => groupController?.send(groupId, text, replyTo) ?? Promise.reject(new Error('group_inactive'))}
             sync={wakeGroupConnections} direct={() => openConnectionSection('direct')} back={showChatList} />
         {/key}
       {:else if localAgentOpen}

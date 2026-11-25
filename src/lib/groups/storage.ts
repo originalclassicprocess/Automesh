@@ -3,7 +3,7 @@ import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupM
   validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
-export type GroupPost = { id: string; from: string; text: string; sentAt?: number };
+export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string };
 export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
@@ -74,6 +74,7 @@ export function restoreGroups(value: unknown): GroupRooms {
         id:entry.id, from:entry.from, text:entry.text, hash:entry.hash, packet:entry.packet, audience,
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
         ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
+        ...(uuid(entry.replyTo) && entry.replyTo !== entry.id ? { replyTo:entry.replyTo } : {}),
         ...(entry.unread === true ? { unread:true as const } : {}),
         receivedBy: Array.isArray(entry.receivedBy)
           ? audience.filter(peer => peer !== entry.from && entry.receivedBy!.includes(peer)) : [],
