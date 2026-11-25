@@ -5,7 +5,7 @@ import { WebCryptoIdentity } from '$lib/identity/webcrypto';
 import { GroupController } from './GroupController';
 import { decryptGroupPost, groupPacketHash } from './mls';
 import { type GroupFrame, groupMembers, parseGroupFrame } from './protocol';
-import { epochOf, groupVisible, restoreGroups, type GroupRooms } from './storage';
+import { epochOf, groupChronology, groupEntryUnread, groupVisible, restoreGroups, type GroupRooms } from './storage';
 
 describe('experimental closed MLS groups', () => {
   it('rejects an eleventh member and duplicates at the protocol boundary', () => {
@@ -33,6 +33,7 @@ describe('experimental closed MLS groups', () => {
     const offline = new Set<string>();
     const waitingForWelcome = new Set<string>();
     const privateReads = new Set<string>();
+    let delayedRecipient: string | undefined, delayedPacket: string | undefined;
     const traces: { from:string; to:string; frame:GroupFrame }[] = [];
     const peers = new Map<string, GroupController>();
     const saved = new Map<string, GroupRooms>();
@@ -51,6 +52,7 @@ describe('experimental closed MLS groups', () => {
         send:async (to, frame) => {
           if (!ready(id, to)) throw new Error('unreachable');
           traces.push({ from:id, to, frame });
+          if (frame.type === 'message' && to === delayedRecipient && (!delayedPacket || frame.packet === delayedPacket)) return;
           if ((frame.type === 'welcome' || frame.type === 'welcome-proof') && waitingForWelcome.has(to)) return;
           await peers.get(to)?.receive(id, frame);
         },
@@ -92,7 +94,9 @@ describe('experimental closed MLS groups', () => {
     expect(saved.get(e)?.[0]?.entries).toHaveLength(0);
     expect(JSON.stringify(traces)).not.toContain(entry.text);
     privateReads.add(d);
+    expect(groupEntryUnread(entry, d)).toBe(true);
     await peers.get(d)!.markRead(room, [entry.hash]);
+    expect(groupEntryUnread(saved.get(d)![0].entries[0], d)).toBe(false);
     expect(saved.get(d)?.[0]?.entries[0].receipts?.find(receipt => receipt.by === d)?.state).toBe('received');
     const received = saved.get(d)![0].entries[0].receipts!.find(receipt => receipt.by === d)!;
     await peers.get(b)!.receive(d, { type:'receipts', group:room, receipts:[{ ...received, state:'read' }] });
@@ -122,6 +126,39 @@ describe('experimental closed MLS groups', () => {
         expect(proofs.filter(proof => proof.state === 'read').map(proof => proof.by).sort()).toEqual([b, e].sort());
       }
     });
+
+    delayedRecipient = d;
+    const olderTime = Date.now() + 60_000, newerTime = olderTime + 60_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(olderTime);
+    try { await peers.get(c)!.send(room, 'Earlier sent, later delivered'); }
+    finally { clock.mockRestore(); }
+    const older = saved.get(c)![0].entries.at(-1)!;
+    delayedPacket = older.packet;
+    const nextClock = vi.spyOn(Date, 'now').mockReturnValue(newerTime);
+    try { await peers.get(b)!.send(room, 'Later sent, already read'); }
+    finally { nextClock.mockRestore(); }
+    await vi.waitFor(() => expect(saved.get(d)![0].entries.at(-1)?.sentAt).toBe(newerTime));
+    const newer = saved.get(d)![0].entries.at(-1)!;
+    await peers.get(d)!.markRead(room, [newer.hash]);
+    expect(saved.get(d)![0].entries.filter(post => groupEntryUnread(post, d))).toHaveLength(0);
+
+    const receptionTime = newerTime + 60_000;
+    const receiveClock = vi.spyOn(Date, 'now').mockReturnValue(receptionTime);
+    try { await peers.get(d)!.receive(b, { type:'message', group:room, packet:older.packet }); }
+    finally { receiveClock.mockRestore(); }
+    const caughtUp = saved.get(d)![0];
+    expect(caughtUp.activityAt).toBe(receptionTime);
+    const ordered = groupChronology(caughtUp.entries);
+    expect(ordered.slice(-2).map(post => post.sentAt)).toEqual([olderTime, newerTime]);
+    expect(ordered.filter(post => groupEntryUnread(post, d)).map(post => post.id)).toEqual([older.id]);
+    expect(ordered.at(-1)?.id).toBe(newer.id);
+    await peers.get(d)!.receive(b, { type:'message', group:room, packet:older.packet });
+    expect(saved.get(d)![0].activityAt).toBe(receptionTime);
+    expect(saved.get(d)![0].entries).toHaveLength(caughtUp.entries.length);
+
+    const [legacy] = restoreGroups([{ ...caughtUp, entries:[{ ...newer, sentAt:undefined, unread:undefined }] }]);
+    expect(legacy.entries[0].sentAt).toBeUndefined();
+    expect(groupEntryUnread(legacy.entries[0], d)).toBe(false);
   }, 20000);
 
   it('adds and removes members through MLS, recovers a missed commit, and hands over administration', async () => {

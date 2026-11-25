@@ -13,7 +13,7 @@ import GroupCreateDialog from '$lib/groups/GroupCreateDialog.svelte';
 import NewChatMenu, { newChatViewFromLayer, type NewChatView } from '$lib/chat/NewChatMenu.svelte';
 import NewChatPicker from '$lib/chat/NewChatPicker.svelte';
 import { GroupController } from '$lib/groups/GroupController';
-import { groupPeers, groupVisible, type GroupRooms } from '$lib/groups/storage';
+import { groupChronology, groupEntryUnread, groupPeers, groupVisible, type GroupRooms } from '$lib/groups/storage';
 import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -1081,7 +1081,8 @@ const conversationItems=$derived([
     .filter(room => room.title.toLowerCase().includes(chatSearch.trim().toLowerCase()))
     .map(room => ({
       kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
-      time:room.activityAt ?? 0,
+      time:room.activityAt ?? 0, last:groupChronology(room.entries).at(-1),
+      unread:room.entries.filter(entry => groupEntryUnread(entry, address)).length,
     })) : [])
 ].sort((a,b)=>b.time-a.time));
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
@@ -6906,9 +6907,10 @@ async function changePassword(): Promise<void> {
             <span class="local-agent-avatar" aria-hidden="true"><ChatIcon name="group" /></span>
             <span class="local-agent-row-text">
               <strong>{room.title}</strong>
-              <span class="chat-preview">{room.entries.at(-1)?.text ?? $i18n.text(room.mls ? 'Пока нет сообщений.' : room.owner === address || room.draft ? 'Ожидаем подключения к группе' : 'Приглашение в закрытую группу')}</span>
+              <span class="chat-preview">{item.last?.text ?? $i18n.text(room.mls ? 'Пока нет сообщений.' : room.owner === address || room.draft ? 'Ожидаем подключения к группе' : 'Приглашение в закрытую группу')}</span>
             </span>
             {#if item.invitation}<span class="group-invite-badge" aria-hidden="true">!</span>{/if}
+            {#if item.unread}<span class="unread-badge" aria-label={$i18n("m_fe510dbd63e0", { v0:item.unread })}>{item.unread > 99 ? '99+' : item.unread}</span>{/if}
           </button>
         {:else}
           <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]} introduction={introductionStates[item.id] ? introductionLabels[introductionStates[item.id]] : undefined}
@@ -6940,7 +6942,7 @@ async function changePassword(): Promise<void> {
             }}
             exclude={peer => groupController?.exclude(groupId, peer) ?? Promise.reject(new Error('group_inactive'))}
             leave={successor => groupController?.leave(groupId, successor) ?? Promise.reject(new Error('group_inactive'))}
-            readEnabled={readReceiptsEnabled && !newChatView}
+            trackReads={!newChatView}
             markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
             send={text => groupController?.send(groupId, text) ?? Promise.reject(new Error('group_inactive'))}

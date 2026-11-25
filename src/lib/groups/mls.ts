@@ -11,7 +11,7 @@ import type { IdentityProvider } from '$lib/identity/identity';
 import { buildP256PKCS8 } from '$lib/identity/pkcs8';
 import { bytesToHex } from '$lib/message/encoding';
 import { GROUP_HISTORY, GROUP_KEY_HISTORY, encodedMls, groupMembers, type GroupCommit, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReady, type GroupReceipt } from './protocol';
-import { epochOf, validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
+import { epochOf, groupTimestamp, validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
 
 const suiteName = 'MLS_128_DHKEMP256_AES128GCM_SHA256_P256';
 const text = new TextEncoder();
@@ -66,6 +66,7 @@ const bytes = (encoded: string) => Uint8Array.from(atob(encoded), char => char.c
 const encode = (value: unknown) => text.encode(JSON.stringify(value));
 const leafProof = (room: string, signing: Uint8Array) => encode(['Automesh MLS leaf v1', room, bytesToBase64(signing)]);
 const postProof = (room: string, post: GroupPost) => encode(['Automesh group post v1', room, post.id, post.from, post.text]);
+const postTimeProof = (room: string, post: GroupPost) => encode(['Automesh group post time v1', room, post.id, post.sentAt]);
 const welcomeProof = (room: GroupRoom, packet: string) => encode(['Automesh group welcome v1', room.id, room.title, room.members, packet]);
 const receiptProof = (room: string, receipt: Pick<GroupReceipt, 'hash' | 'by' | 'state'>) =>
   encode(['Automesh group receipt v1', room, receipt.hash, receipt.by, receipt.state]);
@@ -281,8 +282,10 @@ export async function groupPacketHash(packet: string): Promise<string> {
 
 export async function encryptGroupPost(room: GroupRoom, post: GroupPost, identity: IdentityProvider) {
   const key = bytesToBase64(await identity.getPublicKeyBytes());
+  // The original author proof keeps messages readable on older clients.
   const signature = bytesToBase64(await identity.sign(postProof(room.id, post)));
-  const result = await createApplicationMessage(loadState(room), encode({ ...post, key, signature }), await cryptoSuite());
+  const timeSignature = groupTimestamp(post.sentAt) ? bytesToBase64(await identity.sign(postTimeProof(room.id, post))) : undefined;
+  const result = await createApplicationMessage(loadState(room), encode({ ...post, key, signature, timeSignature }), await cryptoSuite());
   result.consumed.forEach(zeroOutUint8Array);
   const packet = bytesToBase64(encodeMlsMessage({ wireformat:'mls_private_message', version:'mls10', privateMessage:result.privateMessage }));
   if (!encodedMls(packet, 6000)) throw new Error('group_text_too_long');
@@ -300,13 +303,15 @@ export async function decryptGroupPost(room: GroupRoom, packet: string, hash: st
   const result = await processPrivateMessage(loadState(room), message.privateMessage, emptyPskIndex, await cryptoSuite());
   if (result.kind !== 'applicationMessage') throw new Error('group_invalid_post');
   try {
-    const post = JSON.parse(decoder.decode(result.message)) as Partial<GroupPost & { key: string; signature: string }> | null;
-    const key = post?.key, signature = post?.signature;
+    const post = JSON.parse(decoder.decode(result.message)) as Partial<GroupPost & { key: string; signature: string; timeSignature: string }> | null;
+    const key = post?.key, signature = post?.signature, timeSignature = post?.timeSignature;
     // The public MLS API returns plaintext without the sender's leaf index.
     // This inner proof preserves authorship when an existing member relays it.
     if (!validPost(post) || !room.members.includes(post.from) || !audience.includes(post.from) || !await verify(post.from, key, signature, postProof(room.id, post)))
       throw new Error('group_invalid_author');
-    const entry = { id:post.id, from:post.from, text:post.text, packet, hash, epoch, audience };
+    const sentAt = groupTimestamp(post.sentAt) && await verify(post.from, key, timeSignature, postTimeProof(room.id, post))
+      ? post.sentAt : undefined;
+    const entry = { id:post.id, from:post.from, text:post.text, sentAt, packet, hash, epoch, audience };
     return { mls:bytesToBase64(encodeGroupState(result.newState)), entry };
   } finally {
     result.message.fill(0);

@@ -4,7 +4,7 @@ import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost,
 import { GroupMembership } from './GroupMembership';
 import { GROUP_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
   type GroupFrame, type GroupReceipt, type GroupTransport } from './protocol';
-import { epochOf, groupAudience, groupPeers, validPost, type GroupEntry, type GroupRoom, type GroupRooms } from './storage';
+import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupRoom, type GroupRooms } from './storage';
 
 type GroupPort = {
   self: string;
@@ -134,10 +134,10 @@ export class GroupController {
   async send(id: string, text: string) {
     return this.run(async () => {
       const room = this.room(id);
-      const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim() };
+      const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim(), sentAt:Date.now() };
       if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
-      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:Date.now() };
+      const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:post.sentAt };
       await this.save(next);
       this.relay(next, { type:'message', group:id, packet:entry.packet });
       for (const peer of groupPeers(next, this.port.self)) {
@@ -149,19 +149,24 @@ export class GroupController {
   async markRead(id: string, hashes: string[]) {
     return this.run(async () => {
       const room = this.room(id);
-      if (!room?.mls || room.leaving || !this.port.readsEnabled?.()) return;
+      if (!room?.mls || room.leaving) return;
       const visible = new Set(hashes);
-      const receipts: GroupReceipt[] = [];
-      const entries = await Promise.all(room.entries.map(async entry => {
-        if (entry.from === this.port.self || !visible.has(entry.hash) ||
-          entry.receipts?.some(receipt => receipt.by === this.port.self && receipt.state === 'read')) return entry;
-        const receipt = await this.signReceipt(room, entry, 'read');
-        receipts.push(receipt);
-        return withReceipt(entry, receipt);
-      }));
-      if (!receipts.length || !this.port.readsEnabled?.()) return;
+      const unread = room.entries.filter(entry => groupEntryUnread(entry, this.port.self) && visible.has(entry.hash));
+      if (!unread.length) return;
+      const readIds = new Set(unread.map(entry => entry.hash));
+      const signed = this.port.readsEnabled?.()
+        ? await Promise.all(unread.map(entry => this.signReceipt(room, entry, 'read').catch(() => undefined)))
+        : [];
+      const receipts = this.port.readsEnabled?.() ? signed.filter(receipt => receipt !== undefined) : [];
+      const byHash = new Map(receipts.map(receipt => [receipt.hash, receipt]));
+      const entries = room.entries.map(entry => {
+        if (!readIds.has(entry.hash)) return entry;
+        const read = { ...entry, unread:undefined };
+        const receipt = byHash.get(entry.hash);
+        return receipt ? withReceipt(read, receipt) : read;
+      });
       await this.save({ ...room, entries });
-      this.relayReceipts(room, receipts);
+      if (this.port.readsEnabled?.()) this.relayReceipts(room, receipts);
     });
   }
 
@@ -407,7 +412,7 @@ export class GroupController {
       }
       const { mls, entry } = await decryptGroupPost(room, frame.packet, hash);
       if (entry.from === this.port.self || room.entries.some(item => item.id === entry.id)) return;
-      const received = await this.ownReceived(room, entry);
+      const received = await this.ownReceived(room, { ...entry, unread:true });
       const next = { ...room, mls, entries:[...room.entries, received].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
       void this.deliver(entry.from, { type:'ack', group:room.id, hash });

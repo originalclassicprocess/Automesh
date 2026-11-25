@@ -3,8 +3,8 @@ import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupM
   validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
-export type GroupPost = { id: string; from: string; text: string };
-export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; receivedBy?: string[]; receipts?: GroupReceipt[] };
+export type GroupPost = { id: string; from: string; text: string; sentAt?: number };
+export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
@@ -24,6 +24,18 @@ export type GroupChange = { plan: GroupPlan; commit: GroupCommit; previous: stri
 export const epochOf = (room: GroupRoom) => room.epoch ?? 1;
 export const groupVisible = (room: GroupRoom) => !room.departed && !room.leaving;
 export const groupAudience = (room: GroupRoom, entry: GroupEntry) => entry.audience ?? room.members;
+
+export const groupTimestamp = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 8.64e15;
+export const groupEntryUnread = (entry: GroupEntry, self: string) => entry.unread === true && entry.from !== self;
+
+export function groupChronology(entries: readonly GroupEntry[]): GroupEntry[] {
+  return [...entries].sort((a, b) => {
+    if (a.sentAt === undefined) return b.sentAt === undefined ? 0 : -1;
+    if (b.sentAt === undefined) return 1;
+    return a.sentAt - b.sentAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
+}
 
 export function groupPeers(room: GroupRoom, self: string): string[] {
   if (room.departed) return [];
@@ -61,6 +73,8 @@ export function restoreGroups(value: unknown): GroupRooms {
       return {
         id:entry.id, from:entry.from, text:entry.text, hash:entry.hash, packet:entry.packet, audience,
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
+        ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
+        ...(entry.unread === true ? { unread:true as const } : {}),
         receivedBy: Array.isArray(entry.receivedBy)
           ? audience.filter(peer => peer !== entry.from && entry.receivedBy!.includes(peer)) : [],
         receipts: Array.isArray(entry.receipts) ? audience.flatMap(peer => {
