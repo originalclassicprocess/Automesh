@@ -1,9 +1,10 @@
 import type { IdentityProvider } from '$lib/identity/identity';
 import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost, establishGroup, groupPacketHash,
   signGroupReceipt, signGroupWelcome, validateJoinKey, verifyGroupReceipt, verifyGroupWelcome } from './mls';
-import { GROUP_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, parseGroupFrame,
+import { GroupMembership } from './GroupMembership';
+import { GROUP_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
   type GroupFrame, type GroupReceipt, type GroupTransport } from './protocol';
-import { validPost, type GroupEntry, type GroupRoom, type GroupRooms } from './storage';
+import { epochOf, groupAudience, groupPeers, validPost, type GroupEntry, type GroupRoom, type GroupRooms } from './storage';
 
 type GroupPort = {
   self: string;
@@ -18,8 +19,10 @@ type GroupPort = {
   transport: GroupTransport;
 };
 
-function receiptBits(room: GroupRoom, receipt: GroupReceipt): number {
-  const bit = 1 << room.members.indexOf(receipt.by);
+function receiptBits(room: GroupRoom, entry: GroupEntry, receipt: GroupReceipt): number {
+  const index = groupAudience(room, entry).indexOf(receipt.by);
+  if (index < 0) return 0;
+  const bit = 1 << index;
   return receipt.state === 'read' ? bit | (bit << MAX_GROUP_MEMBERS) : bit;
 }
 
@@ -32,7 +35,13 @@ export class GroupController {
   private syncing = new Set<string>();
   private hellos = new Set<string>();
   private welcomed = new Set<string>();
-  constructor(private readonly port: GroupPort) {}
+  private peerEpochs = new Map<string, number>();
+  private readonly membership: GroupMembership;
+  constructor(private readonly port: GroupPort) {
+    this.membership = new GroupMembership({
+      ...port, save:room => this.save(room), deliver:(peer, frame) => this.deliver(peer, frame),
+    });
+  }
 
   private run<T>(action: () => Promise<T>): Promise<T> {
     const result = this.tail.then(() => {
@@ -47,8 +56,9 @@ export class GroupController {
   private async save(room: GroupRoom) {
     if (!this.port.active()) throw new Error('group_inactive');
     const rooms = this.port.rooms();
-    await this.port.save(rooms.some(item => item.id === room.id)
-      ? rooms.map(item => item.id === room.id ? room : item) : [...rooms, room]);
+    const updated = rooms.some(item => item.id === room.id)
+      ? rooms.map(item => item.id === room.id ? room : item) : [...rooms, room];
+    await this.port.save([...updated.filter(item => !item.departed), ...updated.filter(item => item.departed).slice(-MAX_GROUPS * 7)]);
   }
 
   private async deliver(peer: string, value: GroupFrame) {
@@ -64,8 +74,8 @@ export class GroupController {
   async create(title: string, selected: string[]): Promise<string> {
     return this.run(async () => {
       const members = [this.port.self, ...selected];
-      if (!groupTitle(title) || !groupMembers(members) || selected.some(peer => !this.port.contact(peer)) ||
-        this.port.rooms().length >= MAX_GROUPS) throw new Error('group_invalid_selection');
+      if (!groupTitle(title) || !selected.length || !groupMembers(members) || selected.some(peer => !this.port.contact(peer)) ||
+        this.port.rooms().filter(room => !room.departed).length >= MAX_GROUPS) throw new Error('group_invalid_selection');
       const room: GroupRoom = { id:crypto.randomUUID(), title, members, owner:this.port.self, keys:{}, entries:[], activityAt:Date.now() };
       await this.save(room);
       for (const peer of selected) void this.hello(room, peer);
@@ -76,10 +86,40 @@ export class GroupController {
   async accept(id: string) {
     return this.run(async () => {
       const room = this.room(id);
-      if (!room || room.owner === this.port.self || room.mls || !this.port.contact(room.owner)) throw new Error('group_invite_unavailable');
+      if (!room || room.departed || room.owner === this.port.self || room.mls || !this.port.contact(room.owner)) throw new Error('group_invite_unavailable');
       const accepted = room.draft ? room : { ...room, draft:await createGroupKey(room, this.port.self, this.port.identity) };
       if (!room.draft) await this.save(accepted);
       for (const peer of room.members) if (peer !== this.port.self) void this.hello(accepted, peer);
+    });
+  }
+
+  invite(id: string, peer: string) {
+    return this.changeMembership(id, room => this.membership.invite(room, peer));
+  }
+
+  exclude(id: string, peer: string) {
+    return this.changeMembership(id, room => this.membership.exclude(room, peer));
+  }
+
+  leave(id: string, successor?: string) {
+    return this.changeMembership(id, room => this.membership.leave(room, successor));
+  }
+
+  private changeMembership(id: string, action: (room: GroupRoom) => Promise<void>) {
+    return this.run(async () => {
+      const room = this.room(id);
+      if (!room || room.departed) throw new Error('group_change_unavailable');
+      await action(await this.signedWelcome(room));
+    });
+  }
+
+  resumeMembership() {
+    return this.run(async () => {
+      for (const room of this.port.rooms()) {
+        if (room.plan || room.leaves?.length) {
+          await this.membership.resume(room).catch(() => {});
+        }
+      }
     });
   }
 
@@ -87,7 +127,7 @@ export class GroupController {
     return this.run(async () => {
       const room = this.room(id);
       const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim() };
-      if (!room?.mls || !validPost(post)) throw new Error('group_message_unavailable');
+      if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
       const next = { ...room, mls, entries:[...room.entries, entry].slice(-GROUP_HISTORY), activityAt:Date.now() };
       await this.save(next);
@@ -98,7 +138,7 @@ export class GroupController {
   async markRead(id: string, hashes: string[]) {
     return this.run(async () => {
       const room = this.room(id);
-      if (!room?.mls || !this.port.readsEnabled?.()) return;
+      if (!room?.mls || room.leaving || !this.port.readsEnabled?.()) return;
       const visible = new Set(hashes);
       const receipts: GroupReceipt[] = [];
       const entries = await Promise.all(room.entries.map(async entry => {
@@ -125,13 +165,13 @@ export class GroupController {
   }
 
   private async ownReceived(room: GroupRoom, entry: GroupEntry): Promise<GroupEntry> {
-    if (entry.from === this.port.self || entry.receipts?.some(receipt => receipt.by === this.port.self)) return entry;
+    if (!groupAudience(room, entry).includes(this.port.self) || entry.from === this.port.self || entry.receipts?.some(receipt => receipt.by === this.port.self)) return entry;
     try { return withReceipt(entry, await this.signReceipt(room, entry, 'received')); }
     catch { return entry; } // Receipt signing must not prevent saving a message.
   }
 
   private async signedWelcome(room: GroupRoom): Promise<GroupRoom> {
-    if (room.owner !== this.port.self || !room.welcome || room.welcomeProof) return room;
+    if (room.owner !== this.port.self || epochOf(room) !== 1 || !room.welcome || room.welcomeProof) return room;
     const next = { ...room, welcomeProof:await signGroupWelcome(room, room.welcome, this.port.identity) };
     await this.save(next);
     return next;
@@ -147,48 +187,60 @@ export class GroupController {
 
   private async hello(room: GroupRoom, peer: string, repeatWelcome = false) {
     const key = `${room.id}:${peer}`;
+    if (room.departed) return;
     const phase = `${key}:${repeatWelcome ? 'repeat-welcome' : room.mls ? 'active' : room.draft ? 'accepted' : 'invited'}`;
     if (this.hellos.has(phase)) return;
     this.hellos.add(phase);
     try {
+      const peerEpoch = this.peerEpochs.get(key);
+      // An original invitee may still need the epoch-one Welcome before later commits.
+      if (epochOf(room) > 1 && (peerEpoch ?? 0) <= 1 && room.welcomeProof &&
+        room.changes?.find(change => change.plan.epoch === 1)?.previous.includes(peer)) {
+        await this.sendWelcome(room, peer, false);
+      }
+      await this.membership.sync(room, peer, peerEpoch);
+      if (!room.members.includes(peer) || room.offer && !room.mls) return;
       if (room.owner === this.port.self) {
         if (!room.mls) {
           await this.deliver(peer, { type:'invite', group:room.id, title:room.title, members:room.members });
           return;
         }
-        if (room.welcome && (repeatWelcome || !this.welcomed.has(key))) {
+        if (epochOf(room) === 1 && room.welcome && (repeatWelcome || !this.welcomed.has(key))) {
           await this.sendWelcome(room, peer, true);
         }
-      } else if (repeatWelcome) {
+      } else if (repeatWelcome && epochOf(room) === 1) {
         await this.sendWelcome(room, peer, false);
       } else if (!room.mls && room.draft) {
         await this.deliver(peer, { type:'join', group:room.id, packet:room.draft.packet });
         return;
       }
       if (room.mls) await this.deliver(peer, {
-        type:'sync', group:room.id, known:room.entries.map(entry => entry.hash), hasWelcome:!!room.welcomeProof,
-        seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, receipt), 0)),
+        type:'sync', group:room.id, known:room.entries.map(entry => entry.hash), hasWelcome:!!room.welcomeProof, epoch:epochOf(room),
+        seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, entry, receipt), 0)),
       });
     } finally { this.hellos.delete(phase); }
   }
 
   peerOnline(peer: string) {
-    for (const room of this.port.rooms()) if (room.members.includes(peer) && peer !== this.port.self) void this.hello(room, peer);
+    for (const room of this.port.rooms()) {
+      if (groupPeers(room, this.port.self).includes(peer)) void this.hello(room, peer);
+    }
   }
 
   private async reply(room: GroupRoom, peer: string, known: string[], seen?: number[]) {
     const key = room.id + ':' + peer;
     if (this.syncing.has(key)) return;
     this.syncing.add(key);
+    const shareable = room.entries.filter(entry => groupAudience(room, entry).includes(peer));
     const inventory = new Map(known.map((hash, index) => [hash, seen?.[index] ?? 0]));
     try {
-      for (const entry of room.entries) {
+      for (const entry of shareable) {
         if (!this.port.active() || !this.port.transport.ready(peer)) break;
         if (!inventory.has(entry.hash)) await this.deliver(peer, { type:'message', group:room.id, packet:entry.packet });
       }
       if (seen) {
-        const missing = room.entries.flatMap(entry => (entry.receipts ?? []).filter(receipt => {
-          const bits = receiptBits(room, receipt);
+        const missing = shareable.flatMap(entry => (entry.receipts ?? []).filter(receipt => {
+          const bits = receiptBits(room, entry, receipt);
           return ((inventory.get(entry.hash) ?? 0) & bits) !== bits;
         }));
         for (let offset = 0; offset < missing.length && this.port.transport.ready(peer); offset += GROUP_RECEIPT_BATCH) {
@@ -203,7 +255,7 @@ export class GroupController {
     const accepted: GroupReceipt[] = [];
     for (const receipt of receipts) {
       const entry = entries.get(receipt.hash);
-      if (!entry || receipt.by === entry.from || !room.members.includes(receipt.by)) continue;
+      if (!entry || receipt.by === entry.from || !groupAudience(room, entry).includes(receipt.by)) continue;
       const existing = entry.receipts?.find(item => item.by === receipt.by);
       if (existing && (existing.state === 'read' || existing.state === receipt.state)) continue;
       if (!await verifyGroupReceipt(room.id, receipt)) continue;
@@ -219,7 +271,7 @@ export class GroupController {
     const known = new Set(hashes);
     let changed = false;
     const entries = room.entries.map(entry => {
-      if (entry.from !== this.port.self || !known.has(entry.hash) || entry.receivedBy?.includes(peer)) return entry;
+      if (entry.from !== this.port.self || !known.has(entry.hash) || !groupAudience(room, entry).includes(peer) || entry.receivedBy?.includes(peer)) return entry;
       changed = true;
       return { ...entry, receivedBy: [...(entry.receivedBy ?? []), peer] };
     });
@@ -231,16 +283,24 @@ export class GroupController {
     if (!frame || !this.port.allowed(peer) || peer === this.port.self) return Promise.resolve();
     return this.run(async () => {
       const room = this.room(frame.group);
+      if (isMembershipFrame(frame)) {
+        await this.membership.receive(room, peer, frame);
+        return;
+      }
       if (frame.type === 'invite') {
-        if (!this.port.contact(peer) || !frame.members.includes(peer) || !frame.members.includes(this.port.self)) return;
+        if (frame.members.length < 2 || !this.port.contact(peer) || !frame.members.includes(peer) || !frame.members.includes(this.port.self)) return;
         if (room) {
-          if (room.owner === peer && !room.mls && room.draft) void this.hello(room, peer);
-        } else if (this.port.rooms().length < MAX_GROUPS) {
+          if (!room.departed && !room.offer && room.owner === peer && !room.mls && room.draft) void this.hello(room, peer);
+        } else if (this.port.rooms().filter(room => !room.departed).length < MAX_GROUPS) {
           await this.save({ id:frame.group, title:frame.title, owner:peer, members:frame.members, keys:{}, entries:[], activityAt:Date.now() });
         }
         return;
       }
-      if (!room?.members.includes(peer)) return;
+      if (!room || room.departed || room.offer && !room.mls) return;
+      if (!room.members.includes(peer)) {
+        if (frame.type === 'sync') void this.membership.sync(room, peer, frame.epoch ?? 1);
+        return;
+      }
       if (frame.type === 'join') {
         const ownsGroup = room.owner === this.port.self;
         if (ownsGroup ? !this.port.contact(peer) : !room.mls || !room.welcomeProof) return;
@@ -279,13 +339,19 @@ export class GroupController {
         for (const member of room.members) if (member !== this.port.self) void this.hello(joined, member);
         return;
       }
-      if (!room.mls) return;
+      if (!room.mls || (room.leaving && frame.type !== 'sync')) return;
       if (frame.type === 'sync') {
+        const epoch = frame.epoch ?? 1;
+        if (epoch !== epochOf(room)) {
+          if (epoch < epochOf(room)) void this.membership.sync(room, peer, epoch);
+          return;
+        }
+        this.peerEpochs.set(room.id + ':' + peer, epoch);
         this.welcomed.add(`${room.id}:${peer}`);
         await this.acknowledge(room, peer, frame.known);
         let current = this.room(room.id)!;
         if (frame.seen) {
-          if (!frame.hasWelcome) {
+          if (!frame.hasWelcome && epoch === 1) {
             current = await this.signedWelcome(current);
             if (current.welcomeProof) void this.sendWelcome(current, peer, false);
           }

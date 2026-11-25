@@ -3363,5 +3363,16 @@
   "m_9827a694f987": "Add a local model in AI settings.",
   "m_b8cc75002ba1": "Connect your radio and enable Meshtastic channels in LoRa settings.",
   "m_28ec73ee59ab": "Read by",
-  "m_f82ed010cea4": "Invitation accepted. Waiting for group keys from members."
+  "m_f82ed010cea4": "Invitation accepted. Waiting for group keys from members.",
+  "m_54963d7c8d00": "Updating group keys. The update resumes automatically when offline members reconnect.",
+  "m_69a7be5570b3": "Remove this member from the group?",
+  "m_5ce49d01fe7d": "Leave this group?",
+  "m_e6eeca62e878": "Who should become the group administrator?",
+  "m_1ab3f1af4224": "Choose a member",
+  "m_970575549a13": "Remove",
+  "m_936c75e2e664": "Leave group",
+  "m_6c7719973e58": "Administrator",
+  "m_fc56b9aa9a8d": "Invitation sent",
+  "m_90e850e19607": "Choose a contact",
+  "m_4e313d1664c2": "Invite"
 }

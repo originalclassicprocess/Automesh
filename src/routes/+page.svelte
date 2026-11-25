@@ -13,7 +13,7 @@ import GroupCreateDialog from '$lib/groups/GroupCreateDialog.svelte';
 import NewChatMenu, { newChatViewFromLayer, type NewChatView } from '$lib/chat/NewChatMenu.svelte';
 import NewChatPicker from '$lib/chat/NewChatPicker.svelte';
 import { GroupController } from '$lib/groups/GroupController';
-import type { GroupRooms } from '$lib/groups/storage';
+import { groupPeers, groupVisible, type GroupRooms } from '$lib/groups/storage';
 import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -497,7 +497,7 @@ let peerCardAddress = $state('');
 let peerQr = $state('');
 let trustedDeviceChoice = $state(true);
 let trustedSession = $state(false);
-const activeGroup = $derived(trustedSession && profileNetwork ? groupRooms.find(room => room.id === selectedGroupId) : undefined);
+const activeGroup = $derived(trustedSession && profileNetwork ? groupRooms.find(room => room.id === selectedGroupId && groupVisible(room)) : undefined);
 let pendingExit = $state<'lock' | 'logout' | null>(null);
 let deleteHistoryChoice = $state(true);
 let endingSession = $state(false);
@@ -1077,6 +1077,7 @@ const conversationItems=$derived([
     ? [{ kind: 'agent' as const, id: 'local', time: Number.MAX_SAFE_INTEGER - 1 }] : []),
   ...nativeListed.map(channel=>({kind:'radio' as const,id:nativeToken(channel),channel,time:channel.messages.at(-1)?.timestamp??0})),
   ...(trustedSession && profileNetwork ? groupRooms
+    .filter(groupVisible)
     .filter(room => room.title.toLowerCase().includes(chatSearch.trim().toLowerCase()))
     .map(room => ({
       kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
@@ -1744,7 +1745,7 @@ async function changeOwnAvatar(file: File | null, crop?: AvatarCrop): Promise<vo
 
 function applyChatData(saved: LocalChatData): void {
   resetAgent();
-  groupRooms = (saved.experimentalGroups ?? []).filter(room => room.members.includes(address));
+  groupRooms = (saved.experimentalGroups ?? []).filter(room => room.departed === address || room.members.includes(address));
   agentSettings=normalizeAgentSettings(saved.agentSettings);
   agentLimits=normalizeAgentChatLimits(saved.agentChatLimits);
   localAgentHistory=normalizeLocalAgentHistory(saved.localAgentHistory);
@@ -2070,7 +2071,7 @@ function restorePageRoute(route: PageRoute): void {
   newChatView = route.view === 'chats' && profileNetwork && (composeView !== 'group' || trustedSession) ? composeView : '';
   if (route.peer && !sessionChats.byPeer[route.peer]) return;
   localAgentOpen = route.localAgent === true && profileNetwork;
-  selectedGroupId = trustedSession && profileNetwork && groupRooms.some(room => room.id === route.group) ? route.group! : '';
+  selectedGroupId = trustedSession && profileNetwork && groupRooms.some(room => room.id === route.group && groupVisible(room)) ? route.group! : '';
   nativeOpen = !localAgentOpen && !selectedGroupId && profileNetwork && meshtastic.enabled && route.radio !== undefined &&
     (!route.radio || meshtastic.channels.some(channel => nativeToken(channel) === route.radio));
   if (nativeOpen && route.radio !== nativeSelected) selectNativeChannel(route.radio ?? '');
@@ -5185,7 +5186,10 @@ async function initializeChat() {
         requireStorageEpoch(epoch);
         if (!groupActive()) throw new Error('group_inactive');
         await saveLocalChatData(key, groupAccount, { ...chatSnapshot(), experimentalGroups:rooms });
-        if (generation === authGeneration && address === groupAccount) groupRooms = rooms;
+        if (generation === authGeneration && address === groupAccount) {
+          groupRooms = rooms;
+          if (rooms.some(room => room.id === selectedGroupId && !groupVisible(room))) showChatList();
+        }
       });
     },
   });
@@ -5692,7 +5696,8 @@ function chatSnapshot(): LocalChatData {
 function wakeGroupConnections(): void {
   if (!chat || !groupController || !trustedSession || !profileNetwork || navigationBusy()) return;
   const service = chat;
-  for (const peer of new Set(groupRooms.flatMap(room => room.members))) {
+  if (groupRooms.some(room => room.plan || room.leaves?.length)) void groupController.resumeMembership().catch(() => {});
+  for (const peer of new Set(groupRooms.flatMap(room => groupPeers(room, address)))) {
     if (peer === address || sessionChats.byPeer[peer]?.contact === 'blocked') continue;
     if (service.isDirectReady(peer)) groupController.peerOnline(peer);
     else void service.connect(peer).catch(() => {});
@@ -5713,7 +5718,7 @@ function finishNewChat(open?: () => void): void {
 }
 
 function openGroupChat(id: string): void {
-  if (navigationBusy() || ephemeralOpening || !trustedSession || !profileNetwork || !groupRooms.some(room => room.id === id)) return;
+  if (navigationBusy() || ephemeralOpening || !trustedSession || !profileNetwork || !groupRooms.some(room => room.id === id && groupVisible(room))) return;
   nativeOpen = false; localAgentOpen = false; selectedGroupId = id;
   sessionChats = { ...sessionChats, activePeer: '' };
   mobilePane = 'chat';
@@ -6924,6 +6929,14 @@ async function changePassword(): Promise<void> {
           {@const groupId = activeGroup.id}
           <GroupChat room={activeGroup} self={address} name={contactName} photo={contactPhoto}
             connected={connectedGroupPeers} blocked={navigationBusy()} welcomeFailed={groupWelcomeErrors.has(groupId)}
+            contacts={newChatContacts}
+            invite={async peer => {
+              if (!groupController) throw new Error('group_inactive');
+              await groupController.invite(groupId, peer);
+              wakeGroupConnections();
+            }}
+            exclude={peer => groupController?.exclude(groupId, peer) ?? Promise.reject(new Error('group_inactive'))}
+            leave={successor => groupController?.leave(groupId, successor) ?? Promise.reject(new Error('group_inactive'))}
             readEnabled={readReceiptsEnabled && !newChatView}
             markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}

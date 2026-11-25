@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { tr as i18n } from '$lib/i18n/language';
+  import CompactDialog from '$lib/application/CompactDialog.svelte';
   import Avatar from '$lib/chat/Avatar.svelte';
   import ChatIcon from '$lib/chat/ChatIcon.svelte';
   import MessageCard from '$lib/chat/MessageCard.svelte';
   import MessageText from '$lib/chat/MessageText.svelte';
   import { createChatScroll } from '$lib/chat/chat-scroll';
   import { submitOnEnter } from '$lib/chat/conversation-list';
-  import { GROUP_TEXT_BYTES } from './protocol';
-  import type { GroupRoom } from './storage';
+  import { GROUP_TEXT_BYTES, MAX_GROUP_MEMBERS } from './protocol';
+  import { groupAudience, type GroupRoom } from './storage';
 
-  let { room, self, name, photo, connected, blocked, welcomeFailed, readEnabled, markRead, accept, send, sync, direct, back }: {
+  let { room, self, name, photo, connected, blocked, welcomeFailed, contacts, invite, exclude, leave, readEnabled, markRead, accept, send, sync, direct, back }: {
     room: GroupRoom; self: string; name(peer: string): string; photo(peer: string): string;
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
+    contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
     readEnabled: boolean; markRead(hashes: string[]): Promise<void>;
     accept(): Promise<void>; send(text: string): Promise<void>; sync(): void; direct(): void; back(): void;
   } = $props();
@@ -20,9 +22,40 @@
   let transcript = $state<HTMLDivElement>();
   let jump = $state(false), incoming = $state(0);
   const links = $derived(room.members.filter(peer => connected.has(peer)).length);
-  const recipients = $derived(room.members.length - 1);
+  let membersOpen = $state(false), confirming = $state<'leave' | 'exclude'>(), target = $state(''), invitee = $state('');
+  const owner = $derived(room.owner === self);
+  const others = $derived(room.members.filter(peer => peer !== self));
+  const available = $derived(contacts.filter(peer => peer !== self && !room.members.includes(peer) && room.offer?.target !== peer));
+  const needsSuccessor = $derived(owner && others.length > 0);
+  const canInvite = $derived(owner && !!room.mls && !room.plan && room.members.length < MAX_GROUP_MEMBERS);
+
+  function closeMembers() {
+    if (busy) return;
+    membersOpen = false;
+    confirming = undefined;
+    target = '';
+    invitee = '';
+    failed = false;
+    queueRead();
+  }
+
+  function confirm(action: 'leave' | 'exclude', peer = '') {
+    confirming = action;
+    target = peer;
+    failed = false;
+  }
+
+  function changeMembers() {
+    void act(async () => {
+      if (confirming === 'exclude') await exclude(target);
+      else await leave(needsSuccessor ? target : undefined);
+      confirming = undefined;
+      target = '';
+    });
+  }
+  const updatingKeys = $derived(!!room.plan && !room.plan.key);
   const draftBytes = $derived(new TextEncoder().encode(draft.trim()).length);
-  const canSend = $derived(!busy && !blocked && !!draftBytes && draftBytes <= GROUP_TEXT_BYTES);
+  const canSend = $derived(!busy && !blocked && !updatingKeys && !!draftBytes && draftBytes <= GROUP_TEXT_BYTES);
   const scrollMessages = $derived(room.entries.map(entry => ({
     id: entry.id, direction: entry.from === self ? 'outgoing' as const : 'incoming' as const,
   })));
@@ -90,6 +123,10 @@
     <button type="button" class="select-messages-button" onclick={direct} disabled={blocked}
       title={$i18n.text('Прямое подключение')} aria-label={$i18n.text('Прямое подключение')}><ChatIcon name="qr" /></button>
   {/if}
+  {#if room.mls || !owner}
+    <button type="button" class="select-messages-button" onclick={() => { membersOpen = true; failed = false; }} disabled={blocked}
+      title={$i18n.text('Участники группы')} aria-label={$i18n.text('Участники группы')}><ChatIcon name="group" /></button>
+  {/if}
   <button type="button" class="select-messages-button" onclick={sync} disabled={blocked}
     title={$i18n.text(room.mls ? 'Догрузить сообщения' : 'Обновить')}
     aria-label={$i18n.text(room.mls ? 'Догрузить сообщения' : 'Обновить')}><ChatIcon name="repeat" /></button>
@@ -101,6 +138,7 @@
     {#if room.mls}
       {#each room.entries as message (message.id)}
         {@const delivered = message.receipts?.length ?? 0}
+        {@const recipients = groupAudience(room, message).length - 1}
         {@const read = message.receipts?.filter(receipt => receipt.state === 'read').length ?? 0}
         <div data-chat-message-id={message.id} use:observeRead={message.hash}>
           <MessageCard outgoing={message.from === self} preview={message.text}>
@@ -140,10 +178,13 @@
   {/if}
 </div>
 
-{#if failed}<p role="alert">{$i18n.text('Действие с группой не выполнено. Проверьте подключение и попробуйте снова.')}</p>{/if}
+{#if failed && !membersOpen}<p role="alert">{$i18n.text('Действие с группой не выполнено. Проверьте подключение и попробуйте снова.')}</p>{/if}
 {#if room.mls}
+  {#if updatingKeys}
+    <small class="membership-status" role="status">{$i18n.text('Обновляем ключи группы. Если кто-то не на связи, обновление продолжится автоматически после подключения.')}</small>
+  {/if}
   <form class="composer" onsubmit={event => { event.preventDefault(); submit(); }}>
-    <textarea rows="1" bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
+    <textarea rows="1" disabled={updatingKeys} bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
       aria-label={$i18n.text('Сообщение группе')} onkeydown={event => {
         if (submitOnEnter(event)) { event.preventDefault(); submit(); }
       }}></textarea>
@@ -153,10 +194,76 @@
   </form>
 {/if}
 
+{#if membersOpen}
+  <CompactDialog title={$i18n.text('Участники группы')} literalTitle onClose={closeMembers}>
+    {#if confirming}
+      {#if confirming === 'exclude'}
+        <p>{$i18n.text('Исключить участника из группы?')} <strong>{name(target)}</strong></p>
+      {:else}
+        <p>{$i18n.text('Выйти из группы?')}</p>
+        {#if needsSuccessor}
+          <label for="group-successor">{$i18n.text('Кому передать управление группой?')}</label>
+          <select id="group-successor" bind:value={target} disabled={busy}>
+            <option value="">{$i18n.text('Выбрать участника')}</option>
+            {#each others as peer (peer)}<option value={peer}>{name(peer)}</option>{/each}
+          </select>
+        {/if}
+      {/if}
+      <div class="member-actions">
+        <button type="button" class="primary" onclick={changeMembers}
+          disabled={busy || blocked || confirming === 'leave' && needsSuccessor && !target}>
+          {confirming === 'exclude' ? $i18n.text('Исключить') : $i18n.text('Выйти из группы')}
+        </button>
+        <button type="button" disabled={busy} onclick={() => { confirming = undefined; failed = false; }}>{$i18n.text('Отмена')}</button>
+      </div>
+    {:else}
+      <ul class="members">
+        {#each room.members as peer (peer)}
+          <li>
+            <Avatar accountId={peer} photo={photo(peer)} size={28} />
+            <span>{peer === self ? $i18n.text('Вы') : name(peer)}
+              {#if peer === room.owner}<small>{$i18n.text('Администратор')}</small>{/if}
+            </span>
+            {#if owner && peer !== self && room.mls}
+              <button type="button" disabled={busy || blocked || !!room.plan} onclick={() => confirm('exclude', peer)}>{$i18n.text('Исключить')}</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      {#if canInvite}
+        {#if room.offer}
+          <small class="membership-status">{$i18n.text('Приглашение отправлено')} · {name(room.offer.target)}</small>
+        {/if}
+        {#if available.length}
+          <form class="member-actions" onsubmit={event => {
+            event.preventDefault();
+            if (invitee) void act(async () => { await invite(invitee); invitee = ''; });
+          }}>
+            <select bind:value={invitee} disabled={busy} aria-label={$i18n.text('Выбрать контакт')}>
+              <option value="">{$i18n.text('Выбрать контакт')}</option>
+              {#each available as peer (peer)}<option value={peer}>{name(peer)}</option>{/each}
+            </select>
+            <button type="submit" disabled={busy || blocked || !invitee}>{$i18n.text('Пригласить')}</button>
+          </form>
+        {/if}
+      {/if}
+      <button type="button" disabled={busy || blocked || owner && !!room.plan} onclick={() => confirm('leave')}>{$i18n.text('Выйти из группы')}</button>
+    {/if}
+    {#if failed}<p role="alert">{$i18n.text('Действие с группой не выполнено. Проверьте подключение и попробуйте снова.')}</p>{/if}
+  </CompactDialog>
+{/if}
+
 <style>
   .peer-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .peer-heading .local-agent-avatar { display:grid; }
   .empty, .join-state { color:var(--muted); font-size:13px; }
   .join-state p:first-child, .empty { margin-top:0; }
+  .members { display:grid; gap:8px; list-style:none; padding:0; max-height:42dvh; overflow:auto; }
+  .members li { display:flex; align-items:center; gap:8px; min-width:0; }
+  .members li span { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .members li small { display:block; color:var(--muted); }
+  .member-actions { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+  select { max-width:100%; min-height:40px; }
+  .membership-status { display:block; color:var(--muted); }
   .join-state [role="alert"] { color:var(--danger); }
 </style>

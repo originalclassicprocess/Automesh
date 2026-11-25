@@ -1,36 +1,67 @@
+import { p256 } from '@noble/curves/nist.js';
 import {
   bytesToBase64, createApplicationMessage, createCommit, createGroup, decodeGroupState, decodeMlsMessage,
   defaultKeyPackageEqualityConfig, defaultLifetimeConfig, defaultPaddingConfig, emptyPskIndex, encodeGroupState,
   encodeMlsMessage, generateKeyPackageWithKey, getCiphersuiteFromName, getCiphersuiteImpl, joinGroup,
-  processPrivateMessage, zeroOutUint8Array, type ClientConfig, type ClientState, type Credential,
+  processPrivateMessage, processPublicMessage, zeroOutUint8Array, type ClientConfig, type ClientState, type Credential,
   type KeyPackage, type PrivateKeyPackage, type Proposal,
 } from 'ts-mls';
 import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import type { IdentityProvider } from '$lib/identity/identity';
 import { buildP256PKCS8 } from '$lib/identity/pkcs8';
 import { bytesToHex } from '$lib/message/encoding';
-import { GROUP_HISTORY, encodedMls, groupMembers, type GroupProof, type GroupReceipt } from './protocol';
-import { validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
+import { GROUP_HISTORY, GROUP_KEY_HISTORY, encodedMls, groupMembers, type GroupCommit, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReady, type GroupReceipt } from './protocol';
+import { epochOf, validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
 
 const suiteName = 'MLS_128_DHKEMP256_AES128GCM_SHA256_P256';
 const text = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 let suite: ReturnType<typeof getCiphersuiteImpl> | undefined;
-const cryptoSuite = () => suite ??= getCiphersuiteImpl(getCiphersuiteFromName(suiteName)).then(implementation => ({
-  ...implementation,
-  hpke: {
-    ...implementation.hpke,
-    async importPrivateKey(scalar) {
-      // HPKE's scalar-only PKCS#8 import can be rejected by Apple WebKit.
-      // Use the same SEC1 encoding as the account's P-256 identity importer.
-      const pkcs8 = buildP256PKCS8(scalar) as Uint8Array<ArrayBuffer>;
-      try {
-        const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name:'ECDH', namedCurve:'P-256' }, true, ['deriveBits']);
-        return key as Awaited<ReturnType<typeof implementation.hpke.importPrivateKey>>;
-      } finally { pkcs8.fill(0); }
+const cryptoSuite = () => suite ??= getCiphersuiteImpl(getCiphersuiteFromName(suiteName)).then(implementation => {
+  const importPrivateKey: typeof implementation.hpke.importPrivateKey = async scalar => {
+    // Apple's ECDH importer expects the SEC1 public point in PKCS#8.
+    const pkcs8 = buildP256PKCS8(scalar) as Uint8Array<ArrayBuffer>;
+    try {
+      const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name:'ECDH', namedCurve:'P-256' }, true, ['deriveBits']);
+      return key as Awaited<ReturnType<typeof implementation.hpke.importPrivateKey>>;
+    } finally { pkcs8.fill(0); }
+  };
+  return {
+    ...implementation,
+    hpke: {
+      ...implementation.hpke, importPrivateKey,
+      async deriveKeyPair(ikm) {
+        // RFC 9180 DHKEM(P-256, HKDF-SHA256) DeriveKeyPair. Import the same
+        // scalar as the upstream provider, using WebKit-compatible PKCS#8.
+        const material = hpkeInput('dkp_prk', ikm);
+        let prk: Uint8Array;
+        try { prk = await implementation.kdf.extract(new Uint8Array(), material); }
+        finally { material.fill(0); }
+        try {
+          for (let counter = 0; counter < 256; counter++) {
+            const candidate = await implementation.kdf.expand(prk, hpkeInput('candidate', Uint8Array.of(counter), true), 32);
+            try {
+              if (!p256.utils.isValidSecretKey(candidate)) continue;
+              return {
+                privateKey:await importPrivateKey(candidate),
+                publicKey:await implementation.hpke.importPublicKey(p256.getPublicKey(candidate, false)),
+              };
+            } finally { candidate.fill(0); }
+          }
+          throw new Error('group_hpke_derivation_failed');
+        } finally { prk.fill(0); }
+      },
     },
-  },
-}));
+  };
+});
+function hpkeInput(label: string, value: Uint8Array, expand = false) {
+  const prefix = text.encode('HPKE-v1KEM\x00\x10' + label);
+  const input = new Uint8Array((expand ? 2 : 0) + prefix.length + value.length);
+  if (expand) input[1] = 32;
+  input.set(prefix, expand ? 2 : 0);
+  input.set(value, input.length - value.length);
+  return input;
+}
 const bytes = (encoded: string) => Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
 const encode = (value: unknown) => text.encode(JSON.stringify(value));
 const leafProof = (room: string, signing: Uint8Array) => encode(['Automesh MLS leaf v1', room, bytesToBase64(signing)]);
@@ -69,6 +100,28 @@ export function verifyGroupReceipt(room: string, receipt: GroupReceipt) {
   return verify(receipt.by, receipt.publicKey, receipt.signature, receiptProof(room, receipt));
 }
 
+type SignedMembership = GroupOffer | GroupPlan | GroupReady | GroupCommit | GroupLeave;
+type UnsignedMembership<T = SignedMembership> = T extends SignedMembership ? Omit<T, 'proof'> : never;
+
+function membershipProof(frame: UnsignedMembership) {
+  const head = ['Automesh group membership v1', frame.type, frame.group, frame.epoch];
+  switch (frame.type) {
+    case 'group-leave': return encode([...head, frame.by]);
+    case 'group-ready': return encode([...head, frame.change, frame.by]);
+    case 'group-offer': return encode([...head, frame.change, frame.owner, frame.target, frame.title, frame.members]);
+    case 'group-plan': return encode([...head, frame.change, frame.owner, frame.target, frame.nextOwner, frame.members, frame.key ?? null]);
+    case 'group-commit': return encode([...head, frame.change, frame.packet, frame.welcome ?? null]);
+  }
+}
+
+export async function signMembership<T extends UnsignedMembership>(frame: T, identity: IdentityProvider): Promise<T & { proof: GroupProof }> {
+  return { ...frame, proof:await signProof(identity, membershipProof(frame)) };
+}
+
+export function verifyMembership(frame: SignedMembership, signer: string) {
+  return verify(signer, frame.proof.publicKey, frame.proof.signature, membershipProof(frame));
+}
+
 function credentialProof(credential: Credential): { peer: string; publicKey: string; proof: string } {
   if (credential.credentialType !== 'basic' || credential.identity.length > 400) throw new Error('group_invalid_credential');
   return JSON.parse(decoder.decode(credential.identity));
@@ -79,7 +132,7 @@ function config(room: GroupRoom): ClientConfig {
     keyPackageEqualityConfig: defaultKeyPackageEqualityConfig,
     paddingConfig: defaultPaddingConfig,
     lifetimeConfig: defaultLifetimeConfig,
-    keyRetentionConfig: { retainKeysForGenerations: GROUP_HISTORY, retainKeysForEpochs: 0, maximumForwardRatchetSteps: 512 },
+    keyRetentionConfig: { retainKeysForGenerations: GROUP_HISTORY, retainKeysForEpochs: GROUP_KEY_HISTORY, maximumForwardRatchetSteps: 512 },
     authService: { async validateCredential(credential, signing) {
       try {
         const claim = credentialProof(credential);
@@ -103,7 +156,7 @@ function readPackage(packet: string): KeyPackage {
 
 function roster(room: GroupRoom, state: ClientState) {
   const ids = state.ratchetTree.flatMap(node => node?.nodeType === 'leaf' ? [credentialProof(node.leaf.credential).peer] : []);
-  if (decoder.decode(state.groupContext.groupId) !== room.id || state.groupContext.epoch !== 1n ||
+  if (decoder.decode(state.groupContext.groupId) !== room.id || state.groupContext.epoch !== BigInt(epochOf(room)) ||
     !groupMembers(ids) || !room.members.every(peer => ids.includes(peer)) || ids.length !== room.members.length)
     throw new Error('group_invalid_roster');
 }
@@ -169,6 +222,59 @@ export async function acceptGroupWelcome(room: GroupRoom, packet: string): Promi
   } finally { Object.values(keys).forEach(zeroOutUint8Array); }
 }
 
+function leafIndex(state: ClientState, peer: string): number {
+  const node = state.ratchetTree.findIndex(node => node?.nodeType === 'leaf' && credentialProof(node.leaf.credential).peer === peer);
+  if (node < 0) throw new Error('group_member_missing');
+  return node / 2;
+}
+
+export async function createGroupChange(room: GroupRoom, plan: GroupPlan) {
+  const allowed = [...new Set([...room.members, ...plan.members])];
+  const state = { ...loadState(room), clientConfig:config({ ...room, members:allowed }) };
+  const cipherSuite = await cryptoSuite();
+  const proposal: Proposal = plan.key
+    ? { proposalType:'add', add:{ keyPackage:readPackage(plan.key) } }
+    : { proposalType:'remove', remove:{ removed:leafIndex(state, plan.target) } };
+  const result = await createCommit({ state, cipherSuite }, {
+    extraProposals:[proposal], ratchetTreeExtension:true, wireAsPublicMessage:true, authenticatedData:text.encode(plan.change),
+  });
+  try {
+    roster({ ...room, members:plan.members, epoch:plan.epoch + 1 }, result.newState);
+    return {
+      mls:bytesToBase64(encodeGroupState(result.newState)),
+      packet:bytesToBase64(encodeMlsMessage(result.commit)),
+      welcome:result.welcome && bytesToBase64(encodeMlsMessage({ wireformat:'mls_welcome', version:'mls10', welcome:result.welcome })),
+    };
+  } finally { result.consumed.forEach(zeroOutUint8Array); }
+}
+
+export async function applyGroupChange(room: GroupRoom, plan: GroupPlan, commit: GroupCommit): Promise<string | undefined> {
+  const state = loadState(room);
+  const decoded = readPacket(commit.packet);
+  if (decoded.wireformat !== 'mls_public_message') throw new Error('group_invalid_commit');
+  const message = decoded.publicMessage, { content } = message;
+  if (content.contentType !== 'commit' || content.sender.senderType !== 'member' ||
+    content.sender.leafIndex !== leafIndex(state, plan.nextOwner) ||
+    decoder.decode(content.groupId) !== room.id || content.epoch !== BigInt(plan.epoch) ||
+    decoder.decode(content.authenticatedData) !== plan.change) throw new Error('group_invalid_commit');
+  const allowed = [...new Set([...room.members, ...plan.members])];
+  const result = await processPublicMessage({ ...state, clientConfig:config({ ...room, members:allowed }) },
+    message, emptyPskIndex, await cryptoSuite(), action => {
+      const proposal = action.kind === 'commit' && action.proposals.length === 1 ? action.proposals[0].proposal : undefined;
+      if (!proposal) return 'reject';
+      if (plan.key) return proposal.proposalType === 'add' &&
+        bytesToBase64(encodeMlsMessage({ wireformat:'mls_key_package', version:'mls10', keyPackage:proposal.add.keyPackage })) === plan.key
+        ? 'accept' : 'reject';
+      return proposal.proposalType === 'remove' && proposal.remove.removed === leafIndex(state, plan.target) ? 'accept' : 'reject';
+    });
+  try {
+    if (result.actionTaken !== 'accept') throw new Error('group_invalid_commit');
+    if (result.newState.groupActiveState.kind === 'removedFromGroup') return undefined;
+    roster({ ...room, members:plan.members, epoch:plan.epoch + 1 }, result.newState);
+    return bytesToBase64(encodeGroupState(result.newState));
+  } finally { result.consumed.forEach(zeroOutUint8Array); }
+}
+
 export async function groupPacketHash(packet: string): Promise<string> {
   return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes(packet))));
 }
@@ -180,14 +286,17 @@ export async function encryptGroupPost(room: GroupRoom, post: GroupPost, identit
   result.consumed.forEach(zeroOutUint8Array);
   const packet = bytesToBase64(encodeMlsMessage({ wireformat:'mls_private_message', version:'mls10', privateMessage:result.privateMessage }));
   if (!encodedMls(packet, 6000)) throw new Error('group_text_too_long');
-  return { mls:bytesToBase64(encodeGroupState(result.newState)), entry:{...post, packet, hash:await groupPacketHash(packet)} };
+  return { mls:bytesToBase64(encodeGroupState(result.newState)), entry:{...post, packet, epoch:epochOf(room), audience:room.members, hash:await groupPacketHash(packet)} };
 }
 
 export async function decryptGroupPost(room: GroupRoom, packet: string, hash: string): Promise<{ mls: string; entry: GroupEntry }> {
   const message = readPacket(packet);
   if (message.wireformat !== 'mls_private_message' || message.privateMessage.contentType !== 'application' ||
-    decoder.decode(message.privateMessage.groupId) !== room.id || message.privateMessage.epoch !== 1n)
+    decoder.decode(message.privateMessage.groupId) !== room.id || message.privateMessage.epoch > BigInt(epochOf(room)))
     throw new Error('group_invalid_post');
+  const epoch = Number(message.privateMessage.epoch);
+  const audience = epoch === epochOf(room) ? room.members : room.changes?.find(change => change.plan.epoch === epoch)?.previous;
+  if (!audience) throw new Error('group_invalid_post_epoch');
   const result = await processPrivateMessage(loadState(room), message.privateMessage, emptyPskIndex, await cryptoSuite());
   if (result.kind !== 'applicationMessage') throw new Error('group_invalid_post');
   try {
@@ -195,9 +304,9 @@ export async function decryptGroupPost(room: GroupRoom, packet: string, hash: st
     const key = post?.key, signature = post?.signature;
     // The public MLS API returns plaintext without the sender's leaf index.
     // This inner proof preserves authorship when an existing member relays it.
-    if (!validPost(post) || !room.members.includes(post.from) || !await verify(post.from, key, signature, postProof(room.id, post)))
+    if (!validPost(post) || !room.members.includes(post.from) || !audience.includes(post.from) || !await verify(post.from, key, signature, postProof(room.id, post)))
       throw new Error('group_invalid_author');
-    const entry = { id:post.id, from:post.from, text:post.text, packet, hash };
+    const entry = { id:post.id, from:post.from, text:post.text, packet, hash, epoch, audience };
     return { mls:bytesToBase64(encodeGroupState(result.newState)), entry };
   } finally {
     result.message.fill(0);
