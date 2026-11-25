@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { tr as i18n, locale } from '$lib/i18n/language';
   import CompactDialog from '$lib/application/CompactDialog.svelte';
   import Avatar from '$lib/chat/Avatar.svelte';
@@ -17,7 +17,7 @@
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
     contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
     trackReads: boolean; markRead(hashes: string[]): Promise<void>;
-    accept(): Promise<void>; send(text: string, replyTo?: string): Promise<void>; sync(): void; direct(): void; back(): void;
+    accept(): Promise<void>; send(text: string, replyTo?: string): Promise<string>; sync(): void; direct(): void; back(): void;
   } = $props();
   let draft = $state(''), busy = $state(false), failed = $state(false);
   let transcript = $state<HTMLDivElement>();
@@ -62,6 +62,20 @@
   const draftBytes = $derived(new TextEncoder().encode(draft.trim()).length);
   const canSend = $derived(!busy && !blocked && !updatingKeys && !!draftBytes && draftBytes <= GROUP_TEXT_BYTES);
   const timeline = $derived(groupChronology(room.entries));
+  const dates = $derived.by(() => {
+    let latest = 0;
+    return timeline.map(entry => {
+      latest = Math.max(latest, entry.sentAt ?? 0);
+      return latest ? new Date(latest).toDateString() : '';
+    });
+  });
+  const replyCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const entry of timeline) {
+      if (entry.replyTo) counts.set(entry.replyTo, (counts.get(entry.replyTo) ?? 0) + 1);
+    }
+    return counts;
+  });
   const byId = $derived(new Map(timeline.map(entry => [entry.id, entry])));
   const replyDraft = $derived(byId.get(replyTo));
   const unread = $derived(timeline.filter(entry => groupEntryUnread(entry, self)));
@@ -131,14 +145,18 @@
 
   function startReply(message: GroupEntry) {
     replyTo = message.id;
-    composer?.focus();
+    composer?.focus({ preventScroll:true });
   }
 
-  function showOriginal(id: string) {
+  function revealMessage(id: string, behavior: ScrollBehavior) {
     const node = transcript?.querySelector<HTMLElement>('[data-chat-message-id="' + id + '"]');
     if (!transcript || !node) return;
     const offset = node.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
-    transcript.scrollTo({ top:transcript.scrollTop + offset - (transcript.clientHeight - node.offsetHeight) / 2, behavior:'smooth' });
+    transcript.scrollTo({ top:transcript.scrollTop + offset - Math.max(0, (transcript.clientHeight - node.offsetHeight) / 2), behavior });
+  }
+
+  function showOriginal(id: string) {
+    revealMessage(id, 'smooth');
     reviewHistory();
     highlighted = id;
     clearTimeout(highlightTimer);
@@ -168,10 +186,11 @@
     const value = draft;
     const original = replyDraft?.id;
     void act(async () => {
-      if (transcript) transcript.scrollTop = transcript.scrollHeight;
-      await send(value, original);
+      const id = await send(value, original);
       if (replyTo === original) replyTo = '';
       if (draft === value) draft = '';
+      await tick();
+      requestAnimationFrame(() => revealMessage(id, 'instant'));
     });
   }
 </script>
@@ -205,12 +224,17 @@
     {#if room.mls}
       {#each timeline as message, i (message.id)}
         {@const original = message.replyTo ? byId.get(message.replyTo) : undefined}
-        {@const delivered = message.receipts?.length ?? 0}
+        {@const delivered = new Set([
+          ...(message.receipts ?? []).map(receipt => receipt.by),
+          ...Object.keys(message.nodeStatus ?? {}).filter(peer => message.nodeStatus?.[peer] === 'delivered'),
+        ])}
+        {@const stored = Object.keys(message.nodeStatus ?? {}).filter(peer => message.nodeStatus?.[peer] === 'stored' && !delivered.has(peer)).length}
         {@const recipients = groupAudience(room, message).length - 1}
         {@const read = message.receipts?.filter(receipt => receipt.state === 'read').length ?? 0}
         {@const sent = message.sentAt === undefined ? undefined : new Date(message.sentAt)}
-        {@const previousTime = timeline[i - 1]?.sentAt}
-        {#if sent && (previousTime === undefined || new Date(previousTime).toDateString() !== sent.toDateString())}
+        {@const dateMoved = sent && dates[i] !== sent.toDateString()}
+        {@const replies = replyCounts.get(message.id) ?? 0}
+        {#if sent && dates[i] !== dates[i - 1]}
           <HistoryDivider timestamp={message.sentAt} />
         {/if}
         <div data-chat-message-id={message.id} use:observeRead={message}>
@@ -219,7 +243,7 @@
               <Avatar accountId={message.from} photo={photo(message.from)} size={18} />
               <strong class="message-author">{message.from === self ? $i18n.text('Вы') : name(message.from)}</strong>
               {#if sent}
-                <time datetime={sent.toISOString()} title={sent.toLocaleString($locale)}>{sent.toLocaleTimeString($locale, { hour:'2-digit', minute:'2-digit' })}</time>
+                <time datetime={sent.toISOString()} title={sent.toLocaleString($locale)}>{sent.toLocaleString($locale, { hour:'2-digit', minute:'2-digit', ...(dateMoved ? {day:'numeric', month:'short'} : {}) })}</time>
               {/if}
               {#if groupEntryUnread(message, self)}
                 <span class="unread-message" role="img" aria-label={$i18n.text('Непрочитанное сообщение')} title={$i18n.text('Непрочитанное сообщение')}></span>
@@ -240,7 +264,9 @@
             {/if}
             <MessageText text={message.text} />
             <div class="message-actions">
-              <span>{$i18n.text('Доставлено')} {delivered}/{recipients}</span>
+              {#if replies}<small class="reply-count" title={$i18n.text('Ответы в этой переписке')}>↩ {replies}</small>{/if}
+              {#if stored}<span>{$i18n.text('На ноде')} {stored}/{recipients}</span>{/if}
+              <span>{$i18n.text('Доставлено')} {delivered.size}/{recipients}</span>
               <span>{$i18n.text('Прочитали')} {read}/{recipients}</span>
             </div>
           </MessageCard>
@@ -283,10 +309,15 @@
       <button type="button" onclick={() => { replyTo = ''; composer?.focus(); }} aria-label={$i18n.text('Отменить ответ')}>✕</button>
     </div>
   {/if}
+  {#if draftBytes > GROUP_TEXT_BYTES}
+    <small class="membership-status" role="status">{$i18n.text('Сообщение слишком длинное для этого чата.')}</small>
+  {/if}
   <form class="composer" onsubmit={event => { event.preventDefault(); submit(); }}>
-    <textarea rows="1" bind:this={composer} bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
+    <textarea rows="1" enterkeyhint="send" bind:this={composer} bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
       aria-label={$i18n.text('Сообщение группе')} onkeydown={event => {
-        if (submitOnEnter(event)) { event.preventDefault(); submit(); }
+        if (!submitOnEnter(event) || event.keyCode === 229) return;
+        event.preventDefault();
+        if (!event.repeat) event.currentTarget.form?.requestSubmit();
       }}></textarea>
     <button type="submit" class="primary send-button" disabled={!canSend} aria-label={$i18n.text('Отправить сообщение')}>
       <ChatIcon name="send" />
@@ -356,6 +387,7 @@
 <style>
   .peer-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .peer-heading .local-agent-avatar { display:grid; }
+  .reply-count { margin-right:auto; font-size:inherit; }
   .quote-text { overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .unread-message { flex-shrink:0; width:7px; height:7px; border-radius:50%; background:var(--accent); }
   .empty, .join-state { color:var(--muted); font-size:13px; }

@@ -162,10 +162,17 @@ describe('experimental closed MLS groups', () => {
     expect(groupEntryUnread(legacy.entries[0], d)).toBe(false);
 
     await expect(peers.get(d)!.send(room, 'Invalid reply', crypto.randomUUID())).rejects.toThrow('group_reply_unavailable');
-    await peers.get(d)!.send(room, 'A reply to the original', entry.id);
+    const skewed = vi.spyOn(Date, 'now').mockReturnValue(entry.sentAt! - 60_000);
+    let replyId: string;
+    try { replyId = await peers.get(d)!.send(room, 'A reply to the original', entry.id); }
+    finally { skewed.mockRestore(); }
     await vi.waitFor(() => {
-      expect(saved.get(c)?.[0]?.entries.find(message => message.text === 'A reply to the original'))
-        .toMatchObject({ from:d, replyTo:entry.id });
+      const posts = saved.get(c)![0].entries;
+      expect(posts.find(message => message.id === replyId))
+        .toMatchObject({ from:d, replyTo:entry.id, sentAt:entry.sentAt! - 60_000 });
+      const ordered = groupChronology(posts);
+      expect(ordered.findIndex(message => message.id === entry.id))
+        .toBeLessThan(ordered.findIndex(message => message.id === replyId));
     });
     expect(JSON.stringify(traces)).not.toContain('A reply to the original');
   }, 20000);

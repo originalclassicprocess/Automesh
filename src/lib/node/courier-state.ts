@@ -1,3 +1,5 @@
+import { digest, uuid } from '$lib/groups/protocol';
+import type { GroupNodeReference } from '$lib/groups/GroupController';
 import {validateQueueSource,type QueueSource,type CourierBundle,type CourierJob,type CourierKey} from './courier-crypto';
 import type { NodeAddress } from './offline-crypto';
 import { homeNodeUrl } from './client';
@@ -11,14 +13,22 @@ export type IncomingAttachment = { job: CourierJob; hop: CourierHop; manifest: A
 export type CourierState = { version: 1|2|3; enabled: boolean; node: (NodeAddress & { address: string }) | null;
   keys: CourierKey[]; bundles: Record<string, CourierBundle>; used: Record<string, number>;
   pending: CourierJob[]; acks: { id: string; sender: string; digest: string; receipt: string; expiresAt: number }[];
+  groupJobs?: Record<string, GroupNodeReference>;
   outgoingFiles: Record<string, AttachmentManifest>; incomingFiles: IncomingAttachment[] };
 export const emptyCourierState = (): CourierState => ({ version: 1, enabled: false, node: null, keys: [], bundles: {}, used: {}, pending: [], acks: [], outgoingFiles: {}, incomingFiles: [] });
 // Used by history/file cleanup as well as migration; never leave an orphaned
 // file key pointing at a removed pending job in the next encrypted snapshot.
+export function pruneCourierOutbox(s: CourierState, drop?: (peer: string, id: string) => boolean): CourierState {
+  const pending = s.pending.filter(j => !drop?.(j.body.to, j.body.id));
+  const ids = new Set(pending.map(j => j.body.id));
+  return { ...s, pending,
+    ...(s.groupJobs ? { groupJobs:Object.fromEntries(Object.entries(s.groupJobs).filter(([id]) => ids.has(id))) } : {}),
+    outgoingFiles:Object.fromEntries(Object.entries(s.outgoingFiles ?? {}).filter(([id]) => ids.has(id))) };
+}
+
 export function pruneCourierFiles(s: CourierState, remove?: (peer: string, id: string) => boolean): CourierState {
-  const pending = s.pending.filter(j => !remove?.(j.body.to, j.body.id));
-  return { ...s, pending, outgoingFiles: Object.fromEntries(Object.entries(s.outgoingFiles ?? {}).filter(([id]) => pending.some(j => j.body.id === id))),
-    incomingFiles: (s.incomingFiles ?? []).filter(r => !remove?.(r.job.body.from, r.job.body.id)) };
+  return { ...pruneCourierOutbox(s, remove),
+    incomingFiles:(s.incomingFiles ?? []).filter(r => !remove?.(r.job.body.from, r.job.body.id)) };
 }
 // Only part of the encrypted account record, never plaintext browser settings.
 export function restoreCourierState(value: unknown): CourierState {
@@ -38,6 +48,12 @@ export function restoreCourierState(value: unknown): CourierState {
         !/^04[a-f0-9]{128}$/.test(j.publicKey) || !/^[a-f0-9]{128}$/.test(j.signature)) ||
       s.acks.some(a => !courierId(a.id) || !isValidAccountId(a.sender) || !/^[a-f0-9]{64}$/.test(a.digest) ||
         typeof a.receipt !== 'string' || a.receipt.length > 2048 || !Number.isSafeInteger(a.expiresAt))) throw new Error('invalid_courier_state');
+  if (s.groupJobs !== undefined) {
+    if (!s.groupJobs || typeof s.groupJobs !== 'object' || Array.isArray(s.groupJobs) || Object.keys(s.groupJobs).length > 100 ||
+        Object.values(s.groupJobs).some(ref => !uuid(ref?.group) || !digest(ref?.hash))) throw Error('invalid_group_node_jobs');
+    s.groupJobs = Object.fromEntries(Object.entries(s.groupJobs).filter(([id]) =>
+      s.pending.some(job => job.body.id === id && !job.body.attachment)));
+  }
   if (s.node && (homeNodeUrl(s.node.url) !== s.node.url || !/^[a-f0-9]{32}$/.test(s.node.nodeId) || !isValidAccountId(s.node.address))) throw new Error('invalid_courier_state');
   for(const k of s.keys){
     if(k.retired!==undefined&&k.retired!==true)throw Error('invalid_courier_state');

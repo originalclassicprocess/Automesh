@@ -4,7 +4,8 @@ import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupM
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
 export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string };
-export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; receivedBy?: string[]; receipts?: GroupReceipt[] };
+export type GroupNodeStatus = 'stored' | 'delivered' | 'finished';
+export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; nodeSince?: number; nodeStatus?: Record<string, GroupNodeStatus>; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
@@ -30,11 +31,33 @@ export const groupTimestamp = (value: unknown): value is number =>
 export const groupEntryUnread = (entry: GroupEntry, self: string) => entry.unread === true && entry.from !== self;
 
 export function groupChronology(entries: readonly GroupEntry[]): GroupEntry[] {
-  return [...entries].sort((a, b) => {
+  const byTime = [...entries].sort((a, b) => {
     if (a.sentAt === undefined) return b.sentAt === undefined ? 0 : -1;
     if (b.sentAt === undefined) return 1;
     return a.sentAt - b.sentAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   });
+  const ids = new Set(entries.map(entry => entry.id));
+  const placed = new Set<string>();
+  const waiting = new Map<string, GroupEntry[]>();
+  const timeline: GroupEntry[] = [];
+  const place = (entry: GroupEntry) => {
+    timeline.push(entry);
+    placed.add(entry.id);
+    for (const reply of waiting.get(entry.id) ?? []) place(reply);
+    waiting.delete(entry.id);
+  };
+  for (const entry of byTime) {
+    const original = entry.replyTo;
+    // A reply can arrive before its original or have an earlier timestamp.
+    if (original && ids.has(original) && !placed.has(original)) {
+      const replies = waiting.get(original);
+      if (replies) replies.push(entry);
+      else waiting.set(original, [entry]);
+    } else place(entry);
+  }
+  // Inconsistent references must never hide a message from the transcript.
+  for (const entry of byTime) if (!placed.has(entry.id)) timeline.push(entry);
+  return timeline;
 }
 
 export function groupPeers(room: GroupRoom, self: string): string[] {
@@ -75,6 +98,10 @@ export function restoreGroups(value: unknown): GroupRooms {
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
         ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
         ...(uuid(entry.replyTo) && entry.replyTo !== entry.id ? { replyTo:entry.replyTo } : {}),
+        ...(groupTimestamp(entry.nodeSince) ? { nodeSince:entry.nodeSince, nodeStatus:Object.fromEntries(audience.flatMap(peer => {
+          const value = entry.nodeStatus?.[peer];
+          return peer !== entry.from && (value === 'stored' || value === 'delivered' || value === 'finished') ? [[peer, value]] : [];
+        })) } : {}),
         ...(entry.unread === true ? { unread:true as const } : {}),
         receivedBy: Array.isArray(entry.receivedBy)
           ? audience.filter(peer => peer !== entry.from && entry.receivedBy!.includes(peer)) : [],

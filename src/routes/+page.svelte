@@ -5179,6 +5179,7 @@ async function initializeChat() {
     welcomeFailed:id => {
       if (groupActive() && !groupWelcomeErrors.has(id)) groupWelcomeErrors = new Set([...groupWelcomeErrors, id]);
     },
+    nodeEnabled:() => courierState.enabled && !!courierState.node,
     transport:{ ready:peer => nextChat.isDirectReady(peer), send:(peer, frame) => nextChat.sendGroupFrame(peer, frame) },
     save: async rooms => {
       const key = chatStoreKey, epoch = storageEpoch();
@@ -5274,6 +5275,11 @@ async function initializeChat() {
     offlineDelivery = worker;
     nextChat.onOfflineBundle((peer, value) => worker.accept(peer, value));
     const courier = new CourierController({ address, identity, lanOnly: () => networkSettings.internetEnabled === false,
+      groups:{
+        posts:() => groups.nodePosts(), eligible:(ref, peer) => groups.canStoreOnNode(ref, peer),
+        release:(ref, peer) => groups.canReleaseNodeCopy(ref, peer),
+        status:(ref, peer, value) => groups.recordNodeStatus(ref, peer, value), receive:(peer, frame) => groups.receiveNodePost(peer, frame),
+      },
       notification: (peer,id,providers) => notificationController?.nodeWake(peer,id,providers) ?? Promise.resolve(undefined),
       activity:(peer,id,stage)=>{
         if(chat!==nextChat)return;
@@ -6945,7 +6951,12 @@ async function changePassword(): Promise<void> {
             trackReads={!newChatView}
             markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
-            send={(text, replyTo) => groupController?.send(groupId, text, replyTo) ?? Promise.reject(new Error('group_inactive'))}
+            send={async (text, replyTo) => {
+              if (!groupController) throw new Error('group_inactive');
+              const id = await groupController.send(groupId, text, replyTo);
+              courierDelivery?.wake();
+              return id;
+            }}
             sync={wakeGroupConnections} direct={() => openConnectionSection('direct')} back={showChatList} />
         {/key}
       {:else if localAgentOpen}

@@ -13,7 +13,10 @@ import {COURIER_PREKEY_PROTOCOL,PREKEY_TARGET,PREKEY_LOW,MAX_PRIVATE_COURIER_KEY
 import { COURIER_ROUTE_PROTOCOL, publicCourierSignal,validateCourierRoute } from './courier-route.js';
 import { COURIER_PROTOCOL, COURIER_TTL, validateCourierJob } from './courier-protocol.js';
 import type {RemoteKeyStock} from './key-stock';
-import type { CourierState } from './courier-state';
+import { pruneCourierOutbox, type CourierState } from './courier-state';
+import { GROUP_PREFIX, parseGroupFrame, type GroupFrame } from '$lib/groups/protocol';
+import type { GroupNodePost, GroupNodeReference } from '$lib/groups/GroupController';
+import type { GroupNodeStatus } from '$lib/groups/storage';
 import { createAttachmentManifest, decryptAttachmentPart, encryptAttachmentPart, attachmentHash, FILE_CONTENT_PREFIX, EPHEMERAL_FILE_PREFIX, validateManifest } from './attachment-crypto';
 import { ATTACHMENT_PROTOCOL, FILE_POLICY_BYTES } from './attachment-protocol.js';
 import { manifestContent, type CourierFileIO } from './courier-files';
@@ -32,6 +35,13 @@ export type CourierStatus = { connection: 'idle' | 'checking' | 'connected' | 'o
 export const idleCourierStatus = (): CourierStatus => ({ connection: 'idle', relay: 'disabled', stored: 0 });
 const keyLookupIssue=(error:unknown):DeliveryIssue=>error instanceof Error&&['prekeys_unavailable','prekey_capacity'].includes(error.message)?'keys_exhausted':'keys_source_unavailable';
 type Port = { address: string; identity: IdentityProvider; state(): CourierState; update(s: CourierState): void;
+  groups?: {
+    posts(): Iterable<GroupNodePost>;
+    eligible(ref: GroupNodeReference, peer: string): boolean;
+    release?(ref: GroupNodeReference, peer: string): boolean;
+    status(ref: GroupNodeReference, peer: string, status: GroupNodeStatus): Promise<void>;
+    receive(peer: string, frame: Extract<GroupFrame, { type:'message' }>): Promise<boolean>;
+  };
   chats(): SessionChats; persist(): Promise<boolean>; receive(m: ChatMessage): void; committedIncoming?:CommittedIncomingListener;
   authorize?(peer: string): Promise<void>; issue?(peer: string, id: string, issue: DeliveryIssue | undefined, error?: unknown): void;
   activity?(peer:string,id:string,stage:CourierStage|undefined):void;
@@ -210,6 +220,7 @@ export class CourierController {
     this.current();
     const bundle = await signCourier('prekeys', { protocol: COURIER_PROTOCOL, from: this.port.address, to: peer,
       ...(route ? { route } : {}), consumedKeys, requestKeys,
+      ...(this.port.groups ? { groupPosts:true as const } : {}),
       ...(this.port.files ? { attachmentProtocol: ATTACHMENT_PROTOCOL, maxFileBytes: FILE_POLICY_BYTES } : {}),
       ...(batch.every(k=>k.publishUntil!==undefined)?{deliveryTtlMs:COURIER_TTL,retainUntil:Math.min(...batch.map(k=>k.publishUntil!))+COURIER_TTL}:{}),
       ...(this.prekeysSupported&&node?{keySource:{url:node.url,nodeId:node.nodeId}}:{}),
@@ -318,6 +329,37 @@ export class CourierController {
       }
     }
   }
+  private async reserveGroupPosts(lanOnly: boolean) {
+    const groups = this.port.groups;
+    const state = this.port.state();
+    if (!groups || !state.enabled || !state.node) return;
+    let count = 0;
+    for (const post of groups.posts()) {
+      const current = this.port.state();
+      if (count >= 4 || current.pending.length >= 100 || Object.keys(current.used).length >= 4096) break;
+      const bundle = current.bundles[post.peer];
+      if (!bundle?.body.groupPosts || bundle.body.expiresAt <= Date.now() ||
+          current.pending.some(job => job.body.id === post.id) ||
+          this.port.chats().byPeer[post.peer]?.contact !== 'accepted') continue;
+      const key = bundle.body.keys.find(key => !current.used[key.id]);
+      if (!key) continue;
+      let job: CourierJob;
+      try {
+        await this.port.authorize?.(post.peer);
+        this.current();
+        job = await createCourierJob(this.port.identity, this.port.address, state.node.address, bundle, key, post.id, Date.now(), post.content, lanOnly);
+      } catch { this.current(); continue; }
+      this.current();
+      if (!groups.eligible(post, post.peer)) continue;
+      const latest = this.port.state();
+      this.update({ ...latest, used:{ ...latest.used, [key.id]:job.body.expiresAt + 86400000 },
+        groupJobs:{ ...latest.groupJobs, [post.id]:{ group:post.group, hash:post.hash } }, pending:[...latest.pending, job] });
+      await this.persist();
+      count++;
+    }
+    if (count === 4) this.wake();
+  }
+
   poll() { return this.serial(async () => {
     for (const job of [...this.port.state().pending]) if (this.port.chats().byPeer[job.body.to]?.messages.some(m => m.id === job.body.id && (m.nodeQueue === 'canceling' || job.body.attachment && m.fileStatus === 'canceled'))) {
       try { await this.cancelStoredFile(job); } catch { this.current(); }
@@ -326,7 +368,7 @@ export class CourierController {
     this.update({ ...s, keys: s.keys.filter(k => k.expiresAt > now), acks: s.acks.filter(a => a.expiresAt > now),
       used: Object.fromEntries(Object.entries(s.used).filter(([, e]) => e > now)),
       pending: s.pending.filter(j => { const c = this.port.chats().byPeer[j.body.to]; const m = c?.messages.find(m => m.id === j.body.id);
-        return c?.contact === 'accepted' && !!m; }) });
+        return !!s.groupJobs?.[j.body.id] || c?.contact === 'accepted' && !!m; }) });
     this.update({ ...this.port.state(), outgoingFiles: Object.fromEntries(Object.entries(this.port.state().outgoingFiles).filter(([id]) => this.port.state().pending.some(j => j.body.id === id))) });
     for (const id of this.uploaded) if (!this.port.state().pending.some(j => j.body.id === id)) this.uploaded.delete(id);
     for(const [id,{peer}] of this.activities)if(!this.port.state().pending.some(j=>j.body.id===id))this.activity(peer,id,undefined);
@@ -405,6 +447,8 @@ export class CourierController {
     // and direct receipts afterwards rather than uploading a captured snapshot.
     // Skip stale reservations without recycling their one-time encryption keys.
     const uploadable = (job: CourierJob) => {
+      const group = this.port.state().groupJobs?.[job.body.id];
+      if (group) return this.port.groups?.eligible(group, job.body.to) === true;
       const c = this.port.chats().byPeer[job.body.to];
       const m = c?.messages.find(m => m.id === job.body.id);
       return c?.contact === 'accepted' && !!m && eligible(m) && !!m.file === !!job.body.attachment;
@@ -473,6 +517,7 @@ export class CourierController {
         await this.persist(); if(allocation){delete this.keyStocks[peer];this.stockEpoch.set(peer,(this.stockEpoch.get(peer)??0)+1);} count++;
       }
     }
+    await this.reserveGroupPosts(lanOnly);
     // Reserve AND durably commit before sending, within this pass (no extra timer).
     await this.persist();
     if (this.health.connection !== 'connected') this.report('checking');
@@ -508,7 +553,9 @@ export class CourierController {
         if (!['stored', 'acknowledged'].includes(result.status)) throw new Error('invalid_courier_store');
         this.activity(job.body.to,job.body.id,undefined);
         this.port.issue?.(job.body.to,job.body.id,undefined);
-        this.port.delivery(job.body.to, job.body.id, 'stored');
+        const group = this.port.state().groupJobs?.[job.body.id];
+        if (group) await this.port.groups?.status(group, job.body.to, 'stored');
+        else this.port.delivery(job.body.to, job.body.id, 'stored');
         await this.persist(); this.uploaded.add(job.body.id);
         this.report('connected');
       } catch (error) { this.current(); failed = true;
@@ -574,11 +621,19 @@ export class CourierController {
         incomingFiles: [...this.port.state().incomingFiles, { job, hop, manifest, nextIndex: 0,...reply.source?{source:reply.source}:{} }] });
       await this.persist(); this.fileReplies.set(job.body.id, reply); this.wake(); return;
     }
-    const content = decodeChatContent(packet.content); if (!content) throw new Error('invalid_courier_content');
+    let content: ReturnType<typeof decodeChatContent> = null;
+    if (packet.content.startsWith(GROUP_PREFIX)) {
+      const frame = parseGroupFrame(JSON.parse(packet.content.slice(GROUP_PREFIX.length)));
+      if (frame?.type !== 'message' || !await this.port.groups?.receive(job.body.from, frame)) throw new Error('group_node_not_saved');
+      this.current();
+    } else {
+      content = decodeChatContent(packet.content);
+      if (!content) throw new Error('invalid_courier_content');
+    }
     const receipt = JSON.stringify(await signCourier('receipt', { protocol: COURIER_PROTOCOL, from: this.port.address, to: job.body.from,
       id: job.body.id, digest }, this.port.identity)); this.current();
-    const fresh=isFreshIncoming(this.port.chats(),packet.body.from,packet.body.id);
-    this.port.receive({ ...content, id: packet.body.id, from: packet.body.from, timestamp: packet.body.timestamp, verified: true, via: 'courier', courierVia: data.from });
+    const fresh = !!content && isFreshIncoming(this.port.chats(), packet.body.from, packet.body.id);
+    if (content) this.port.receive({ ...content, id:packet.body.id, from:packet.body.from, timestamp:packet.body.timestamp, verified:true, via:'courier', courierVia:data.from });
     this.update({ ...this.port.state(), keys: this.port.state().keys.filter(k => k.id !== key.id),
       acks: [...this.port.state().acks, { id: job.body.id, sender: job.body.from, digest, receipt, expiresAt: job.body.expiresAt }] });
     await this.persist(); // Commit message, consumed key and receipt together before acknowledgement.
@@ -691,6 +746,8 @@ export class CourierController {
     const node={...this.port.state().node!};
     const sameNode=()=>this.active&&this.port.state().node?.nodeId===node.nodeId&&this.port.state().node?.url===node.url;
     const received=(job:CourierJob)=>{
+      const group = this.port.state().groupJobs?.[job.body.id];
+      if (group) return this.port.groups?.release?.(group, job.body.to) === true;
       const m=this.port.chats().byPeer[job.body.to]?.messages.find(m=>m.id===job.body.id);
       return !!m&&m.direction==='outgoing'&&!m.restoredFromBackup&&!m.importedFromDevice&&
         (m.file?m.fileStatus==='ready':['delivered','read'].includes(m.delivery??''));
@@ -720,8 +777,9 @@ export class CourierController {
         await this.serial(async()=>{
           if(!sameNode())return;
           this.health.cleanup={count:jobs.size,stage:'save',error:this.health.cleanup?.error};
-          this.update({...this.port.state(),pending:this.port.state().pending.filter(j=>j.body.id!==job.body.id),
-            outgoingFiles:Object.fromEntries(Object.entries(this.port.state().outgoingFiles).filter(([id])=>id!==job.body.id))});
+          const group = this.port.state().groupJobs?.[job.body.id];
+          if (group) await this.port.groups?.status(group, job.body.to, 'finished');
+          this.update(pruneCourierOutbox(this.port.state(), (_peer, id) => id === job.body.id));
           await this.persist();this.uploaded.delete(job.body.id);changed=true;
         });
       }
@@ -745,9 +803,11 @@ export class CourierController {
         if (!job || b.protocol !== COURIER_PROTOCOL || b.from !== job.body.to || b.to !== this.port.address ||
             b.digest !== await cipherDigest(job.body.packet)) throw new Error('invalid_courier_receipt');
         await verifyCourier(receipt, 'receipt', b.from); this.current();
-        this.port.delivery(b.from, b.id, 'delivered'); this.uploaded.delete(b.id);
-        this.update({ ...this.port.state(), pending: this.port.state().pending.filter(j => j.body.id !== b.id),
-          outgoingFiles: Object.fromEntries(Object.entries(this.port.state().outgoingFiles).filter(([id]) => id !== b.id)) });
+        const group = this.port.state().groupJobs?.[b.id];
+        if (group) await this.port.groups?.status(group, b.from, 'delivered');
+        else this.port.delivery(b.from, b.id, 'delivered');
+        this.uploaded.delete(b.id);
+        this.update(pruneCourierOutbox(this.port.state(), (_peer, id) => id === b.id));
       }
       await this.persist();
     }
@@ -770,9 +830,10 @@ export class CourierController {
   }
   private async finishQueue(job:CourierJob,status:'canceled'|'expired') {
     this.activity(job.body.to,job.body.id,undefined);
-    this.port.outcome?.(job.body.to,job.body.id,status);
-    this.update({...this.port.state(),pending:this.port.state().pending.filter(j=>j.body.id!==job.body.id),
-      outgoingFiles:Object.fromEntries(Object.entries(this.port.state().outgoingFiles).filter(([id])=>id!==job.body.id))});
+    const group = this.port.state().groupJobs?.[job.body.id];
+    if (group) await this.port.groups?.status(group, job.body.to, 'finished');
+    else this.port.outcome?.(job.body.to,job.body.id,status);
+    this.update(pruneCourierOutbox(this.port.state(), (_peer, id) => id === job.body.id));
     await this.persist(); this.uploaded.delete(job.body.id);
   }
   cancel(id:string) { return this.serial(async()=>{
