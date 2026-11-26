@@ -3,10 +3,13 @@ import { bytesToHex } from '$lib/message/encoding';
 import { COURIER_TTL } from '$lib/node/courier-protocol.js';
 import type { IdentityProvider } from '$lib/identity/identity';
 import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost, establishGroup, groupPacketHash,
-  signGroupReceipt, signGroupWelcome, validateJoinKey, verifyGroupReceipt, verifyGroupWelcome } from './mls';
+  signGroupProfile, signGroupReceipt, signGroupWelcome, validateJoinKey, verifyGroupProfile, verifyGroupReceipt, verifyGroupWelcome } from './mls';
 import { GroupMembership } from './GroupMembership';
+import { GroupAttachments, type GroupFilePayload, type GroupFileStore, type StagedGroupFile } from './attachments';
+import { parseGroupMentions, type GroupMention } from './mentions';
+import { safeFileName, sha256Hex, MAX_FILE_BYTES } from '$lib/chat/file-transfer';
 import { GROUP_HISTORY, GROUP_KEY_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
-  GROUP_PREFIX, type GroupFrame, type GroupReceipt, type GroupTransport } from './protocol';
+  GROUP_PREFIX, isGroupFileFrame, validNickname, type GroupFrame, type GroupProfile, type GroupReceipt, type GroupTransport } from './protocol';
 import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
 
 type GroupMessageFrame = Extract<GroupFrame, { type:'message' }>;
@@ -21,10 +24,12 @@ type GroupPort = {
   active(): boolean;
   contact(peer: string): boolean;
   allowed(peer: string): boolean;
+  nickname?(): string;
   readsEnabled?(): boolean;
   nodeEnabled?(): boolean;
   rooms(): GroupRooms;
-  save(rooms: GroupRooms): Promise<void>;
+  save(rooms: GroupRooms, file?: StagedGroupFile): Promise<void>;
+  files?: GroupFileStore;
   welcomeFailed?(group: string): void;
   transport: GroupTransport;
 };
@@ -48,7 +53,9 @@ export class GroupController {
   private welcomed = new Set<string>();
   private peerEpochs = new Map<string, number>();
   private readonly membership: GroupMembership;
+  private readonly attachments?: GroupAttachments;
   constructor(private readonly port: GroupPort) {
+    if (port.files) this.attachments = new GroupAttachments({ ...port, room:id => this.room(id), files:port.files });
     this.membership = new GroupMembership({
       ...port, save:room => this.save(room), deliver:(peer, frame) => this.deliver(peer, frame),
       changed:room => {
@@ -67,12 +74,12 @@ export class GroupController {
   }
 
   private room(id: string) { return this.port.rooms().find(room => room.id === id); }
-  private async save(room: GroupRoom) {
+  private async save(room: GroupRoom, file?: StagedGroupFile) {
     if (!this.port.active()) throw new Error('group_inactive');
     const rooms = this.port.rooms();
     const updated = rooms.some(item => item.id === room.id)
       ? rooms.map(item => item.id === room.id ? room : item) : [...rooms, room];
-    await this.port.save([...updated.filter(item => !item.departed), ...updated.filter(item => item.departed).slice(-MAX_GROUPS * 7)]);
+    await this.port.save([...updated.filter(item => !item.departed), ...updated.filter(item => item.departed).slice(-MAX_GROUPS * 7)], file);
   }
 
   private async deliver(peer: string, value: GroupFrame) {
@@ -142,16 +149,26 @@ export class GroupController {
     });
   }
 
-  async send(id: string, text: string, replyTo?: string) {
+  async send(id: string, text: string, replyTo?: string, attachment?: GroupFilePayload, mentions?: GroupMention[]) {
     return this.run(async () => {
       const room = this.room(id);
-      const post = { id:crypto.randomUUID(), from:this.port.self, text:text.trim(), sentAt:Date.now(), replyTo };
+      if (attachment && (!this.attachments || attachment.bytes.length > MAX_FILE_BYTES)) throw new Error('group_file_unavailable');
+      const postId = crypto.randomUUID();
+      const file = attachment && { id:postId, name:safeFileName(attachment.name), mime:attachment.mime,
+        size:attachment.bytes.length, sha256:await sha256Hex(attachment.bytes), details:attachment.details };
+      const trimStart = text.length - text.trimStart().length;
+      const trimmedText = text.trim();
+      const moved = parseGroupMentions(trimmedText, mentions?.map(([start, end, peer]) =>
+        [start - trimStart, end - trimStart, peer]))?.filter(([, , peer]) =>
+        peer !== this.port.self && room?.members.includes(peer) && this.port.allowed(peer));
+      const post = { id:postId, from:this.port.self, text:trimmedText || file?.name || '', sentAt:Date.now(), replyTo,
+        ...(file ? { file } : {}), ...(moved?.length ? { mentions:moved } : {}) };
       if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
       if (replyTo !== undefined && !room.entries.some(entry => entry.id === replyTo)) throw new Error('group_reply_unavailable');
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
       const saved = { ...entry, nodeSince:post.sentAt };
       const next = { ...room, mls, entries:[...room.entries, saved].slice(-GROUP_HISTORY), activityAt:post.sentAt };
-      await this.save(next);
+      await this.save(next, attachment && { group:id, hash:entry.hash, bytes:attachment.bytes });
       this.relay(next, { type:'message', group:id, packet:entry.packet });
       for (const peer of groupPeers(next, this.port.self)) {
         if (this.peerEpochs.get(id + ':' + peer) !== epochOf(next)) void this.hello(next, peer);
@@ -159,6 +176,16 @@ export class GroupController {
       return entry.id;
     });
   }
+
+  readFile(group: string, hash: string) {
+    return this.attachments?.read(group, hash) ?? Promise.resolve(null);
+  }
+
+  obtainFile(group: string, hash: string) {
+    return this.attachments?.obtain(group, hash) ?? Promise.reject(new Error('group_file_unavailable'));
+  }
+
+  close() { this.attachments?.close(); }
 
   canStoreOnNode(ref: GroupNodeReference, peer: string) {
     if (!this.port.active() || !this.port.nodeEnabled?.()) return false;
@@ -316,16 +343,66 @@ export class GroupController {
   }
 
   private async sendSync(group: string, peer: string, requestEpoch = false) {
-    const room = this.room(group);
+    let room = this.room(group);
+    if (!room?.mls || !room.members.includes(peer) || !this.port.transport.ready(peer)) return;
+    if (this.canShareProfiles(room)) {
+      const nickname = this.port.nickname?.();
+      if (validNickname(nickname) && room.profiles?.[this.port.self]?.nickname !== nickname)
+        await this.run(() => this.saveOwnProfile(group)).catch(() => {});
+      room = this.room(group);
+    }
     if (!room?.mls || !room.members.includes(peer)) return;
+    const profiles = this.canShareProfiles(room) ? room.members.flatMap(member => {
+      const profile = room?.profiles?.[member];
+      return profile && this.port.allowed(member) ? [profile] : [];
+    }) : [];
     await this.deliver(peer, {
       type:'sync', group, known:room.entries.map(entry => entry.hash), hasWelcome:!!room.welcomeProof,
       epoch:epochOf(room), requestEpoch,
       seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, entry, receipt), 0)),
+      ...(profiles.length ? { profiles } : {}),
     });
   }
 
+  private canShareProfiles(room: GroupRoom) {
+    return !room.departed && !room.leaving && !room.plan && room.members.includes(this.port.self);
+  }
+
+  private async saveOwnProfile(group: string) {
+    const room = this.room(group), nickname = this.port.nickname?.(), by = this.port.self;
+    if (!room?.mls || !this.canShareProfiles(room) || !validNickname(nickname)) return;
+    const previous = room.profiles?.[by];
+    if (previous?.nickname === nickname) return;
+    const revision = Math.max(Date.now(), (previous?.revision ?? 0) + 1);
+    const profile = await signGroupProfile(group, { by, nickname, revision }, this.port.identity);
+    await this.save({ ...room, profiles:{ ...room.profiles, [by]:profile } });
+  }
+
+  private async receiveProfiles(room: GroupRoom, via: string, profiles: GroupProfile[]) {
+    if (!this.canShareProfiles(room)) return room;
+    const next = { ...room.profiles };
+    let changed = false;
+    for (const profile of profiles) {
+      if (profile.by === this.port.self || !room.members.includes(profile.by) || !this.port.allowed(profile.by)) continue;
+      const previous = next[profile.by];
+      if (previous && (profile.revision < previous.revision ||
+        (profile.revision === previous.revision && profile.nickname <= previous.nickname))) continue;
+      if (!await verifyGroupProfile(room.id, profile)) continue;
+      next[profile.by] = profile;
+      changed = true;
+    }
+    if (!changed) return room;
+    const updated = { ...room, profiles:next };
+    await this.save(updated);
+    for (const peer of room.members) {
+      if (peer !== via && peer !== this.port.self && this.peerEpochs.get(room.id + ':' + peer) === epochOf(room))
+        void this.sendSync(room.id, peer);
+    }
+    return updated;
+  }
+
   peerOffline(peer: string) {
+    this.attachments?.peerOffline(peer);
     for (const room of this.port.rooms()) {
       const key = room.id + ':' + peer;
       this.peerEpochs.delete(key);
@@ -410,6 +487,10 @@ export class GroupController {
   receive(peer: string, value: unknown, node?: string): Promise<void> {
     const frame = parseGroupFrame(value);
     if (!frame || !this.port.allowed(peer) || peer === this.port.self) return Promise.resolve();
+    if (isGroupFileFrame(frame)) {
+      if (!node) this.attachments?.receive(peer, frame);
+      return Promise.resolve();
+    }
     return this.run(async () => {
       const room = this.room(frame.group);
       if (isMembershipFrame(frame)) {
@@ -484,6 +565,7 @@ export class GroupController {
           current = { ...current, memberEpochs:{ ...current.memberEpochs, [peer]:epoch } };
           await this.save(current);
         }
+        if (frame.profiles) current = await this.receiveProfiles(current, peer, frame.profiles);
         if (frame.requestEpoch) void this.sendSync(current.id, peer);
         if (frame.seen) {
           if (!frame.hasWelcome && epoch === 1) {

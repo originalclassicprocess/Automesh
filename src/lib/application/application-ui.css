@@ -95,6 +95,7 @@ img, video { border-radius:6px; }
   .local-agent-avatar { display:grid; place-items:center; width:32px; height:32px; flex:none; border-radius:8px; background:var(--accent-soft); color:var(--accent); font-size:13px; font-weight:700; }
   .group-chat-row strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .group-chat-row > .unread-badge { position:static; flex:none; border:0; text-align:center; }
+  .group-chat-row > .group-mention-badge { background:var(--accent-soft); color:var(--accent); font-weight:750; }
   .group-invite-badge { display:grid; place-items:center; width:20px; height:20px; flex:none; border-radius:50%; background:var(--accent); color:var(--on-accent); font-size:12px; font-weight:700; }
   .chat-preview { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;line-height:20px;font-weight:normal;margin-top:1px;color:var(--muted); }
   .conversation-pane { position:relative; min-width:0; flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }

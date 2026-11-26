@@ -12,8 +12,9 @@ import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import type { IdentityProvider } from '$lib/identity/identity';
 import { buildP256PKCS8 } from '$lib/identity/pkcs8';
 import { bytesToHex } from '$lib/message/encoding';
-import { GROUP_HISTORY, GROUP_KEY_HISTORY, encodedMls, groupMembers, uuid, type GroupCommit, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReady, type GroupReceipt } from './protocol';
-import { epochOf, groupTimestamp, validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
+import { GROUP_HISTORY, GROUP_KEY_HISTORY, encodedMls, groupMembers, uuid, type GroupCommit, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProfile, type GroupProof, type GroupReady, type GroupReceipt } from './protocol';
+import { epochOf, groupFileOffer, groupTimestamp, validPost, type GroupEntry, type GroupKeyDraft, type GroupPost, type GroupRoom } from './storage';
+import { parseGroupMentions } from './mentions';
 
 const suiteName = 'MLS_128_DHKEMP256_AES128GCM_SHA256_P256';
 const text = new TextEncoder();
@@ -72,6 +73,10 @@ const postEpochProof = (room: string, epoch: number, post: GroupPost) =>
   encode(['Automesh group post v2', room, epoch, post.id, post.from, post.text, post.sentAt ?? null, post.replyTo ?? null]);
 const postReplyProof = (room: string, post: GroupPost) => encode(['Automesh group post reply v1', room, post.id, post.replyTo]);
 const postTimeProof = (room: string, post: GroupPost) => encode(['Automesh group post time v1', room, post.id, post.sentAt]);
+const fileProof = (room: string, epoch: number, post: GroupPost) =>
+  encode(['Automesh group file v1', room, epoch, post.id, post.from, groupFileOffer(post.file, post.id)]);
+const mentionProof = (room: string, epoch: number, post: GroupPost) =>
+  encode(['Automesh group mentions v1', room, epoch, post.id, post.from, post.text, post.mentions]);
 const welcomeProof = (room: GroupRoom, packet: string) => encode(['Automesh group welcome v1', room.id, room.title, room.members, packet]);
 const receiptProof = (room: string, receipt: Pick<GroupReceipt, 'hash' | 'by' | 'state'>) =>
   encode(['Automesh group receipt v1', room, receipt.hash, receipt.by, receipt.state]);
@@ -104,6 +109,18 @@ export async function signGroupReceipt(room: string, receipt: Pick<GroupReceipt,
 
 export function verifyGroupReceipt(room: string, receipt: GroupReceipt) {
   return verify(receipt.by, receipt.publicKey, receipt.signature, receiptProof(room, receipt));
+}
+
+type ProfileClaim = Pick<GroupProfile, 'by' | 'nickname' | 'revision'>;
+const profileProof = (group: string, profile: ProfileClaim) =>
+  encode(['Automesh group nickname v1', group, profile.by, profile.nickname, profile.revision]);
+
+export async function signGroupProfile(group: string, profile: ProfileClaim, identity: IdentityProvider): Promise<GroupProfile> {
+  return { ...profile, ...await signProof(identity, profileProof(group, profile)) };
+}
+
+export function verifyGroupProfile(group: string, profile: GroupProfile) {
+  return verify(profile.by, profile.publicKey, profile.signature, profileProof(group, profile));
 }
 
 type SignedMembership = GroupOffer | GroupPlan | GroupReady | GroupCommit | GroupLeave;
@@ -292,7 +309,9 @@ export async function encryptGroupPost(room: GroupRoom, post: GroupPost, identit
   const timeSignature = groupTimestamp(post.sentAt) ? bytesToBase64(await identity.sign(postTimeProof(room.id, post))) : undefined;
   const replySignature = post.replyTo ? bytesToBase64(await identity.sign(postReplyProof(room.id, post))) : undefined;
   const epochSignature = bytesToBase64(await identity.sign(postEpochProof(room.id, epochOf(room), post)));
-  const result = await createApplicationMessage(loadState(room), encode({ ...post, key, signature, timeSignature, replySignature, epochSignature }), await cryptoSuite());
+  const fileSignature = post.file ? bytesToBase64(await identity.sign(fileProof(room.id, epochOf(room), post))) : undefined;
+  const mentionSignature = post.mentions?.length ? bytesToBase64(await identity.sign(mentionProof(room.id, epochOf(room), post))) : undefined;
+  const result = await createApplicationMessage(loadState(room), encode({ ...post, key, signature, timeSignature, replySignature, epochSignature, fileSignature, mentionSignature }), await cryptoSuite());
   result.consumed.forEach(zeroOutUint8Array);
   const packet = bytesToBase64(encodeMlsMessage({ wireformat:'mls_private_message', version:'mls10', privateMessage:result.privateMessage }));
   if (!encodedMls(packet, 6000)) throw new Error('group_text_too_long');
@@ -323,9 +342,10 @@ export async function decryptGroupPost(room: GroupRoom, packet: string, hash: st
     if (content.contentType !== 'application' || sender.senderType !== 'member') throw new Error('group_invalid_post');
     const leaf = receiver.ratchetTree[leafToNodeIndex(toLeafIndex(sender.leafIndex))];
     const post = JSON.parse(decoder.decode(content.applicationData)) as Partial<GroupPost & {
-      key: string; signature: string; timeSignature: string; replySignature: string; epochSignature: string;
+      key: string; signature: string; timeSignature: string; replySignature: string; epochSignature: string; fileSignature: string;
+      mentionSignature: string;
     }> | null;
-    const { key, signature, timeSignature, replySignature, epochSignature } = post ?? {};
+    const { key, signature, timeSignature, replySignature, epochSignature, fileSignature, mentionSignature } = post ?? {};
     // The authenticated MLS sender must match the author even for a legacy
     // post. A carrier forwards the original packet and never becomes its author.
     if (!validPost(post) || leaf?.nodeType !== 'leaf' || credentialProof(leaf.leaf.credential).peer !== post.from ||
@@ -334,11 +354,19 @@ export async function decryptGroupPost(room: GroupRoom, packet: string, hash: st
     const signedEpoch = epochSignature !== undefined;
     if (signedEpoch && !await verify(post.from, key, epochSignature, postEpochProof(room.id, epoch, post)))
       throw new Error('group_invalid_post_epoch_signature');
+    const file = groupFileOffer(post.file, post.id);
+    if (post.file !== undefined && (!file || !signedEpoch || !await verify(post.from, key, fileSignature, fileProof(room.id, epoch, post))))
+      throw new Error('group_invalid_file_signature');
+    const parsedMentions = parseGroupMentions(post.text, post.mentions);
+    const mentions = parsedMentions?.length && signedEpoch &&
+      await verify(post.from, key, mentionSignature, mentionProof(room.id, epoch, { ...post, mentions:parsedMentions }))
+      ? parsedMentions.filter(([, , peer]) => peer !== post.from && audience.includes(peer)) : [];
     const sentAt = groupTimestamp(post.sentAt) && (signedEpoch || await verify(post.from, key, timeSignature, postTimeProof(room.id, post)))
       ? post.sentAt : undefined;
     const replyTo = uuid(post.replyTo) && post.replyTo !== post.id &&
       (signedEpoch || await verify(post.from, key, replySignature, postReplyProof(room.id, post))) ? post.replyTo : undefined;
-    const entry = { id:post.id, from:post.from, text:post.text, sentAt, replyTo, packet, hash, epoch, audience };
+    const entry = { id:post.id, from:post.from, text:post.text, sentAt, replyTo, packet, hash, epoch, audience,
+      ...(file ? { file } : {}), ...(mentions.length ? { mentions } : {}) };
     const newState = previous
       ? { ...state, historicalReceiverData:new Map(state.historicalReceiverData).set(BigInt(epoch), { ...previous, secretTree:result.tree }) }
       : { ...state, secretTree:result.tree };

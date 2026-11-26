@@ -7,21 +7,46 @@
   import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
   import MessageCard from '$lib/chat/MessageCard.svelte';
   import MessageText from '$lib/chat/MessageText.svelte';
+  import EmojiPicker from '$lib/chat/EmojiPicker.svelte';
+  import PastedImages from '$lib/chat/PastedImages.svelte';
+  import { ComposerInput } from '$lib/chat/composer-input';
+  import { clipboardImages } from '$lib/chat/clipboard-images';
+  import { validateAttachmentBatch } from '$lib/chat/attachment-policy';
+  import type { MediaAsset, MediaLibrary, StickerPack } from '$lib/chat/media-library';
+  import GroupAttachmentCard from './GroupAttachmentCard.svelte';
   import { createChatScroll } from '$lib/chat/chat-scroll';
   import { submitOnEnter } from '$lib/chat/conversation-list';
   import { GROUP_TEXT_BYTES, MAX_GROUP_MEMBERS } from './protocol';
   import { groupAudience, groupChronology, groupEntryUnread, type GroupEntry, type GroupRoom } from './storage';
+  import { editGroupMentions, groupMentionParts, mentionQuery, moveGroupMentions, type GroupMention, type MentionEdit } from './mentions';
 
-  let { room, self, name, photo, connected, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, accept, send, sync, direct, back }: {
+  let { room, self, name, photo, connected, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, accept, send,
+    library, loadSticker, manageStickers, sendSticker, autoReceive, loadAttachment, obtainAttachment, saveAttachment, canMention, sync, direct, back }: {
     room: GroupRoom; self: string; name(peer: string): string; photo(peer: string): string;
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
     contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
     trackReads: boolean; markRead(hashes: string[]): Promise<void>;
-    accept(): Promise<void>; send(text: string, replyTo?: string): Promise<string>; sync(): void; direct(): void; back(): void;
+    accept(): Promise<void>; send(text: string, replyTo?: string, file?: File, mentions?: GroupMention[]): Promise<string>;
+    canMention(peer: string): boolean; sync(): void; direct(): void; back(): void;
+    library: MediaLibrary; loadSticker(hash: string): Promise<Uint8Array | null>; manageStickers(tab: 'stickers' | 'gifs'): void;
+    sendSticker(asset: MediaAsset, pack: StickerPack | undefined, replyTo?: string): Promise<string>;
+    autoReceive: boolean; loadAttachment(hash: string): Promise<Uint8Array | null>;
+    obtainAttachment(hash: string, automatic: boolean): Promise<Uint8Array | null>;
+    saveAttachment(bytes: BlobPart, name: string): void;
   } = $props();
   let draft = $state(''), busy = $state(false), failed = $state(false);
   let transcript = $state<HTMLDivElement>();
   let composer = $state<HTMLTextAreaElement>();
+  const componentId = $props.id();
+  const mentionMenuId = componentId + '-mentions';
+  let mentions = $state<GroupMention[]>([]);
+  let query = $state<ReturnType<typeof mentionQuery>>(null), mentionIndex = $state(0);
+  let mentionEdit: MentionEdit | undefined, dismissedQuery = '';
+  let mentionMenu = $state<HTMLDivElement>();
+  let attachmentInput = $state<HTMLInputElement>();
+  let attachments = $state<File[]>([]), attachmentError = $state('');
+  let pickerOpen = $state(false), mobileInput = $state(false);
+  const inputPanel = new ComposerInput(() => pickerOpen, open => pickerOpen = open, mobile => mobileInput = mobile);
   let replyTo = $state('');
   let routeId = $state('');
   let copied = $state(''), highlighted = $state(''), copyFailed = $state(false);
@@ -61,7 +86,25 @@
   }
   const updatingKeys = $derived(!!room.plan && !room.plan.key);
   const draftBytes = $derived(new TextEncoder().encode(draft.trim()).length);
-  const canSend = $derived(!busy && !blocked && !updatingKeys && !!draftBytes && draftBytes <= GROUP_TEXT_BYTES);
+  const canCompose = $derived(!busy && !blocked && !updatingKeys);
+  const canSend = $derived(canCompose && (draftBytes > 0 || attachments.length > 0) && draftBytes <= GROUP_TEXT_BYTES);
+  const foldNickname = (value: string) => value.normalize('NFKC').toLocaleLowerCase();
+  const mentionCandidates = $derived.by(() => {
+    if (!query || !canCompose || pickerOpen || mentions.length >= MAX_GROUP_MEMBERS) return [];
+    const needle = foldNickname(query.query.trim());
+    const all = others.filter(canMention).map(peer => ({
+      peer, nickname:(room.profiles?.[peer]?.nickname || name(peer)).trim().slice(0, 64),
+    }));
+    const duplicates = new Map<string, number>();
+    for (const { nickname } of all) {
+      const key = foldNickname(nickname);
+      duplicates.set(key, (duplicates.get(key) ?? 0) + 1);
+    }
+    return all.filter(item => foldNickname(item.nickname).includes(needle) || foldNickname(name(item.peer)).includes(needle))
+      .map(item => ({ ...item, duplicate:(duplicates.get(foldNickname(item.nickname)) ?? 0) > 1 }));
+  });
+  const activeMention = $derived(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)]);
+  const connectedMembers = $derived(room.members.filter(peer => connected.has(peer)).join(' '));
   const timeline = $derived(groupChronology(room.entries));
   const dates = $derived.by(() => {
     let latest = 0;
@@ -186,14 +229,112 @@
   function submit() {
     if (!canSend) return;
     const value = draft;
+    const selectedMentions = mentions;
     const original = replyDraft?.id;
+    const files = [...attachments];
     void act(async () => {
-      const id = await send(value, original);
+      let id = await send(value, original, files[0], selectedMentions);
       if (replyTo === original) replyTo = '';
-      if (draft === value) draft = '';
+      if (draft === value) { draft = ''; mentions = []; query = null; dismissedQuery = ''; }
+      if (files.length) attachments = attachments.slice(1);
+      for (const file of files.slice(1)) {
+        id = await send('', undefined, file);
+        attachments = attachments.slice(1);
+      }
       await tick();
       requestAnimationFrame(() => revealMessage(id, 'instant'));
     });
+  }
+
+  function stage(files: File[]) {
+    if (!canCompose || !files.length) return;
+    attachmentError = validateAttachmentBatch(files, attachments.length) ?? '';
+    if (!attachmentError) attachments = [...attachments, ...files];
+  }
+
+  function insertEmoji(emoji: string) {
+    const start = composer?.selectionStart ?? draft.length;
+    const end = composer?.selectionEnd ?? start;
+    replaceDraft(start, end, emoji);
+    void tick().then(() => inputPanel.restoreCaret(start + emoji.length, start + emoji.length));
+  }
+
+  function queryKey(value: NonNullable<typeof query>) {
+    return JSON.stringify([value.start, value.end, value.query]);
+  }
+
+  function updateMentionQuery(node = composer) {
+    if (!node || document.activeElement !== node || node.selectionStart !== node.selectionEnd) { query = null; return; }
+    const next = mentionQuery(draft, node.selectionStart, mentions);
+    if (!next || queryKey(next) === dismissedQuery) { query = null; return; }
+    if (!query || queryKey(query) !== queryKey(next)) { query = next; mentionIndex = 0; }
+  }
+
+  function applyDraftInput(node: HTMLTextAreaElement, composing: boolean) {
+    mentions = editGroupMentions(draft, node.value, mentions, mentionEdit);
+    mentionEdit = undefined;
+    draft = node.value;
+    if (composing) query = null;
+    else updateMentionQuery(node);
+  }
+
+  function replaceDraft(start: number, end: number, value: string) {
+    mentions = moveGroupMentions(mentions, start, end, value.length);
+    draft = draft.slice(0, start) + value + draft.slice(end);
+    query = null;
+    dismissedQuery = '';
+  }
+
+  function chooseMention(candidate: NonNullable<typeof activeMention>) {
+    if (!query || !canCompose || !others.includes(candidate.peer) || !canMention(candidate.peer)) return;
+    const { start, end } = query;
+    const label = '@' + candidate.nickname;
+    const suffix = /^\s/.test(draft.slice(end)) ? '' : ' ';
+    replaceDraft(start, end, label + suffix);
+    mentions = [...mentions, [start, start + label.length, candidate.peer] as GroupMention].sort((a,b) => a[0] - b[0]);
+    const caret = start + label.length + suffix.length;
+    void tick().then(() => inputPanel.restoreCaret(caret, caret));
+  }
+
+  function composerKey(event: KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (activeMention && query) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const length = mentionCandidates.length;
+        mentionIndex = (Math.min(mentionIndex, length - 1) + (event.key === 'ArrowDown' ? 1 : length - 1)) % length;
+        void tick().then(() => mentionMenu?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block:'nearest' }));
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        dismissedQuery = queryKey(query);
+        query = null;
+        return;
+      }
+      if (submitOnEnter(event)) {
+        event.preventDefault();
+        if (!event.repeat) chooseMention(activeMention);
+        return;
+      }
+    }
+    if (!submitOnEnter(event)) return;
+    event.preventDefault();
+    if (!event.repeat) composer?.form?.requestSubmit();
+  }
+
+  async function chooseSticker(asset: MediaAsset, pack?: StickerPack) {
+    if (!canCompose) return;
+    const original = replyDraft?.id;
+    busy = true; failed = false;
+    try {
+      const id = await sendSticker(asset, pack, original);
+      if (replyTo === original) replyTo = '';
+      pickerOpen = false;
+      await tick();
+      requestAnimationFrame(() => revealMessage(id, 'instant'));
+    } catch { throw new Error('Не удалось выполнить действие.'); }
+    finally { busy = false; }
   }
 </script>
 
@@ -240,7 +381,8 @@
           <HistoryDivider timestamp={message.sentAt} />
         {/if}
         <div data-chat-message-id={message.id} use:observeRead={message}>
-          <MessageCard outgoing={message.from === self} preview={message.text} highlighted={highlighted === message.id}>
+          <MessageCard outgoing={message.from === self} preview={message.text} highlighted={highlighted === message.id}
+            sticker={message.file?.details?.media?.kind === 'sticker'}>
             <div class="message-header">
               <Avatar accountId={message.from} photo={photo(message.from)} size={18} />
               <strong class="message-author">{message.from === self ? $i18n.text('Вы') : name(message.from)}</strong>
@@ -266,11 +408,22 @@
             {:else if message.replyTo}
               <div class="reply-preview"><small>↩ {$i18n.text('Исходное сообщение удалено или отсутствует на этом устройстве.')}</small></div>
             {/if}
-            <MessageText text={message.text} />
+            {#if message.file}
+              <GroupAttachmentCard file={message.file} blocked={blocked}
+                load={() => loadAttachment(message.hash)} obtain={automatic => obtainAttachment(message.hash, automatic)} save={saveAttachment}
+                autoKey={autoReceive && message.from !== self && !!message.file.details?.media ? connectedMembers : ''} />
+            {/if}
+            {#if message.mentions?.length}
+              {#each groupMentionParts(message.text, message.mentions) as part}
+                {#if part.accountId}<bdi class="message-mention" class:mentioned-self={part.accountId === self}
+                  title={part.accountId === self ? $i18n.text('Вас упомянули') : name(part.accountId)}>{part.text}</bdi>
+                {:else}<MessageText text={part.text} largeEmoji={false} />{/if}
+              {/each}
+            {:else if !message.file || message.text !== message.file.name}<MessageText text={message.text} />{/if}
             <div class="message-actions">
               {#if replies}<small class="reply-count" title={$i18n.text('Ответы в этой переписке')}>↩ {replies}</small>{/if}
-              {#if stored}<span>{$i18n.text('На ноде')} {stored}/{recipients}</span>{/if}
-              <span>{$i18n.text('Доставлено')} {delivered.size}/{recipients}</span>
+              {#if stored}<span>{$i18n.text(message.file ? 'Карточка на ноде' : 'На ноде')} {stored}/{recipients}</span>{/if}
+              <span>{$i18n.text(message.file ? 'Карточка доставлена' : 'Доставлено')} {delivered.size}/{recipients}</span>
               <span>{$i18n.text('Прочитали')} {read}/{recipients}</span>
             </div>
           </MessageCard>
@@ -316,17 +469,52 @@
   {#if draftBytes > GROUP_TEXT_BYTES}
     <small class="membership-status" role="status">{$i18n.text('Сообщение слишком длинное для этого чата.')}</small>
   {/if}
+  <div class="composer-dock" use:inputPanel.mount={pickerOpen}>
+  {#if pickerOpen}
+    <div class="composer-picker"><EmojiPicker library={library} load={loadSticker} onChoose={insertEmoji} onClose={() => pickerOpen = false}
+      canSend={canCompose} {busy} onSend={chooseSticker} onManage={tab => { pickerOpen = false; manageStickers(tab); }} /></div>
+  {/if}
+  <PastedImages files={attachments} disabled={busy || blocked} onRemove={i => attachments = attachments.filter((_, index) => i !== index)} />
+  {#if attachmentError}<small role="alert">{$i18n.system(attachmentError)}</small>{/if}
+  {#if mentionCandidates.length}
+    <div class="group-mention-menu" id={mentionMenuId} bind:this={mentionMenu} role="listbox" aria-label={$i18n.text('Упомянуть участника')}>
+      {#each mentionCandidates as candidate (candidate.peer)}
+        <button type="button" role="option" tabindex="-1" id={mentionMenuId + '-' + candidate.peer}
+          aria-selected={activeMention?.peer === candidate.peer} onmousedown={event => event.preventDefault()}
+          onclick={() => chooseMention(candidate)}>
+          <Avatar accountId={candidate.peer} photo={photo(candidate.peer)} size={26} />
+          <bdi>{candidate.nickname}</bdi>
+          {#if candidate.duplicate}<small>…{candidate.peer.slice(-8)}</small>{/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
   <form class="composer" onsubmit={event => { event.preventDefault(); submit(); }}>
-    <textarea rows="1" enterkeyhint="send" bind:this={composer} bind:value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
-      aria-label={$i18n.text('Сообщение группе')} onkeydown={event => {
-        if (!submitOnEnter(event) || event.keyCode === 229) return;
-        event.preventDefault();
-        if (!event.repeat) event.currentTarget.form?.requestSubmit();
-      }}></textarea>
-    <button type="submit" class="primary send-button" disabled={!canSend} aria-label={$i18n.text('Отправить сообщение')}>
+    <input class="attachment-input" type="file" multiple bind:this={attachmentInput} aria-label={$i18n.text('Выбрать файлы для отправки')}
+      onchange={event => { stage(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }} />
+    <button type="button" class="icon-button" onclick={() => attachmentInput?.click()} disabled={!canCompose} aria-label={$i18n.text('Прикрепить')}>
+      <ChatIcon name="attachment" />
+    </button>
+    <div class="composer-field">
+    <textarea rows="1" enterkeyhint="send" bind:this={composer} value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
+      onpaste={event => { const files = clipboardImages(event.clipboardData); if (files.length) { event.preventDefault(); stage(files); } }}
+      onbeforeinput={event => mentionEdit = { start:event.currentTarget.selectionStart, end:event.currentTarget.selectionEnd, type:event.inputType }}
+      oninput={event => applyDraftInput(event.currentTarget, event instanceof InputEvent && event.isComposing)}
+      oncompositionend={() => updateMentionQuery()} onfocus={() => updateMentionQuery()} onclick={() => updateMentionQuery()}
+      onkeyup={event => { if (!event.isComposing) updateMentionQuery(); }} onselect={() => updateMentionQuery()}
+      onblur={event => { if (!(event.relatedTarget instanceof Node) || !mentionMenu?.contains(event.relatedTarget)) query = null; }}
+      aria-label={$i18n.text('Сообщение группе')} aria-autocomplete="list"
+      aria-controls={mentionCandidates.length ? mentionMenuId : undefined}
+      aria-activedescendant={activeMention ? mentionMenuId + '-' + activeMention.peer : undefined}
+      onkeydown={composerKey}></textarea>
+    <button data-composer-toggle type="button" class="icon-button" aria-pressed={pickerOpen} aria-label={$i18n.text(pickerOpen && mobileInput ? 'Клавиатура' : 'Эмодзи, стикеры и GIF')}
+      onclick={inputPanel.toggle} disabled={busy || blocked}><ChatIcon name={pickerOpen && mobileInput ? 'keyboard' : 'emoji'} /></button>
+    </div>
+    <button data-composer-send type="submit" class="primary send-button" disabled={!canSend} aria-label={$i18n.text('Отправить сообщение')}>
       <ChatIcon name="send" />
     </button>
   </form>
+  </div>
 {/if}
 
 {#if routeMessage}
@@ -428,6 +616,12 @@
 {/if}
 
 <style>
+  .group-mention-menu { display:grid; max-height:min(32dvh, 228px); overflow:auto; padding:4px; gap:2px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+  .group-mention-menu button { display:flex; align-items:center; gap:8px; min-height:36px; padding:4px 8px; text-align:start; border-color:transparent; }
+  .group-mention-menu button[aria-selected=true], .group-mention-menu button:hover { background:var(--accent-soft); border-color:var(--line); }
+  .group-mention-menu small { color:var(--muted); margin-inline-start:auto; }
+  .message-mention { color:var(--link); font-weight:600; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .mentioned-self { background:var(--accent-soft); border-radius:4px; }
   .peer-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .peer-heading .local-agent-avatar { display:grid; }
   .quick-copy :global(svg) { display:block; width:18px; height:18px; margin:auto; }

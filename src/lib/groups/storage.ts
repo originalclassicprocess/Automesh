@@ -1,9 +1,11 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
-import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, parseGroupFrame, uuid,
-  validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProof, type GroupReceipt } from './protocol';
+import { normalizeFileOffer, type FileOffer } from '$lib/chat/file-transfer';
+import { parseGroupMentions, type GroupMention } from './mentions';
+import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, parseGroupFrame, parseGroupProfile, uuid,
+  validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProfile, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
-export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string };
+export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string; file?: FileOffer; mentions?: GroupMention[] };
 export type GroupNodeStatus = 'stored' | 'delivered' | 'finished';
 export type GroupRoute = { peer: string; node?: string };
 export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; route?: GroupRoute; nodeSince?: number; nodeStatus?: Record<string, GroupNodeStatus>; receivedBy?: string[]; receipts?: GroupReceipt[] };
@@ -18,6 +20,7 @@ export type GroupRoom = {
   offer?: GroupOffer;
   plan?: GroupPlan;
   memberEpochs?: Record<string, number>;
+  profiles?: Record<string, GroupProfile>;
   changes?: GroupChange[];
   welcomeProof?: GroupProof;
 };
@@ -30,6 +33,8 @@ export const groupAudience = (room: GroupRoom, entry: GroupEntry) => entry.audie
 export const groupTimestamp = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 8.64e15;
 export const groupEntryUnread = (entry: GroupEntry, self: string) => entry.unread === true && entry.from !== self;
+export const groupPostMentions = (entry: GroupEntry, accountId: string) =>
+  entry.mentions?.some(mention => mention[2] === accountId) === true;
 
 export function groupChronology(entries: readonly GroupEntry[]): GroupEntry[] {
   const byTime = [...entries].sort((a, b) => {
@@ -72,11 +77,22 @@ function storedFrame<T extends GroupFrame['type']>(value: unknown, type: T, grou
 }
 
 const encoder = new TextEncoder();
+export function groupFileOffer(value: unknown, id: string): FileOffer | null {
+  const file = normalizeFileOffer(value);
+  if (!file || file.id !== id) return null;
+  const media = file.details?.media;
+  if (file.details && (!file.size || Object.keys(file.details).length !== 1 || !media ||
+      (media.kind === 'sticker' ? !['image/webp','image/png','image/gif'].includes(file.mime)
+        : media.kind !== 'gif' || file.mime !== 'image/gif'))) return null;
+  return file;
+}
+
 export const validPost = (value: unknown): value is GroupPost => {
   if (!value || typeof value !== 'object') return false;
   const post = value as GroupPost;
   return uuid(post.id) && isValidAccountId(post.from) && typeof post.text === 'string' &&
-    !!post.text.trim() && post.text.length <= GROUP_TEXT_BYTES && encoder.encode(post.text).length <= GROUP_TEXT_BYTES;
+    !!post.text.trim() && post.text.length <= GROUP_TEXT_BYTES && encoder.encode(post.text).length <= GROUP_TEXT_BYTES &&
+    (post.file === undefined || groupFileOffer(post.file, post.id) !== null);
 };
 
 export function restoreGroups(value: unknown): GroupRooms {
@@ -94,8 +110,12 @@ export function restoreGroups(value: unknown): GroupRooms {
       (groupMembers(entry.audience) ? entry.audience : members).includes(entry.from) &&
       digest(entry.hash) && encodedMls(entry.packet, 6000)).map(entry => {
       const audience = groupMembers(entry.audience) ? entry.audience : members;
+      const file = groupFileOffer(entry.file, entry.id);
+      const mentions = parseGroupMentions(entry.text, entry.mentions)?.filter(([, , peer]) => peer !== entry.from && audience.includes(peer));
       return {
         id:entry.id, from:entry.from, text:entry.text, hash:entry.hash, packet:entry.packet, audience,
+        ...(file ? { file } : {}),
+        ...(mentions?.length ? { mentions } : {}),
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
         ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
         ...(uuid(entry.replyTo) && entry.replyTo !== entry.id ? { replyTo:entry.replyTo } : {}),
@@ -121,13 +141,17 @@ export function restoreGroups(value: unknown): GroupRooms {
       const seen = raw.memberEpochs?.[peer];
       return groupEpoch(seen) && seen <= (epoch ?? 1) ? [[peer, seen]] : [];
     }));
+    const profiles = Object.fromEntries(members.flatMap(peer => {
+      const profile = parseGroupProfile(raw.profiles?.[peer]);
+      return profile?.by === peer ? [[peer, profile]] : [];
+    }));
     const changes = Array.isArray(raw.changes) ? raw.changes.slice(-GROUP_CHANGE_HISTORY).flatMap((value: GroupChange) => {
       const plan = storedFrame(value?.plan, 'group-plan', raw.id), commit = storedFrame(value?.commit, 'group-commit', raw.id);
       return plan && commit && plan.change === commit.change && plan.epoch === commit.epoch && groupMembers(value.previous)
         ? [{ plan, commit, previous:value.previous }] : [];
     }) : undefined;
     rooms.push({ id:raw.id, title:raw.title, owner:raw.owner, members, keys, entries,
-      epoch, memberEpochs,
+      epoch, memberEpochs, ...(Object.keys(profiles).length ? { profiles } : {}),
       departed:typeof raw.departed === 'string' && isValidAccountId(raw.departed) ? raw.departed : undefined,
       leaving:storedFrame(raw.leaving, 'group-leave', raw.id),
       leaves:Array.isArray(raw.leaves) ? raw.leaves.slice(0, members.length).flatMap((value: unknown) => {
