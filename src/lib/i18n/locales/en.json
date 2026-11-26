@@ -3391,5 +3391,7 @@
   "m_24ec952d6774": "File card delivered",
   "m_2596d0c852a7": "Mention a member",
   "m_a2c8a884a43c": "You were mentioned",
-  "m_91f43b2cce10": "Unread mention"
+  "m_91f43b2cce10": "Unread mention",
+  "m_afc71027aa47": "File on node",
+  "m_5145b55fdf4e": "File received from node"
 }

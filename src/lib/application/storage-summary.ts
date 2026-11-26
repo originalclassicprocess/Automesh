@@ -1,4 +1,5 @@
 import { inlineMediaFor } from '$lib/chat/media-preview';
+import { isStickerPackFile } from '$lib/chat/sticker-pack';
 import type { SessionChats } from '$lib/chat/session-chats';
 import type { LocalChatData, StorageInventory } from '$lib/chat/local-store';
 import { pruneCourierFiles } from '$lib/node/courier-state';
@@ -36,6 +37,7 @@ export function managedFiles(state: SessionChats, disk: StorageInventory, memory
     if (!message.file) continue;
     entries.set(groupFileStorageId(room.id, message.hash), {
       peer:room.id, messageId:message.hash, name:message.file.name,
+      ...(isStickerPackFile(message.file.name) ? { stickerPack:true } : {}),
       category:inlineMediaFor(message.file)?.kind ?? 'other', timestamp:message.sentAt,
     });
   }

@@ -8,7 +8,9 @@ export type GroupKeyDraft = { packet: string; init: string; leaf: string; signat
 export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string; file?: FileOffer; mentions?: GroupMention[] };
 export type GroupNodeStatus = 'stored' | 'delivered' | 'finished';
 export type GroupRoute = { peer: string; node?: string };
-export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; route?: GroupRoute; nodeSince?: number; nodeStatus?: Record<string, GroupNodeStatus>; receivedBy?: string[]; receipts?: GroupReceipt[] };
+export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; route?: GroupRoute; nodeSince?: number;
+  nodeStatus?: Record<string, GroupNodeStatus>; nodeFileStatus?: Record<string, GroupNodeStatus>; fileNode?: string; fileRequested?: true;
+  receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
@@ -112,6 +114,10 @@ export function restoreGroups(value: unknown): GroupRooms {
       const audience = groupMembers(entry.audience) ? entry.audience : members;
       const file = groupFileOffer(entry.file, entry.id);
       const mentions = parseGroupMentions(entry.text, entry.mentions)?.filter(([, , peer]) => peer !== entry.from && audience.includes(peer));
+      const restoreNodeStatus = (statuses?: Record<string, GroupNodeStatus>) => Object.fromEntries(audience.flatMap(peer => {
+        const value = statuses?.[peer];
+        return peer !== entry.from && (value === 'stored' || value === 'delivered' || value === 'finished') ? [[peer, value]] : [];
+      }));
       return {
         id:entry.id, from:entry.from, text:entry.text, hash:entry.hash, packet:entry.packet, audience,
         ...(file ? { file } : {}),
@@ -119,10 +125,10 @@ export function restoreGroups(value: unknown): GroupRooms {
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
         ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
         ...(uuid(entry.replyTo) && entry.replyTo !== entry.id ? { replyTo:entry.replyTo } : {}),
-        ...(groupTimestamp(entry.nodeSince) ? { nodeSince:entry.nodeSince, nodeStatus:Object.fromEntries(audience.flatMap(peer => {
-          const value = entry.nodeStatus?.[peer];
-          return peer !== entry.from && (value === 'stored' || value === 'delivered' || value === 'finished') ? [[peer, value]] : [];
-        })) } : {}),
+        ...(groupTimestamp(entry.nodeSince) ? { nodeSince:entry.nodeSince, nodeStatus:restoreNodeStatus(entry.nodeStatus) } : {}),
+        ...(file && entry.nodeFileStatus ? { nodeFileStatus:restoreNodeStatus(entry.nodeFileStatus) } : {}),
+        ...(file && isValidAccountId(entry.fileNode ?? '') ? { fileNode:entry.fileNode } : {}),
+        ...(file && entry.fileRequested === true ? { fileRequested:true as const } : {}),
         ...(isValidAccountId(entry.route?.peer ?? '') ? { route:{ peer:entry.route!.peer,
           ...(isValidAccountId(entry.route?.node ?? '') ? { node:entry.route!.node } : {}) } } : {}),
         ...(entry.unread === true ? { unread:true as const } : {}),

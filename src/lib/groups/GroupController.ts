@@ -7,14 +7,14 @@ import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost,
 import { GroupMembership } from './GroupMembership';
 import { GroupAttachments, type GroupFilePayload, type GroupFileStore, type StagedGroupFile } from './attachments';
 import { parseGroupMentions, type GroupMention } from './mentions';
-import { safeFileName, sha256Hex, MAX_FILE_BYTES } from '$lib/chat/file-transfer';
+import { normalizeFileOffer, safeFileName, sameFileOffer, sha256Hex, MAX_FILE_BYTES, type FileOffer } from '$lib/chat/file-transfer';
 import { GROUP_HISTORY, GROUP_KEY_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
   GROUP_PREFIX, isGroupFileFrame, validNickname, type GroupFrame, type GroupProfile, type GroupReceipt, type GroupTransport } from './protocol';
 import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
 
 type GroupMessageFrame = Extract<GroupFrame, { type:'message' }>;
-export type GroupNodeReference = { group: string; hash: string };
-export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string; relay: boolean };
+export type GroupNodeReference = { group: string; hash: string; file?: true };
+export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string; relay: boolean; offer?: FileOffer };
 const encoder = new TextEncoder();
 const availableSince = (entry: GroupEntry) => entry.nodeSince ?? entry.sentAt;
 
@@ -181,8 +181,25 @@ export class GroupController {
     return this.attachments?.read(group, hash) ?? Promise.resolve(null);
   }
 
-  obtainFile(group: string, hash: string) {
-    return this.attachments?.obtain(group, hash) ?? Promise.reject(new Error('group_file_unavailable'));
+  async obtainFile(group: string, hash: string) {
+    if (!this.attachments) throw new Error('group_file_unavailable');
+    await this.attachments.obtain(group, hash);
+    if (this.fileRequested(group, hash)) await this.requestFile(group, hash, false);
+  }
+
+  fileRequested(group: string, hash: string) {
+    return this.room(group)?.entries.find(entry => entry.hash === hash)?.fileRequested === true;
+  }
+
+  requestFile(group: string, hash: string, requested = true) {
+    return this.run(async () => {
+      const room = this.room(group);
+      const entry = room?.entries.find(post => post.hash === hash);
+      if (!room?.mls || room.departed || room.leaving || !entry?.file || entry.from === this.port.self ||
+          !!entry.fileRequested === requested) return;
+      const updated = { ...entry, fileRequested:requested ? true as const : undefined };
+      await this.save({ ...room, entries:room.entries.map(post => post === entry ? updated : post) });
+    });
   }
 
   close() { this.attachments?.close(); }
@@ -191,18 +208,22 @@ export class GroupController {
     if (!this.port.active() || !this.port.nodeEnabled?.()) return false;
     const room = this.room(ref.group);
     const entry = room?.entries.find(post => post.hash === ref.hash);
-    return !!room && !!entry && this.canQueueNodePost(room, entry, peer, Date.now());
+    return !!room && !!entry && this.canQueueNodePost(room, entry, peer, Date.now(), ref.file);
   }
 
-  private canQueueNodePost(room: GroupRoom, entry: GroupEntry, peer: string, now: number) {
+  private canQueueNodePost(room: GroupRoom, entry: GroupEntry, peer: string, now: number, file = false) {
     if (!room.mls || room.departed || room.leaving || room.plan && !room.plan.key) return false;
     if (entry.from === peer || peer === this.port.self || !room.members.includes(peer) || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
     if (!room.members.includes(entry.from) || epochOf(room) - (entry.epoch ?? 1) >= GROUP_KEY_HISTORY) return false;
     const since = availableSince(entry);
     const audience = groupAudience(room, entry);
-    return since !== undefined && now - since >= 2000 && now - since < COURIER_TTL &&
-      audience.includes(this.port.self) && audience.includes(peer) &&
-      !entry.receivedBy?.includes(peer) && !entry.receipts?.some(receipt => receipt.by === peer) &&
+    if (since === undefined || now - since < 2000 || now - since >= COURIER_TTL ||
+        !audience.includes(this.port.self) || !audience.includes(peer)) return false;
+    // Each sender queues one encrypted copy per recipient. A recipient can
+    // still serve verified bytes directly without duplicating node uploads.
+    if (file) return entry.from === this.port.self && !!entry.file &&
+      entry.nodeFileStatus?.[peer] !== 'delivered' && entry.nodeFileStatus?.[peer] !== 'finished';
+    return !entry.receivedBy?.includes(peer) && !entry.receipts?.some(receipt => receipt.by === peer) &&
       entry.nodeStatus?.[peer] !== 'delivered' && entry.nodeStatus?.[peer] !== 'finished';
   }
 
@@ -211,26 +232,30 @@ export class GroupController {
     if (!this.port.active() || !room) return false;
     if (room.departed || room.leaving || !room.members.includes(peer) || !this.port.allowed(peer)) return true;
     const entry = room.entries.find(post => post.hash === ref.hash);
+    if (ref.file) return !!entry && (!room.members.includes(entry.from) ||
+      !groupAudience(room, entry).includes(peer) || epochOf(room) - (entry.epoch ?? 1) >= GROUP_KEY_HISTORY);
     return entry !== undefined && (!room.members.includes(entry.from) || entry.receivedBy?.includes(peer) === true ||
       entry.receipts?.some(receipt => receipt.by === peer) === true);
   }
 
-  *nodePosts(): Iterable<GroupNodePost> {
+  *nodePosts(file = false): Iterable<GroupNodePost> {
     if (!this.port.nodeEnabled?.() || !this.port.active()) return;
     const now = Date.now();
     for (const room of this.port.rooms()) for (const entry of room.entries) {
       if (availableSince(entry) === undefined) continue;
       const ref = { group:room.id, hash:entry.hash };
       for (const peer of room.members) {
-        if (!this.canQueueNodePost(room, entry, peer, now)) continue;
+        if (!this.canQueueNodePost(room, entry, peer, now, file)) continue;
         const relay = entry.from !== this.port.self;
         // The node indexes jobs by ID, even when several senders use it.
         // Preserve existing author reservations and namespace relayed copies.
         const jobKey = relay ? [room.id, entry.hash, peer, this.port.self] : [room.id, entry.hash, peer];
+        if (file) jobKey.push('file');
         const hex = bytesToHex(sha256(encoder.encode(JSON.stringify(jobKey))));
         const id = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-5' + hex.slice(13, 16) + '-8' + hex.slice(17, 20) + '-' + hex.slice(20, 32);
         const frame: GroupMessageFrame = { type:'message', group:room.id, packet:entry.packet };
-        yield { ...ref, id, peer, content:GROUP_PREFIX + JSON.stringify(frame), relay };
+        yield { ...ref, id, peer, content:GROUP_PREFIX + JSON.stringify(frame), relay,
+          ...(file ? { file:true, offer:entry.file } : {}) };
       }
     }
   }
@@ -239,9 +264,10 @@ export class GroupController {
     return this.run(async () => {
       const room = this.room(ref.group);
       const entry = room?.entries.find(post => post.hash === ref.hash);
+      const key = ref.file ? 'nodeFileStatus' : 'nodeStatus';
       if (!room || !entry || entry.from === peer || !groupAudience(room, entry).includes(peer) ||
-          entry.nodeStatus?.[peer] === status || entry.nodeStatus?.[peer] === 'delivered') return;
-      const updated = { ...entry, nodeSince:availableSince(entry) ?? Date.now(), nodeStatus:{ ...entry.nodeStatus, [peer]:status } };
+          entry[key]?.[peer] === status || entry[key]?.[peer] === 'delivered') return;
+      const updated = { ...entry, nodeSince:availableSince(entry) ?? Date.now(), [key]:{ ...entry[key], [peer]:status } };
       await this.save({ ...room, entries:room.entries.map(post => post === entry ? updated : post) });
     });
   }
@@ -252,6 +278,34 @@ export class GroupController {
     const room = this.room(frame.group);
     return !!room?.mls && room.members.includes(peer) && room.entries.some(entry =>
       entry.packet === frame.packet && groupAudience(room, entry).includes(peer));
+  }
+
+  nodeFileOffer(ref: GroupNodeReference, peer: string, offer: FileOffer): FileOffer | undefined {
+    if (!this.port.active() || !this.port.contact(peer) || !this.port.allowed(peer)) return;
+    const room = this.room(ref.group);
+    if (!room?.mls || room.departed || room.leaving || (room.plan && !room.plan.key) || !room.members.includes(peer) ||
+        !room.members.includes(this.port.self)) return;
+    const entry = room.entries.find(value => value.hash === ref.hash);
+    const normalized = normalizeFileOffer(offer);
+    if (entry?.file && normalized && room.members.includes(entry.from) && epochOf(room) - (entry.epoch ?? 1) < GROUP_KEY_HISTORY &&
+        groupAudience(room, entry).includes(peer) && groupAudience(room, entry).includes(this.port.self) &&
+        sameFileOffer(normalizeFileOffer({ ...entry.file, id:offer.id })!, normalized)) return entry.file;
+  }
+
+  async receiveNodeFile(peer: string, frame: GroupMessageFrame, node: string, offer: FileOffer): Promise<GroupNodeReference | undefined> {
+    if (!await this.receiveNodePost(peer, frame, node)) return;
+    const ref: GroupNodeReference = { group:frame.group, hash:await groupPacketHash(frame.packet), file:true };
+    if (this.nodeFileOffer(ref, peer, offer)) return ref;
+  }
+
+  completeNodeFile(ref: GroupNodeReference, peer: string, node: string, offer: FileOffer, bytes: Uint8Array) {
+    return this.run(async () => {
+      if (!this.nodeFileOffer(ref, peer, offer) || bytes.length !== offer.size || await sha256Hex(bytes) !== offer.sha256 ||
+          !this.nodeFileOffer(ref, peer, offer)) throw new Error('group_file_unavailable');
+      const room = this.room(ref.group)!;
+      await this.save({ ...room, entries:room.entries.map(entry => entry.hash === ref.hash ? { ...entry, fileNode:node, fileRequested:undefined } : entry) },
+        { group:ref.group, hash:ref.hash, bytes });
+    });
   }
 
   async markRead(id: string, hashes: string[]) {

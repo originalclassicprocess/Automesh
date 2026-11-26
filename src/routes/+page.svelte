@@ -15,7 +15,7 @@ import GroupCreateDialog from '$lib/groups/GroupCreateDialog.svelte';
 import NewChatMenu, { newChatViewFromLayer, type NewChatView } from '$lib/chat/NewChatMenu.svelte';
 import NewChatPicker from '$lib/chat/NewChatPicker.svelte';
 import { GroupController } from '$lib/groups/GroupController';
-import { groupChronology, groupEntryUnread, groupPeers, groupPostMentions, groupVisible, type GroupRooms } from '$lib/groups/storage';
+import { groupChronology, groupEntryUnread, groupPeers, groupPostMentions, groupVisible, type GroupEntry, type GroupRooms } from '$lib/groups/storage';
 import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -59,7 +59,7 @@ import { preserveSnapshotMediaRefs } from '$lib/chat/snapshot-media';
 import StickerPackCard from'$lib/chat/StickerPackCard.svelte';
 import StickerPackPreview from'$lib/chat/StickerPackPreview.svelte';
 import{StickerCacheExchange}from'$lib/chat/sticker-cache-exchange';
-import { importStickerPack, exportStickerPack, type PreparedPack } from '$lib/chat/sticker-pack';
+import { importStickerPack, exportStickerPack, isStickerPackFile, type PreparedPack } from '$lib/chat/sticker-pack';
 import MessageTools from '$lib/chat/MessageTools.svelte';
 import { messageStatus } from '$lib/chat/message-presentation';
 import { messagePins, nextPinRevision, visibleChatMessages } from '$lib/chat/message-pins';
@@ -500,6 +500,7 @@ let peerQr = $state('');
 let trustedDeviceChoice = $state(true);
 let trustedSession = $state(false);
 const activeGroup = $derived(trustedSession && profileNetwork ? groupRooms.find(room => room.id === selectedGroupId && groupVisible(room)) : undefined);
+let groupChat = $state<{ canStageFiles(): boolean; stageFiles(files: File[]): void }>();
 let pendingExit = $state<'lock' | 'logout' | null>(null);
 let deleteHistoryChoice = $state(true);
 let endingSession = $state(false);
@@ -1948,14 +1949,16 @@ function focusComposer(node: HTMLTextAreaElement, _peer: string) {
 }
 
 function canDropFiles(): boolean {
+  if (activeGroup) return !!groupChat?.canStageFiles() && !navigationBusy() && !mediaOpen && !receivedPack;
   return !nativeOpen && !localAgentOpen && !activeGroup && screen === 'account' && accountView === 'chats' && !!chat && !!activeConversation &&
     activeConversation.contact === 'accepted' && !navigationBusy() && !attachingFiles && !voiceBusy &&
     !selecting && !galleryId && !messageTools && !nodeBudgetOpen && !networkSummaryOpen && !mediaOpen;
 }
 
 function fileDrop(node: HTMLElement) {
-  return installFileDrop(node, { canDrop: canDropFiles, target: () => sessionChats.activePeer,
-    onFiles: files => { stageAttachments(files); }, onActive: active => { fileDragActive = active; } });
+  return installFileDrop(node, { canDrop: canDropFiles, target: () => activeGroup?.id ?? sessionChats.activePeer,
+    onFiles: files => { if (activeGroup) groupChat?.stageFiles(files); else stageAttachments(files); },
+    onActive: active => { fileDragActive = active; } });
 }
 
 function toggleAllMessages(): void {
@@ -3499,10 +3502,16 @@ function loadStoragePreview(file: ManagedFile): Promise<Blob | null> {
     if (file.id.startsWith('group-file:')) {
       const offer = groupRooms.find(room => room.id === file.peer)?.entries.find(entry => entry.hash === file.messageId)?.file;
       const type = offer && inlineMediaFor(offer);
-      if (type?.kind !== 'image') return null;
+      if (!file.stickerPack && type?.kind !== 'image') return null;
       const bytes = await groupController?.readFile(file.peer, file.messageId);
       if (!bytes) return null;
-      try { blob = current() ? await storageThumbnail(bytes, type.mime) : null; }
+      try {
+        if (!current()) return null;
+        if (file.stickerPack) {
+          const { files } = await importStickerPack(bytes);
+          blob = current() && files[0] ? await storageThumbnail(files[0].bytes, files[0].asset.mime) : null;
+        } else blob = await storageThumbnail(bytes, type!.mime);
+      }
       finally { bytes.fill(0); }
     } else if (file.stickerPack) {
       const entry = sessionChats.byPeer[file.peer]?.messages.find(message => message.id === file.messageId);
@@ -3720,15 +3729,17 @@ async function saveMessageMedia(peer: string, message: ChatEntry): Promise<void>
       if (generation===authGeneration && sessionChats.activePeer===peer){receivedPack=pack;receivedPackPeer=peer;}
       return;
     }
-    const media=await prepareMedia(bytes,file.name);
-    if (generation!==authGeneration || sessionChats.activePeer!==peer) return;
-    if (message.details?.media?.kind==='sticker') {
-      const pack=await makePack(message.details.media.packName ? `${message.details.media.packName} · стикер` : 'Мой стикер',[media]);
-      if (generation!==authGeneration) return;
-      await commitMediaLibrary(addMedia(mediaLibrary,[media],pack),[media]);
-    } else await commitMediaLibrary(addMedia(mediaLibrary,[media]),[media]);
-    status='Добавлено в библиотеку этого профиля.';
+    await saveReceivedMedia(bytes, file.name, message.details?.media, () => generation === authGeneration && sessionChats.activePeer === peer);
   } catch(e) { status=e instanceof Error?e.message:'Не удалось добавить.'; }
+}
+async function saveReceivedMedia(bytes: Uint8Array, name: string, details: MessageDetails['media'], current: () => boolean) {
+  const media = await prepareMedia(bytes, name);
+  if (!current()) return;
+  const pack = details?.kind === 'sticker'
+    ? await makePack(details.packName ? `${details.packName} · стикер` : 'Мой стикер', [media]) : undefined;
+  if (!current()) return;
+  await commitMediaLibrary(addMedia(mediaLibrary, [media], pack), [media]);
+  status = 'Добавлено в библиотеку этого профиля.';
 }
 async function acceptReceivedPack(): Promise<void> {
   const pack=receivedPack; if (!pack) return;
@@ -3750,8 +3761,12 @@ async function previewMessagePack(peer:string,message:ChatEntry):Promise<Prepare
   if(generation!==authGeneration||sessionChats.activePeer!==peer)throw Error('Чат изменился.');return result;
 }
 async function sendPreviewSticker(file:PreparedMedia):Promise<void>{
-  const pack=receivedPack,peer=receivedPackPeer;if(!pack||sessionChats.activePeer!==peer)throw Error('Чат изменился.');
-  await sendLibraryFile(new File([file.bytes as BlobPart],file.asset.name,{type:file.asset.mime}),{media:{kind:'sticker',packId:pack.pack.id,packName:pack.pack.name},allowForwardAttribution},peer);
+  const pack=receivedPack,peer=receivedPackPeer;
+  if(!pack || activeGroup?.id !== peer && sessionChats.activePeer !== peer) throw Error('Чат изменился.');
+  const attachment = new File([file.bytes as BlobPart],file.asset.name,{type:file.asset.mime});
+  const media = {kind:'sticker' as const,packId:pack.pack.id,packName:pack.pack.name};
+  if (activeGroup?.id === peer) await sendGroupPost(peer, '', undefined, attachment, media);
+  else await sendLibraryFile(attachment,{media,allowForwardAttribution},peer);
   receivedPack=null;
 }
 let stickerStorageChain:Promise<unknown>=Promise.resolve(),migratedStickerGeneration=-1;
@@ -5369,9 +5384,19 @@ async function initializeChat() {
     nextChat.onOfflineBundle((peer, value) => worker.accept(peer, value));
     const courier = new CourierController({ address, identity, lanOnly: () => networkSettings.internetEnabled === false,
       groups:{
-        posts:() => groups.nodePosts(), eligible:(ref, peer) => groups.canStoreOnNode(ref, peer),
+        posts:file => groups.nodePosts(file), eligible:(ref, peer) => groups.canStoreOnNode(ref, peer),
         release:(ref, peer) => groups.canReleaseNodeCopy(ref, peer),
         status:(ref, peer, value) => groups.recordNodeStatus(ref, peer, value), receive:(peer, frame, node) => groups.receiveNodePost(peer, frame, node),
+        files:{
+          load:ref => groups.readFile(ref.group, ref.hash),
+          receive:(peer, frame, node, offer) => groups.receiveNodeFile(peer, frame, node, offer),
+          allowed:(ref, peer, offer) => !!groups.nodeFileOffer(ref, peer, offer),
+          accepted:(ref, _peer, offer) => {
+            const key = groupFileStorageId(ref.group, ref.hash);
+            return groups.fileRequested(ref.group, ref.hash) || reserveAutomaticGroupFile(key, offer.size);
+          },
+          complete:(ref, peer, node, offer, bytes) => groups.completeNodeFile(ref, peer, node, offer, bytes),
+        },
       },
       notification: (peer,id,providers) => notificationController?.nodeWake(peer,id,providers) ?? Promise.resolve(undefined),
       activity:(peer,id,stage)=>{
@@ -5834,16 +5859,25 @@ function sendGroupPost(group: string, text: string, replyTo?: string, file?: Fil
   })());
 }
 
+function reserveAutomaticGroupFile(key: string, size: number): boolean {
+  if (!autoReceiveFilesEnabled) return false;
+  if (automaticFileIds.has(key)) return true;
+  if (automaticFileBytes + size > MAX_AUTO_FILE_BYTES) return false;
+  automaticFileIds.add(key);
+  automaticFileBytes += size;
+  return true;
+}
+
 async function obtainGroupFile(group: string, hash: string, automatic: boolean): Promise<Uint8Array | null> {
   const controller = groupController;
   const entry = activeGroup?.id === group ? activeGroup.entries.find(item => item.hash === hash) : undefined;
   if (!controller || !entry?.file || navigationBusy()) return null;
   const key = groupFileStorageId(group, hash);
   const reserve = automatic && !automaticFileIds.has(key);
-  if (reserve) {
-    if (!autoReceiveFilesEnabled || automaticFileBytes + entry.file.size > MAX_AUTO_FILE_BYTES) return null;
-    automaticFileIds.add(key);
-    automaticFileBytes += entry.file.size;
+  if (automatic && !reserveAutomaticGroupFile(key, entry.file.size)) return null;
+  if (!automatic) {
+    await controller.requestFile(group, hash);
+    courierDelivery?.wake();
   }
   try {
     wakeGroupConnections(group);
@@ -5861,7 +5895,63 @@ async function sendGroupSticker(group: string, asset: MediaAsset, pack: StickerP
   if (!data || generation !== authGeneration || activeGroup?.id !== group) throw new Error('group_file_unavailable');
   const media: MessageDetails['media'] = pack || asset.mime !== 'image/gif'
     ? { kind:'sticker', ...(pack ? { packId:pack.id, packName:pack.name } : {}) } : { kind:'gif' };
-  return sendGroupPost(group, '', replyTo, new File([data as BlobPart], asset.name, { type:asset.mime }), media);
+  const id = await sendGroupPost(group, '', replyTo, new File([data as BlobPart], asset.name, { type:asset.mime }), media);
+  if (generation === authGeneration) {
+    await commitMediaLibrary({ ...mediaLibrary, assets:mediaLibrary.assets.map(value => value.hash === asset.hash ? { ...value, usedAt:Date.now() } : value) })
+      .catch(() => {});
+  }
+  return id;
+}
+
+async function shareGroupPack(group: string, pack: StickerPack): Promise<void> {
+  const generation = authGeneration;
+  const zip = exportStickerPack(pack, await preparedLibraryPack(pack));
+  if (generation !== authGeneration || activeGroup?.id !== group) throw new Error('Чат изменился.');
+  // A regular archive remains readable by clients that predate group pack previews.
+  const file = new File([zip as BlobPart], `${safeFileName(pack.name)}.automesh-stickers.zip`, { type:'application/zip' });
+  await sendGroupPost(group, '', undefined, file);
+  status = 'Набор добавлен в очередь файлов.';
+}
+
+async function previewGroupPack(group: string, entry: GroupEntry): Promise<PreparedPack> {
+  const controller = groupController;
+  const bytes = entry.file && isStickerPackFile(entry.file.name) && await controller?.readFile(group, entry.hash);
+  if (!bytes) throw new Error('group_file_unavailable');
+  try {
+    const result = await importStickerPack(bytes);
+    if (groupController !== controller || activeGroup?.id !== group) throw new Error('Чат изменился.');
+    return result;
+  } finally { bytes.fill(0); }
+}
+
+async function openGroupPack(group: string, entry: GroupEntry) {
+  try { receivedPack = await previewGroupPack(group, entry); receivedPackPeer = group; }
+  catch (error) { status = error instanceof Error ? error.message : 'Не удалось добавить набор.'; }
+}
+
+async function saveGroupMedia(group: string, entry: GroupEntry): Promise<string> {
+  const controller = groupController;
+  const bytes = entry.file && await controller?.readFile(group, entry.hash);
+  if (!bytes || !entry.file) throw new Error('group_file_unavailable');
+  try {
+    await saveReceivedMedia(bytes, entry.file.name, entry.file.details?.media,
+      () => groupController === controller && activeGroup?.id === group);
+    return status;
+  } finally { bytes.fill(0); }
+}
+
+function canRequestGroupPack(entry: GroupEntry): boolean {
+  const media = entry.file?.details?.media;
+  return entry.from !== address && media?.kind === 'sticker' && !!media.packId &&
+    sessionChats.byPeer[entry.from]?.contact === 'accepted' &&
+    !mediaLibrary.packs.some(pack => pack.id === media.packId) &&
+    !packRequested(sessionChats.byPeer[entry.from].messages, media.packId);
+}
+
+async function requestGroupPack(entry: GroupEntry): Promise<string> {
+  if (!canRequestGroupPack(entry) || navigationBusy()) return 'Сейчас действие недоступно.';
+  await requestStickerPack(entry.from, entry.file!.details!.media!);
+  return status;
 }
 
 async function createClosedGroup(title: string, peers: string[]): Promise<string> {
@@ -6493,15 +6583,20 @@ async function changePassword(): Promise<void> {
     {#key address}
       {@const ownerGeneration = untrack(()=>authGeneration)}
       <MediaLibraryPanel library={mediaLibrary} initialTab={mediaTab} persistent={trustedSession}
-        canSend={accountView === 'chats' && sessionChats.byPeer[sessionChats.activePeer]?.contact === 'accepted'}
-        load={loadLibraryAsset} commit={(next,files)=>commitMediaLibrary(next,files,ownerGeneration)} send={sendLibraryAsset}
-        share={shareLibraryPack} exportPack={downloadLibraryPack} onClose={backWithinApp} />
+        canSend={accountView === 'chats' && (!!activeGroup?.mls || sessionChats.byPeer[sessionChats.activePeer]?.contact === 'accepted')}
+        load={loadLibraryAsset} commit={(next,files)=>commitMediaLibrary(next,files,ownerGeneration)}
+        send={async (asset, pack) => {
+          if (!activeGroup) { await sendLibraryAsset(asset, pack); return; }
+          await sendGroupSticker(activeGroup.id, asset, pack); mediaOpen = false;
+        }}
+        share={pack => activeGroup ? shareGroupPack(activeGroup.id, pack) : shareLibraryPack(pack)} exportPack={downloadLibraryPack} onClose={backWithinApp} />
     {/key}
   {/if}
   {#if receivedPack}
     {#key receivedPack.pack.id}
       <StickerPackPreview value={receivedPack} installed={mediaLibrary.packs.some(p=>p.id===receivedPack!.pack.id)} busy={mediaBusy}
-        canSend={sessionChats.activePeer===receivedPackPeer&&sessionChats.byPeer[receivedPackPeer]?.contact==='accepted'}
+        canSend={activeGroup?.id === receivedPackPeer && !!activeGroup.mls ||
+          sessionChats.activePeer===receivedPackPeer&&sessionChats.byPeer[receivedPackPeer]?.contact==='accepted'}
         onAdd={acceptReceivedPack} onSend={sendPreviewSticker} onClose={backWithinApp}/>
     {/key}
   {/if}
@@ -7095,7 +7190,7 @@ async function changePassword(): Promise<void> {
       {#if activeGroup}
         {#key activeGroup.id}
           {@const groupId = activeGroup.id}
-          <GroupChat room={activeGroup} self={address} name={peer => groupContactName(activeGroup!, peer)} photo={contactPhoto}
+          <GroupChat bind:this={groupChat} room={activeGroup} self={address} name={peer => groupContactName(activeGroup!, peer)} photo={contactPhoto}
             connected={connectedGroupPeers} blocked={navigationBusy()} welcomeFailed={groupWelcomeErrors.has(groupId)}
             contacts={newChatContacts}
             invite={async peer => {
@@ -7112,10 +7207,14 @@ async function changePassword(): Promise<void> {
             canMention={peer => sessionChats.byPeer[peer]?.contact !== 'blocked'}
             sendSticker={(asset, pack, replyTo) => sendGroupSticker(groupId, asset, pack, replyTo)}
             library={mediaLibrary} loadSticker={loadLibraryAsset} manageStickers={openMediaLibrary}
-            autoReceive={autoReceiveFilesEnabled}
+            autoReceive={autoReceiveFilesEnabled} autoplay={autoPlayVideoEnabled && !audioTrack && !callBusy}
             loadAttachment={hash => groupController?.readFile(groupId, hash) ?? Promise.resolve(null)}
             obtainAttachment={(hash, automatic) => obtainGroupFile(groupId, hash, automatic)}
             saveAttachment={saveDownload}
+            previewPack={entry => previewGroupPack(groupId, entry)}
+            openPack={entry => void openGroupPack(groupId, entry)}
+            saveMedia={entry => saveGroupMedia(groupId, entry)}
+            canRequestPack={canRequestGroupPack} requestPack={requestGroupPack}
             sync={() => wakeGroupConnections(groupId)} direct={() => openConnectionSection('direct')} back={showChatList} />
         {/key}
       {:else if localAgentOpen}
