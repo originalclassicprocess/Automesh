@@ -8,11 +8,12 @@
   import ChoiceMenu from './ChoiceMenu.svelte';
   import type { Snippet } from 'svelte';
   let { files, usage, volatile, busy, error, packCount, gifCount,
-    refresh, clean, download, openLibrary, openProfiles, chats = [], localChats = [], name = peer => peer, openChat, urls = {}, loadPreview, modelStorage }: {
+    refresh, clean, download, openLibrary, openProfiles, chats = [], localChats = [], name = peer => peer, openChat, canClearChat, urls = {}, loadPreview, modelStorage }: {
     files: ManagedFile[]; usage: StorageOverview | null; volatile: boolean; busy: boolean; error: string;
     packCount: number; gifCount: number; openLibrary?: () => void; openProfiles: () => void;
     refresh: () => void; clean: (choice: StorageCleanup) => void; download: (peer: string, id: string) => void;
     chats?: ChatStorageUsage[]; localChats?: LocalTranscriptStorage[]; name?: (peer: string) => string; openChat?: (peer: string) => void;
+    canClearChat?: (peer: string) => boolean;
     urls?: Record<string,string>; loadPreview?: (file:ManagedFile)=>Promise<Blob|null>;
     modelStorage?: Snippet;
   } = $props();
@@ -147,7 +148,7 @@
   {#if peer}
     <div class="section-actions">
       <button class="danger" disabled={busy || !files.some(file => file.peer === peer)} onclick={() => clean({kind:'chat-files', peers:[peer!]})}>{$i18n.text('Удалить файлы этого чата')}</button>
-      <button class="danger" disabled={busy || !chats.some(chat => chat.peer === peer && (chat.messages || chat.files))} onclick={() => clean({kind:'chat',peer:peer!})}>{$i18n.text('Очистить чат целиком')}</button>
+      {#if !canClearChat || canClearChat(peer)}<button class="danger" disabled={busy || !chats.some(chat => chat.peer === peer && (chat.messages || chat.files))} onclick={() => clean({kind:'chat',peer:peer!})}>{$i18n.text('Очистить чат целиком')}</button>{/if}
     </div>
   {/if}
   <div class="file-types" aria-label={$i18n.text('Тип файлов')}>

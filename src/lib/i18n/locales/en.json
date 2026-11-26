@@ -3385,5 +3385,11 @@
   "m_e3c401fa111c": "Delivery not confirmed",
   "m_9498e9f8ad7c": "First block of the latest upload",
   "m_f68be81d016f": "Latest node storage confirmation",
-  "m_845176a8d331": "First block of the latest download"
+  "m_845176a8d331": "First block of the latest download",
+  "m_22de3503d488": "Could not receive the file. Try again when a member who has it is online.",
+  "m_ed68da258fe4": "File card on node",
+  "m_24ec952d6774": "File card delivered",
+  "m_2596d0c852a7": "Mention a member",
+  "m_a2c8a884a43c": "You were mentioned",
+  "m_91f43b2cce10": "Unread mention"
 }

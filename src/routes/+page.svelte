@@ -9,11 +9,13 @@ import { RecoveryController } from '$lib/application/recovery';
 import { pendingFile, pendingFileOffer, peerNeedsRecovery } from '$lib/application/delivery-work';
 import { version } from '$app/environment';
 import GroupChat from '$lib/groups/GroupChat.svelte';
+import { groupFileStorageId, type GroupFilePayload } from '$lib/groups/attachments';
+import type { GroupMention } from '$lib/groups/mentions';
 import GroupCreateDialog from '$lib/groups/GroupCreateDialog.svelte';
 import NewChatMenu, { newChatViewFromLayer, type NewChatView } from '$lib/chat/NewChatMenu.svelte';
 import NewChatPicker from '$lib/chat/NewChatPicker.svelte';
 import { GroupController } from '$lib/groups/GroupController';
-import { groupChronology, groupEntryUnread, groupPeers, groupVisible, type GroupRooms } from '$lib/groups/storage';
+import { groupChronology, groupEntryUnread, groupPeers, groupPostMentions, groupVisible, type GroupRooms } from '$lib/groups/storage';
 import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -241,7 +243,7 @@ import {
   saveChatDataWithFileDeletion,
   type LocalChatData,
 } from '$lib/chat/local-store';
-import { FILE_CHUNK_BYTES, safeFileName, sha256Hex, sameFileOffer, type FileOffer } from '$lib/chat/file-transfer';
+import { FILE_CHUNK_BYTES, MAX_FILE_BYTES, safeFileName, sha256Hex, sameFileOffer, type FileOffer } from '$lib/chat/file-transfer';
 import { textFitsLimit } from '$lib/chat/text-limits';
 import { defaultDeleteHistory, historyAction } from '$lib/chat/session-policy';
 import { autoLockIsDue, DEFAULT_AUTO_LOCK_MINUTES, normalizeAutoLockMinutes, readReceiptsForMode } from '$lib/chat/session-settings';
@@ -1083,6 +1085,7 @@ const conversationItems=$derived([
       kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
       time:room.activityAt ?? 0, last:groupChronology(room.entries).at(-1),
       unread:room.entries.filter(entry => groupEntryUnread(entry, address)).length,
+      mentioned:room.entries.some(entry => groupEntryUnread(entry, address) && groupPostMentions(entry, address)),
     })) : [])
 ].sort((a,b)=>b.time-a.time));
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
@@ -1717,6 +1720,11 @@ function contactName(accountId: string): string {
   return aliases[accountId] || declaredNames[accountId] || `${accountId.slice(0, 12)}…`;
 }
 
+function groupContactName(room: GroupRooms[number], accountId: string): string {
+  const profile = room.members.includes(accountId) ? room.profiles?.[accountId] : undefined;
+  return profile ? aliases[accountId] || profile.nickname || `${accountId.slice(0, 12)}…` : contactName(accountId);
+}
+
 function contactPhoto(accountId: string): string { return accountId === address ? selfAvatar : peerAvatars[accountId] ?? ''; }
 
 function publishAvatar(activeChat: ChatService, peer: string): void {
@@ -1866,6 +1874,7 @@ function saveOwnNickname(): void {
   nicknameDraft = cleaned;
   status = '';
   persistLocalChats();
+  wakeGroupConnections();
   const activeChat = chat;
   if (activeChat) {
     for (const peer of sessionChats.order) {
@@ -3487,7 +3496,15 @@ function loadStoragePreview(file: ManagedFile): Promise<Blob | null> {
   const work = storagePreviewQueue.catch(() => {}).then(async () => {
     if (!current()) return null;
     let blob: Blob | null;
-    if (file.stickerPack) {
+    if (file.id.startsWith('group-file:')) {
+      const offer = groupRooms.find(room => room.id === file.peer)?.entries.find(entry => entry.hash === file.messageId)?.file;
+      const type = offer && inlineMediaFor(offer);
+      if (type?.kind !== 'image') return null;
+      const bytes = await groupController?.readFile(file.peer, file.messageId);
+      if (!bytes) return null;
+      try { blob = current() ? await storageThumbnail(bytes, type.mime) : null; }
+      finally { bytes.fill(0); }
+    } else if (file.stickerPack) {
       const entry = sessionChats.byPeer[file.peer]?.messages.find(message => message.id === file.messageId);
       if (!entry || !mediaCanOpen(entry) || entry.details?.media?.kind !== 'sticker-pack') return null;
       const archive = await prepareMessageFile(file.peer, file.messageId, false);
@@ -4367,6 +4384,19 @@ async function downloadFile(peer: string, id: string): Promise<boolean> {
   } catch (e) { if (generation === authGeneration) status = e instanceof Error ? e.message : 'Не удалось скачать файл.'; return false; }
 }
 
+async function downloadManagedFile(peer: string, id: string): Promise<void> {
+  const room = groupRooms.find(room => room.id === peer && groupVisible(room));
+  if (!room) { await downloadFile(peer, id); return; }
+  const entry = room.entries.find(message => message.hash === id);
+  const controller = groupController;
+  try {
+    const bytes = await controller?.readFile(peer, id);
+    if (!bytes) throw new Error('group_file_unavailable');
+    try { if (entry?.file && groupController === controller) saveDownload(bytes as BlobPart, entry.file.name); }
+    finally { bytes.fill(0); }
+  } catch { if (groupController === controller) storageError = 'Не удалось скачать файл.'; }
+}
+
 function receiptKey(peer: string, messageId: string): string {
   return `${peer}:${messageId}`;
 }
@@ -5218,6 +5248,7 @@ async function initializeChat() {
     self:groupAccount, identity:groupIdentity, active:groupActive,
     contact:peer => sessionChats.byPeer[peer]?.contact === 'accepted',
     allowed:peer => sessionChats.byPeer[peer]?.contact !== 'blocked',
+    nickname:() => selfNickname,
     readsEnabled:() => readReceiptsEnabled,
     rooms:() => groupRooms,
     welcomeFailed:id => {
@@ -5225,13 +5256,31 @@ async function initializeChat() {
     },
     nodeEnabled:() => courierState.enabled && !!courierState.node,
     transport:{ ready:peer => nextChat.isDirectReady(peer), send:(peer, frame) => nextChat.sendGroupFrame(peer, frame) },
-    save: async rooms => {
+    files: {
+      read: async (group, hash) => {
+        const key = chatStoreKey;
+        if (!key || !groupActive()) return null;
+        return loadLocalFileData(key, groupAccount, groupFileStorageId(group, hash));
+      },
+      write: async (group, hash, bytes) => {
+        const key = chatStoreKey, epoch = storageEpoch();
+        if (!key || !groupActive()) throw new Error('group_inactive');
+        await historyWrites.enqueue(async () => {
+          requireStorageEpoch(epoch);
+          if (!groupActive()) throw new Error('group_inactive');
+          await saveLocalFileData(key, groupAccount, groupFileStorageId(group, hash), bytes);
+        });
+      },
+    },
+    save: async (rooms, file) => {
       const key = chatStoreKey, epoch = storageEpoch();
       if (!key || !groupActive()) throw new Error('group_inactive');
       await historyWrites.enqueue(async () => {
         requireStorageEpoch(epoch);
         if (!groupActive()) throw new Error('group_inactive');
-        await saveLocalChatData(key, groupAccount, { ...chatSnapshot(), experimentalGroups:rooms });
+        const snapshot = { ...chatSnapshot(), experimentalGroups:rooms };
+        if (file) await saveLocalSessionData(key, groupAccount, snapshot, new Map([[groupFileStorageId(file.group, file.hash), file.bytes]]));
+        else await saveLocalChatData(key, groupAccount, snapshot);
         if (generation === authGeneration && address === groupAccount) {
           groupRooms = rooms;
           if (rooms.some(room => room.id === selectedGroupId && !groupVisible(room))) showChatList();
@@ -5244,7 +5293,7 @@ async function initializeChat() {
   const groupSync = setInterval(() => {
     if (groupActive() && !document.hidden && groupRooms.length) wakeGroupConnections();
   }, 20_000);
-  nextChat.onDisconnect(() => clearInterval(groupSync));
+  nextChat.onDisconnect(() => { clearInterval(groupSync); groups.close(); });
   const exchange=new StickerCacheExchange({
     current:()=>chat===nextChat&&generation===authGeneration&&screen==='account'&&!endingSession&&!memoryBusy,
     accepted:peer=>sessionChats.byPeer[peer]?.contact==='accepted',
@@ -5759,6 +5808,62 @@ function wakeGroupConnections(groupId?: string): void {
   }
 }
 
+function sendGroupPost(group: string, text: string, replyTo?: string, file?: File, media?: MessageDetails['media'], mentions?: GroupMention[]): Promise<string> {
+  return attachmentTasks.track((async () => {
+    const controller = groupController;
+    if (!controller || activeGroup?.id !== group || navigationBusy()) throw new Error('group_inactive');
+    let attachment: GroupFilePayload | undefined, source: Uint8Array | undefined;
+    try {
+      if (file) {
+        if (file.size > MAX_FILE_BYTES) throw new Error('group_file_too_large');
+        source = new Uint8Array(await file.arrayBuffer());
+        const cleaned = cleanImageMetadataEnabled && !media
+          ? await preparePrivateImage(source, file.type, file.name)
+          : { bytes:source, mime:file.type, name:file.name };
+        attachment = { ...cleaned, mime:cleaned.mime.slice(0, 100), ...(media ? { details:{ media } } : {}) };
+      }
+      if (groupController !== controller || activeGroup?.id !== group || navigationBusy()) throw new Error('group_inactive');
+      const id = await controller.send(group, text, replyTo, attachment, mentions);
+      wakeGroupConnections(group);
+      courierDelivery?.wake();
+      return id;
+    } finally {
+      source?.fill(0);
+      if (attachment?.bytes !== source) attachment?.bytes.fill(0);
+    }
+  })());
+}
+
+async function obtainGroupFile(group: string, hash: string, automatic: boolean): Promise<Uint8Array | null> {
+  const controller = groupController;
+  const entry = activeGroup?.id === group ? activeGroup.entries.find(item => item.hash === hash) : undefined;
+  if (!controller || !entry?.file || navigationBusy()) return null;
+  const key = groupFileStorageId(group, hash);
+  const reserve = automatic && !automaticFileIds.has(key);
+  if (reserve) {
+    if (!autoReceiveFilesEnabled || automaticFileBytes + entry.file.size > MAX_AUTO_FILE_BYTES) return null;
+    automaticFileIds.add(key);
+    automaticFileBytes += entry.file.size;
+  }
+  try {
+    wakeGroupConnections(group);
+    await controller.obtainFile(group, hash);
+    return controller === groupController ? await controller.readFile(group, hash) : null;
+  } catch (error) {
+    if (reserve && controller === groupController && automaticFileIds.delete(key)) automaticFileBytes -= entry.file.size;
+    throw error;
+  }
+}
+
+async function sendGroupSticker(group: string, asset: MediaAsset, pack: StickerPack | undefined, replyTo?: string): Promise<string> {
+  const generation = authGeneration;
+  const data = await loadLibraryAsset(asset.hash);
+  if (!data || generation !== authGeneration || activeGroup?.id !== group) throw new Error('group_file_unavailable');
+  const media: MessageDetails['media'] = pack || asset.mime !== 'image/gif'
+    ? { kind:'sticker', ...(pack ? { packId:pack.id, packName:pack.name } : {}) } : { kind:'gif' };
+  return sendGroupPost(group, '', replyTo, new File([data as BlobPart], asset.name, { type:asset.mime }), media);
+}
+
 async function createClosedGroup(title: string, peers: string[]): Promise<string> {
   if (!groupController) throw new Error('group_inactive');
   const id = await groupController.create(title, peers);
@@ -5803,7 +5908,7 @@ async function refreshStorage(): Promise<void> {
       readStoredAgentModels(),
     ]);
     if (request !== storageRequest || address !== account || screen !== 'account') return;
-    storageFiles = managedFiles(sessionChats, disk, sessionFiles, mediaLibrary);
+    storageFiles = managedFiles(sessionChats, disk, sessionFiles, mediaLibrary, groupRooms);
     storageModels = models.models;
     storageUsage = { app, origin: estimate?.usage, history: disk.historyBytes, other: disk.otherAccountBytes,
       modelBytes: sumBytes(storageModels.map(model => model.bytes ?? 0)),
@@ -6550,10 +6655,16 @@ async function changePassword(): Promise<void> {
       packCount={mediaLibrary.packs.length} gifCount={mediaLibrary.gifs.length}
       volatile={!trustedSession} busy={memoryBusy || storageReading || mediaBusy} error={storageError}
       refresh={() => void refreshStorage()} clean={choice => memoryConfirmation = choice}
-      download={(peer, id) => void downloadFile(peer, id)}
+      download={(peer, id) => void downloadManagedFile(peer, id)}
       openLibrary={profileNetwork ? () => openMediaLibrary('stickers') : undefined}
       openProfiles={() => { selectSettings('account'); profileManagementOpen = true; }}
-      chats={chatStorageUsage(sessionChats,storageFiles)} localChats={localTranscriptUsage()} name={contactName} openChat={peer=>void openDirectChat(peer)}
+      chats={chatStorageUsage(sessionChats,storageFiles,groupRooms)} localChats={localTranscriptUsage()}
+      name={peer => groupRooms.find(room => room.id === peer)?.title ?? contactName(peer)}
+      canClearChat={peer => !groupRooms.some(room => room.id === peer)}
+      openChat={peer => {
+        if (groupRooms.some(room => room.id === peer && groupVisible(room))) { changeAccountView('chats'); openGroupChat(peer); }
+        else void openDirectChat(peer);
+      }}
       loadPreview={loadStoragePreview}>
       {#snippet modelStorage()}
         <AgentStoragePanel models={storageModels} aiCacheBytes={storageUsage?.app?.ai ?? 0}
@@ -6958,9 +7069,10 @@ async function changePassword(): Promise<void> {
             <span class="local-agent-avatar" aria-hidden="true"><ChatIcon name="group" /></span>
             <span class="local-agent-row-text">
               <strong>{room.title}</strong>
-              <span class="chat-preview">{item.last?.text ?? $i18n.text(room.mls ? 'Пока нет сообщений.' : room.owner === address || room.draft ? 'Ожидаем подключения к группе' : 'Приглашение в закрытую группу')}</span>
+              <span class="chat-preview">{item.last?.file ? '📎 ' + item.last.file.name : item.last?.text ?? $i18n.text(room.mls ? 'Пока нет сообщений.' : room.owner === address || room.draft ? 'Ожидаем подключения к группе' : 'Приглашение в закрытую группу')}</span>
             </span>
             {#if item.invitation}<span class="group-invite-badge" aria-hidden="true">!</span>{/if}
+            {#if item.mentioned}<span class="unread-badge group-mention-badge" aria-label={$i18n.text('Непрочитанное упоминание')}>@</span>{/if}
             {#if item.unread}<span class="unread-badge" aria-label={$i18n("m_fe510dbd63e0", { v0:item.unread })}>{item.unread > 99 ? '99+' : item.unread}</span>{/if}
           </button>
         {:else}
@@ -6983,7 +7095,7 @@ async function changePassword(): Promise<void> {
       {#if activeGroup}
         {#key activeGroup.id}
           {@const groupId = activeGroup.id}
-          <GroupChat room={activeGroup} self={address} name={contactName} photo={contactPhoto}
+          <GroupChat room={activeGroup} self={address} name={peer => groupContactName(activeGroup!, peer)} photo={contactPhoto}
             connected={connectedGroupPeers} blocked={navigationBusy()} welcomeFailed={groupWelcomeErrors.has(groupId)}
             contacts={newChatContacts}
             invite={async peer => {
@@ -6996,13 +7108,14 @@ async function changePassword(): Promise<void> {
             trackReads={!newChatView}
             markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
-            send={async (text, replyTo) => {
-              if (!groupController) throw new Error('group_inactive');
-              const id = await groupController.send(groupId, text, replyTo);
-              wakeGroupConnections(groupId);
-              courierDelivery?.wake();
-              return id;
-            }}
+            send={(text, replyTo, file, mentions) => sendGroupPost(groupId, text, replyTo, file, undefined, mentions)}
+            canMention={peer => sessionChats.byPeer[peer]?.contact !== 'blocked'}
+            sendSticker={(asset, pack, replyTo) => sendGroupSticker(groupId, asset, pack, replyTo)}
+            library={mediaLibrary} loadSticker={loadLibraryAsset} manageStickers={openMediaLibrary}
+            autoReceive={autoReceiveFilesEnabled}
+            loadAttachment={hash => groupController?.readFile(groupId, hash) ?? Promise.resolve(null)}
+            obtainAttachment={(hash, automatic) => obtainGroupFile(groupId, hash, automatic)}
+            saveAttachment={saveDownload}
             sync={() => wakeGroupConnections(groupId)} direct={() => openConnectionSection('direct')} back={showChatList} />
         {/key}
       {:else if localAgentOpen}

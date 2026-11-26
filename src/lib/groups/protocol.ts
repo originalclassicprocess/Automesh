@@ -1,4 +1,5 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
+import { FILE_CHUNK_BYTES } from '$lib/chat/file-transfer';
 
 export const MAX_GROUP_MEMBERS = 10;
 export const GROUP_HISTORY = 128;
@@ -22,6 +23,7 @@ export const encodedMls = (value: unknown, limit = 28000): value is string =>
 
 export type GroupProof = { publicKey: string; signature: string };
 export type GroupReceipt = GroupProof & { hash: string; by: string; state: 'received' | 'read' };
+export type GroupProfile = GroupProof & { by: string; nickname: string; revision: number };
 
 export function validGroupProof(value: unknown): value is GroupProof {
   if (!value || typeof value !== 'object') return false;
@@ -33,6 +35,16 @@ export function validGroupReceipt(value: unknown): value is GroupReceipt {
   if (!validGroupProof(value)) return false;
   const { by, hash, state } = value as GroupReceipt;
   return account(by) && digest(hash) && (state === 'received' || state === 'read');
+}
+
+export const validNickname = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 32 && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value);
+
+export function parseGroupProfile(value: unknown): GroupProfile | null {
+  if (!validGroupProof(value)) return null;
+  const { by, nickname, revision, publicKey, signature } = value as GroupProfile;
+  return account(by) && validNickname(nickname) && groupEpoch(revision)
+    ? { by, nickname, revision, publicKey, signature } : null;
 }
 
 type ChangeRef = { group: string; epoch: number; change: string };
@@ -47,15 +59,22 @@ export type MembershipFrame = GroupOffer | GroupPlan | GroupCommit | GroupReady 
 export const groupEpoch = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value < Number.MAX_SAFE_INTEGER;
 
+type FileRef = { group: string; hash: string; request: string; epoch: number };
+export type GroupFileFrame = FileRef & (
+  { type: 'file-request' | 'file-unavailable' } |
+  { type: 'file-part'; index: number; data: string }
+);
+
 export type GroupFrame =
   | MembershipFrame
+  | GroupFileFrame
   | { type: 'invite'; group: string; title: string; members: string[] }
   | { type: 'join' | 'welcome'; group: string; packet: string }
   | { type: 'welcome-proof'; group: string; packet: string; proof: GroupProof }
   | { type: 'message'; group: string; packet: string }
   | { type: 'ack'; group: string; hash: string }
   | { type: 'receipts'; group: string; receipts: GroupReceipt[] }
-  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number; requestEpoch?: boolean };
+  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number; requestEpoch?: boolean; profiles?: GroupProfile[] };
 
 // The adapter supplies authenticated Mesh IDs. It owns discovery, framing,
 // reconnection and any fragmentation required by its transport.
@@ -71,6 +90,16 @@ export function parseGroupFrame(value: unknown): GroupFrame | null {
   const group = frame.group;
   if (typeof frame.type === 'string' && frame.type.startsWith('group-')) return parseMembershipFrame(frame, group);
   switch (frame.type) {
+    case 'file-request':
+    case 'file-unavailable':
+    case 'file-part': {
+      if (!digest(frame.hash) || !uuid(frame.request) || !groupEpoch(frame.epoch)) return null;
+      const ref = { group, hash:frame.hash, request:frame.request, epoch:frame.epoch };
+      if (frame.type !== 'file-part') return { ...ref, type:frame.type };
+      return typeof frame.index === 'number' && Number.isSafeInteger(frame.index) && frame.index >= 0 &&
+        encodedMls(frame.data, 4 * Math.ceil(FILE_CHUNK_BYTES / 3))
+        ? { ...ref, type:frame.type, index:frame.index, data:frame.data } : null;
+    }
     case 'invite':
       return groupTitle(frame.title) && groupMembers(frame.members) ? { type:'invite', group, title:frame.title, members:frame.members } : null;
     case 'join':
@@ -92,8 +121,11 @@ export function parseGroupFrame(value: unknown): GroupFrame | null {
       if (!Array.isArray(seen) || seen.length !== frame.known.length ||
         !seen.every(mask => Number.isInteger(mask) && mask >= 0 && mask < 2 ** (MAX_GROUP_MEMBERS * 2)) ||
         typeof frame.hasWelcome !== 'boolean') return null;
+      const profiles = Array.isArray(frame.profiles) && frame.profiles.length <= MAX_GROUP_MEMBERS
+        ? frame.profiles.flatMap(value => { const profile = parseGroupProfile(value); return profile ? [profile] : []; })
+        : undefined;
       return { type:'sync', group, known:frame.known, seen, hasWelcome:frame.hasWelcome, epoch:groupEpoch(frame.epoch) ? frame.epoch : undefined,
-        requestEpoch:frame.requestEpoch === true };
+        requestEpoch:frame.requestEpoch === true, ...(profiles?.length ? { profiles } : {}) };
     }
     case 'ack':
       return digest(frame.hash) ? { type:'ack', group, hash:frame.hash } : null;
@@ -133,4 +165,8 @@ function parseMembershipFrame(frame: Record<string, unknown>, group: string): Me
 
 export function isMembershipFrame(frame: GroupFrame): frame is MembershipFrame {
   return frame.type.startsWith('group-');
+}
+
+export function isGroupFileFrame(frame: GroupFrame): frame is GroupFileFrame {
+  return frame.type === 'file-request' || frame.type === 'file-unavailable' || frame.type === 'file-part';
 }

@@ -5,6 +5,8 @@ import { pruneCourierFiles } from '$lib/node/courier-state';
 import { isLibraryFileId, libraryFileId, type MediaLibrary } from '$lib/chat/media-library';
 import type { AppCacheUsage } from './app-cache';
 import { nativeChannelToken, nativeMessageKey } from '$lib/radio/native-channels';
+import { groupFileStorageId } from '$lib/groups/attachments';
+import { groupVisible, type GroupRooms } from '$lib/groups/storage';
 export type FileCategory = 'image' | 'audio' | 'video' | 'other';
 export type ManagedFile = { id: string; peer: string; messageId: string; name: string; category: FileCategory; bytes: number; memoryBytes: number; timestamp?: number; shared?: boolean; stickerPack?: true };
 export const categoryNames: Record<FileCategory, string> = { image: 'Изображения', audio: 'Аудио', video: 'Видео', other: 'Другие файлы' };
@@ -15,7 +17,8 @@ export function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} ГБ`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
-export function managedFiles(state: SessionChats, disk: StorageInventory, memory: ReadonlyMap<string, Uint8Array>, library?: MediaLibrary): ManagedFile[] {
+export function managedFiles(state: SessionChats, disk: StorageInventory, memory: ReadonlyMap<string, Uint8Array>, library?: MediaLibrary,
+  groups: GroupRooms = []): ManagedFile[] {
   const stored = new Map(disk.files.map(file => [file.id, file.bytes]));
   const ids = new Set([...stored.keys(), ...memory.keys()]);
   const libraryIds = new Set(library?.assets.map(a => a.id));
@@ -28,6 +31,13 @@ export function managedFiles(state: SessionChats, disk: StorageInventory, memory
     entries.set(id, { peer, messageId: message.id, name: message.file.name, shared,
       ...(message.details?.media?.kind === 'sticker-pack' ? { stickerPack:true } : {}),
       category: inlineMediaFor(message.file)?.kind ?? 'other', timestamp: message.timestamp });
+  }
+  for (const room of groups.filter(groupVisible)) for (const message of room.entries) {
+    if (!message.file) continue;
+    entries.set(groupFileStorageId(room.id, message.hash), {
+      peer:room.id, messageId:message.hash, name:message.file.name,
+      category:inlineMediaFor(message.file)?.kind ?? 'other', timestamp:message.sentAt,
+    });
   }
   return [...ids].filter(id => !isLibraryFileId(id)).map(id => ({ id, ...(entries.get(id) ?? { peer: '', messageId: '', name: 'Файл вне истории', category: 'other' as const }),
     bytes: stored.get(id) ?? 0, memoryBytes: memory.get(id)?.byteLength ?? 0 }));
@@ -96,12 +106,16 @@ export function filterStoredFiles(files: ManagedFile[], filter: StorageFilter): 
       : (b.timestamp ?? 0) - (a.timestamp ?? 0) || a.id.localeCompare(b.id));
 }
 export type ChatStorageUsage = { peer: string; bytes: number; historyBytes: number; files: number; messages: number };
-export function chatStorageUsage(state: SessionChats, files: ManagedFile[]): ChatStorageUsage[] {
+export function chatStorageUsage(state: SessionChats, files: ManagedFile[], rooms: GroupRooms = []): ChatStorageUsage[] {
   const groups = new Map<string, ChatStorageUsage>();
   for (const peer of state.order) {
     const messages = state.byPeer[peer]?.messages ?? [];
     groups.set(peer, {peer, bytes:0, historyBytes:messages.length ? new TextEncoder().encode(JSON.stringify(messages)).byteLength : 0, files:0, messages:messages.length});
   }
+  for (const room of rooms.filter(groupVisible)) groups.set(room.id, {
+    peer:room.id, bytes:0, historyBytes:new TextEncoder().encode(JSON.stringify(room.entries)).byteLength,
+    files:0, messages:room.entries.length,
+  });
   for (const file of files) {
     const group = groups.get(file.peer) ?? {peer:file.peer, bytes:0, historyBytes:0, files:0, messages:0};
     group.bytes += fileBytes(file); group.files++; groups.set(file.peer, group);
@@ -134,7 +148,8 @@ export function prepareChatStorageCleanup(data: LocalChatData, choice: ChatStora
   const matched = choice.kind === 'files' ? new Set(choice.ids) : new Set<string>();
   const removed = new Set<string>();
   const matchFile = (key: string) => !isLibraryFileId(key) &&
-    (choice.kind === 'all-files' || matched.has(key) || (key.includes(':') && peers.has(key.split(':', 1)[0])));
+    (choice.kind === 'all-files' || matched.has(key) || (key.includes(':') &&
+      peers.has(key.startsWith('group-file:') ? key.split(':', 2)[1] : key.split(':', 1)[0])));
   const ids = new Set([...localIds].filter(matchFile));
   for (const incoming of data.courierState?.incomingFiles ?? []) {
     const { from, id } = incoming.job.body;
