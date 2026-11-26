@@ -43,6 +43,7 @@ function withReceipt(entry: GroupEntry, receipt: GroupReceipt): GroupEntry {
 export class GroupController {
   private tail: Promise<unknown> = Promise.resolve();
   private syncing = new Set<string>();
+  private requestedSync = new Map<string, { epoch: number; known: string[]; seen?: number[] }>();
   private hellos = new Set<string>();
   private welcomed = new Set<string>();
   private peerEpochs = new Map<string, number>();
@@ -325,7 +326,11 @@ export class GroupController {
   }
 
   peerOffline(peer: string) {
-    for (const room of this.port.rooms()) this.peerEpochs.delete(room.id + ':' + peer);
+    for (const room of this.port.rooms()) {
+      const key = room.id + ':' + peer;
+      this.peerEpochs.delete(key);
+      this.requestedSync.delete(key);
+    }
   }
 
   peerOnline(peer: string) {
@@ -336,25 +341,42 @@ export class GroupController {
 
   private async reply(room: GroupRoom, peer: string, known: string[], seen?: number[]) {
     const key = room.id + ':' + peer;
+    this.requestedSync.set(key, { epoch:epochOf(room), known, seen });
     if (this.syncing.has(key)) return;
     this.syncing.add(key);
-    const shareable = room.entries.filter(entry => groupAudience(room, entry).includes(peer));
-    const inventory = new Map(known.map((hash, index) => [hash, seen?.[index] ?? 0]));
     try {
-      for (const entry of shareable) {
-        if (!this.port.active() || !this.port.transport.ready(peer)) break;
-        if (!inventory.has(entry.hash)) await this.deliver(peer, { type:'message', group:room.id, packet:entry.packet });
-      }
-      if (seen) {
-        const missing = shareable.flatMap(entry => (entry.receipts ?? []).filter(receipt => {
-          const bits = receiptBits(room, entry, receipt);
-          return ((inventory.get(entry.hash) ?? 0) & bits) !== bits;
-        }));
-        for (let offset = 0; offset < missing.length && this.port.transport.ready(peer); offset += GROUP_RECEIPT_BATCH) {
-          await this.deliver(peer, { type:'receipts', group:room.id, receipts:missing.slice(offset, offset + GROUP_RECEIPT_BATCH) });
-        }
+      let request;
+      while ((request = this.requestedSync.get(key))) {
+        this.requestedSync.delete(key);
+        const current = this.room(room.id);
+        if (current && epochOf(current) === request.epoch)
+          await this.sendMissing(current, peer, request.known, request.seen);
       }
     } finally { this.syncing.delete(key); }
+  }
+
+  private async sendMissing(room: GroupRoom, peer: string, known: string[], seen?: number[]) {
+    const epoch = epochOf(room);
+    const ready = () => {
+      const current = this.room(room.id);
+      return this.port.active() && this.port.transport.ready(peer) && !!current && !current.departed &&
+        !current.leaving && current.members.includes(peer) &&
+        epochOf(current) === epoch && this.peerEpochs.get(room.id + ':' + peer) === epoch;
+    };
+    if (!ready()) return;
+    const shareable = room.entries.filter(entry => groupAudience(room, entry).includes(peer));
+    const inventory = new Map(known.map((hash, index) => [hash, seen?.[index] ?? 0]));
+    for (const entry of shareable) {
+      if (!ready()) return;
+      if (!inventory.has(entry.hash)) await this.deliver(peer, { type:'message', group:room.id, packet:entry.packet });
+    }
+    if (!seen) return;
+    const missing = shareable.flatMap(entry => (entry.receipts ?? []).filter(receipt => {
+      const bits = receiptBits(room, entry, receipt);
+      return ((inventory.get(entry.hash) ?? 0) & bits) !== bits;
+    }));
+    for (let offset = 0; offset < missing.length && ready(); offset += GROUP_RECEIPT_BATCH)
+      await this.deliver(peer, { type:'receipts', group:room.id, receipts:missing.slice(offset, offset + GROUP_RECEIPT_BATCH) });
   }
 
   private async receiveReceipts(room: GroupRoom, peer: string, receipts: GroupReceipt[]) {

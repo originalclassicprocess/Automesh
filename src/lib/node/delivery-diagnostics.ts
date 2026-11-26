@@ -1,4 +1,5 @@
 export type DeliveryDiagnostics = { envelopeAt: number; savedAt: number; receiptAt: number; failure: string;
+  nodeStoredAt?: number; uploadStartedAt?: number; downloadStartedAt?: number;
   inboxAt?: number; inboxFailure?: string; inboxSupported?: boolean;
   remoteInboxAt?: number; remoteInboxFailure?: string; remoteInboxSources?: number };
 export const emptyDeliveryDiagnostics = (): DeliveryDiagnostics => ({ envelopeAt: 0, savedAt: 0, receiptAt: 0, failure: '' });

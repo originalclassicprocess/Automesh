@@ -19,6 +19,9 @@
     {#if diagnostics.remoteInboxSources}<dt>{$i18n.text("Последняя проверка ноды собеседника")}</dt><dd>{$i18n.text(time(diagnostics.remoteInboxAt ?? 0))}</dd>{/if}
     <dt>{$i18n.text("Действующие ключи получения")}</dt><dd>{keys}</dd>
     <dt>{$i18n.text("Последний проверенный конверт")}</dt><dd>{$i18n.text(time(diagnostics.envelopeAt))}</dd>
+    {#if diagnostics.uploadStartedAt}<dt>{$i18n.text("Первый блок последней выгрузки")}</dt><dd>{time(diagnostics.uploadStartedAt)}</dd>{/if}
+    {#if diagnostics.nodeStoredAt}<dt>{$i18n.text("Последнее подтверждение записи на ноде")}</dt><dd>{time(diagnostics.nodeStoredAt)}</dd>{/if}
+    {#if diagnostics.downloadStartedAt}<dt>{$i18n.text("Первый блок последнего скачивания")}</dt><dd>{time(diagnostics.downloadStartedAt)}</dd>{/if}
     <dt>{$i18n.text("Последнее сохранение в приложении")}</dt><dd>{$i18n.text(time(diagnostics.savedAt))}</dd>
     <dt>{$i18n.text("Последнее подтверждение получения")}</dt><dd>{$i18n.text(time(diagnostics.receiptAt))}</dd>
   </dl>

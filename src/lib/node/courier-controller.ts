@@ -473,8 +473,7 @@ export class CourierController {
       for (const r of this.port.state().incomingFiles)
         if (r.job.body.courier === this.port.state().node!.address) this.fileReplies.set(r.job.body.id, this.httpReply());
     }
-    await this.downloadFiles();
-    await this.replenishPrekeys(health.prekeyPeers);
+    await this.reserveGroupPosts(lanOnly, health.routingProtocol === COURIER_ROUTE_PROTOCOL && !lanOnly);
     this.refreshKeyStocks();
     let count = 0; let keyWait = false; let fileWait = false;let sourceFailures=0;
     const eligible = (m: import('$lib/chat/session-chats').ChatEntry) => localOutgoing(m) && (m.file
@@ -545,7 +544,6 @@ export class CourierController {
         await this.persist(); if(allocation){delete this.keyStocks[peer];this.stockEpoch.set(peer,(this.stockEpoch.get(peer)??0)+1);} count++;
       }
     }
-    await this.reserveGroupPosts(lanOnly, health.routingProtocol === COURIER_ROUTE_PROTOCOL && !lanOnly);
     // Reserve AND durably commit before sending, within this pass (no extra timer).
     await this.persist();
     if (this.health.connection !== 'connected') this.report('checking');
@@ -553,8 +551,9 @@ export class CourierController {
     const waiting = this.port.state().pending.filter(j => j.body.expiresAt > Date.now() && !this.uploaded.has(j.body.id) && (!lanOnly || j.body.lanOnly) &&
       (!j.body.attachment || this.port.chats().byPeer[j.body.to]?.messages.some(m => m.id === j.body.id && m.fileStatus !== 'canceled' && !m.fileDeleted)));
     const offset = waiting.length ? this.uploadOffset % waiting.length : 0;
-    const batch = [...waiting.slice(offset), ...waiting.slice(0, offset)].slice(0, 20);
-    this.uploadOffset = offset + batch.length;
+    const window = [...waiting.slice(offset), ...waiting.slice(0, offset)].slice(0, 20);
+    const batch = [...window.filter(job => !job.body.attachment), ...window.filter(job => job.body.attachment)];
+    this.uploadOffset = offset + window.length;
     let failed = false; let fileUploads = 0;
     for (const job of batch) {
       if (this.port.lanOnly?.() && !job.body.lanOnly) continue;
@@ -579,6 +578,7 @@ export class CourierController {
         const result = await this.request('/outbox/put', { job, ...(notification?{notification}:{}) });
         if (['canceled','expired'].includes(result.status)) { await this.finishQueue(job,result.status); continue; }
         if (!['stored', 'acknowledged'].includes(result.status)) throw new Error('invalid_courier_store');
+        this.trace({ nodeStoredAt:Date.now() });
         this.activity(job.body.to,job.body.id,undefined);
         this.port.issue?.(job.body.to,job.body.id,undefined);
         const group = this.port.state().groupJobs?.[job.body.id];
@@ -595,6 +595,8 @@ export class CourierController {
             (error instanceof Error && error.message === 'courier_not_saved')) throw error;
       }
     }
+    await this.downloadFiles();
+    await this.replenishPrekeys(health.prekeyPeers);
     await this.pollReceipts();
     this.refreshKeyStocks();
     if(this.quotaDirty){this.quotaDirty=false;try{const latest=await this.request('/outbox/status',{});if(latest.address===this.port.state().node?.address)this.health.queue=readQueueSnapshot(latest);}catch{this.current();}}
@@ -673,6 +675,7 @@ export class CourierController {
   }
   private httpReply(source?:QueueSource): CourierReply {
     const parts = new Map<number, Uint8Array>(); let attachmentId = '';
+    let nextChunkRequest = 0;
     const request=(path:string,value:Record<string,unknown>)=>source?this.requestAt(source,path.replace('/inbox/','/receive/'),{...value,grant:source.grant},true):this.request(path,value);
     return Object.assign(async (id: string, receipt: string) => {
       const result = await request('/inbox/ack', { id, receipt });
@@ -683,6 +686,9 @@ export class CourierController {
       if (attachmentId !== id) { parts.clear(); attachmentId = id; }
       if (!parts.has(index)) {
         parts.clear();
+        const wait = nextChunkRequest - performance.now();
+        if (wait > 0) await this.pace(wait);
+        nextChunkRequest = performance.now() + 250;
         const result = await request('/inbox/file/parts', { request:proof });
         if (result.id !== id || !Array.isArray(result.parts) || result.parts.length < 1 || result.parts.length > 4) throw new Error('invalid_attachment_part');
         for (let n = 0; n < result.parts.length; n++) {
@@ -711,9 +717,10 @@ export class CourierController {
     for(const key of this.remoteInbox.keys())if(!sources.has(key)&&!this.remotePolls.has(key))this.remoteInbox.delete(key);
     if((this.diagnostic.remoteInboxSources??0)!==sources.size||!sources.size&&this.diagnostic.remoteInboxFailure)
       this.trace({remoteInboxSources:sources.size,...(!sources.size?{remoteInboxFailure:''}:{})});
-    const entries=[...sources],offset=entries.length?this.remoteOffset%entries.length:0;this.remoteOffset=offset+2;
-    for(const [key,source]of [...entries.slice(offset),...entries.slice(0,offset)].slice(0,2)){
+    const entries=[...sources],offset=entries.length?this.remoteOffset%entries.length:0;
+    for(const [key,source]of [...entries.slice(offset),...entries.slice(0,offset)]){
       if(this.remotePolls.size>=2)break;
+      this.remoteOffset++;
       if(this.remotePolls.has(key)||Date.now()-(this.remoteInbox.get(key)?.at??0)<5000)continue;
       const previous=this.remoteInbox.get(key);this.remoteInbox.set(key,{at:Date.now(),cursor:previous?.cursor??''});
       const task=(async()=>{
@@ -759,9 +766,11 @@ export class CourierController {
         if (this.port.chats().byPeer[job.body.to]?.messages.some(m => m.id === job.body.id && (m.fileStatus === 'canceled' || m.fileDeleted))) return false;
         const cipher = await encryptAttachmentPart(m, index, bytes.subarray(index * m.attachment.chunkBytes, Math.min(bytes.length, (index + 1) * m.attachment.chunkBytes))); this.current();
         const result = await this.request('/outbox/file/part', { id: m.attachment.id, index, cipher: base64(cipher) });
-        if (result.stored !== index) throw new Error('invalid_attachment_status'); received.add(index);
+        if (result.stored !== index) throw new Error('invalid_attachment_status');
+        if (!received.size) this.trace({ uploadStartedAt:Date.now() });
+        received.add(index);
         io.progress(job.body.to, job.body.id, Math.min(m.offer.size, received.size * m.attachment.chunkBytes), true);
-        await this.pace(150);
+        if (received.size < m.attachment.chunks) await this.pace(150);
       }
       await this.persist(); return received.size === m.attachment.chunks;
     } finally { bytes.fill(0); }
@@ -910,9 +919,11 @@ export class CourierController {
         const cipher = await reply.chunk(request, this.abort.signal); this.current();
         const plain = await decryptAttachmentPart(m, index, cipher); this.current();
         try { await io.savePart(peer, id, index, plain); } finally { plain.fill(0); } this.current();
+        if (index === 0) this.trace({ downloadStartedAt:Date.now() });
         r.nextIndex++;
         io.progress(peer, id, Math.min(m.offer.size, r.nextIndex * m.attachment.chunkBytes), false);
-        await this.persist(); await this.pace(reply.pull ? 250 : 75);
+        await this.persist();
+        if (!reply.pull && r.nextIndex < m.attachment.chunks) await this.pace(75);
       }
       if (!cached&&r.nextIndex < m.attachment.chunks) { if (io.accepted(peer, id)) this.wake(); continue; }
       const plain = cached??new Uint8Array(m.offer.size); let offset = 0;
