@@ -14,6 +14,10 @@
   import { validateAttachmentBatch } from '$lib/chat/attachment-policy';
   import type { MediaAsset, MediaLibrary, StickerPack } from '$lib/chat/media-library';
   import GroupAttachmentCard from './GroupAttachmentCard.svelte';
+  import MediaViewer from '$lib/chat/MediaViewer.svelte';
+  import FileSharePanel from '$lib/chat/FileSharePanel.svelte';
+  import { inlineMediaFor } from '$lib/chat/media-preview';
+  import type { PreparedPack } from '$lib/chat/sticker-pack';
   import { createChatScroll } from '$lib/chat/chat-scroll';
   import { submitOnEnter } from '$lib/chat/conversation-list';
   import { GROUP_TEXT_BYTES, MAX_GROUP_MEMBERS } from './protocol';
@@ -21,7 +25,8 @@
   import { editGroupMentions, groupMentionParts, mentionQuery, moveGroupMentions, type GroupMention, type MentionEdit } from './mentions';
 
   let { room, self, name, photo, connected, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, accept, send,
-    library, loadSticker, manageStickers, sendSticker, autoReceive, loadAttachment, obtainAttachment, saveAttachment, canMention, sync, direct, back }: {
+    library, loadSticker, manageStickers, sendSticker, autoReceive, autoplay, loadAttachment, obtainAttachment, saveAttachment, previewPack, openPack, saveMedia,
+    canRequestPack, requestPack, canMention, sync, direct, back }: {
     room: GroupRoom; self: string; name(peer: string): string; photo(peer: string): string;
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
     contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
@@ -30,9 +35,14 @@
     canMention(peer: string): boolean; sync(): void; direct(): void; back(): void;
     library: MediaLibrary; loadSticker(hash: string): Promise<Uint8Array | null>; manageStickers(tab: 'stickers' | 'gifs'): void;
     sendSticker(asset: MediaAsset, pack: StickerPack | undefined, replyTo?: string): Promise<string>;
-    autoReceive: boolean; loadAttachment(hash: string): Promise<Uint8Array | null>;
+    autoReceive: boolean; autoplay: boolean; loadAttachment(hash: string): Promise<Uint8Array | null>;
     obtainAttachment(hash: string, automatic: boolean): Promise<Uint8Array | null>;
     saveAttachment(bytes: BlobPart, name: string): void;
+    previewPack(entry: GroupEntry): Promise<PreparedPack>;
+    openPack(entry: GroupEntry): void;
+    saveMedia(entry: GroupEntry): Promise<string>;
+    canRequestPack(entry: GroupEntry): boolean;
+    requestPack(entry: GroupEntry): Promise<string>;
   } = $props();
   let draft = $state(''), busy = $state(false), failed = $state(false);
   let transcript = $state<HTMLDivElement>();
@@ -49,6 +59,9 @@
   const inputPanel = new ComposerInput(() => pickerOpen, open => pickerOpen = open, mobile => mobileInput = mobile);
   let replyTo = $state('');
   let routeId = $state('');
+  let attachmentActions = $state(''), sharingAttachment = $state(false), galleryId = $state('');
+  let galleryUrl = $state(''), galleryFailed = $state(false);
+  let localFiles = $state(new Set<string>());
   let copied = $state(''), highlighted = $state(''), copyFailed = $state(false);
   let copyTimer: ReturnType<typeof setTimeout>, highlightTimer: ReturnType<typeof setTimeout>;
   let jump = $state(false);
@@ -106,6 +119,29 @@
   const activeMention = $derived(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)]);
   const connectedMembers = $derived(room.members.filter(peer => connected.has(peer)).join(' '));
   const timeline = $derived(groupChronology(room.entries));
+  const gallery = $derived(timeline.filter(entry => {
+    if (!entry.file || !(entry.from === self || entry.fileNode || localFiles.has(entry.hash))) return false;
+    const kind = inlineMediaFor(entry.file)?.kind;
+    return kind === 'image' || kind === 'video';
+  }));
+  const galleryIndex = $derived(gallery.findIndex(entry => entry.id === galleryId));
+  const galleryEntry = $derived(gallery[galleryIndex]);
+  const galleryHash = $derived(galleryEntry?.hash);
+  const galleryMime = $derived(galleryEntry?.file && inlineMediaFor(galleryEntry.file)?.mime);
+  const actionEntry = $derived(room.entries.find(entry => entry.id === attachmentActions));
+  $effect(() => {
+    const hash = galleryHash, mime = galleryMime;
+    galleryUrl = ''; galleryFailed = false;
+    if (!hash || !mime) return;
+    let active = true, url = '';
+    void loadAttachment(hash).then(bytes => {
+      if (!bytes) throw new Error('group_file_unavailable');
+      try {
+        if (active) galleryUrl = url = URL.createObjectURL(new Blob([bytes as BlobPart], { type:mime }));
+      } finally { bytes.fill(0); }
+    }).catch(() => { if (active) galleryFailed = true; });
+    return () => { active = false; if (url) URL.revokeObjectURL(url); };
+  });
   const dates = $derived.by(() => {
     let latest = 0;
     return timeline.map(entry => {
@@ -208,6 +244,37 @@
     highlightTimer = setTimeout(() => { highlighted = ''; }, 1800);
   }
 
+  async function downloadAttachment(entry: GroupEntry) {
+    const bytes = entry.file && await loadAttachment(entry.hash).catch(() => null);
+    if (!bytes || !entry.file) return;
+    try { if (composer?.isConnected) saveAttachment(bytes as BlobPart, entry.file.name); }
+    finally { bytes.fill(0); }
+  }
+
+  async function loadShareFile(entry: GroupEntry) {
+    const file = entry.file;
+    const bytes = file && await loadAttachment(entry.hash);
+    if (!file || !bytes) throw new Error('Не удалось подготовить файл.');
+    try { return new File([bytes as BlobPart], file.name, { type:file.mime }); }
+    finally { bytes.fill(0); }
+  }
+
+  function closeAttachmentActions() {
+    attachmentActions = ''; sharingAttachment = false;
+  }
+
+  async function galleryAction(action: 'download' | 'share' | 'forward' | 'reply' | 'show-in-chat') {
+    const entry = galleryEntry;
+    if (!entry || blocked) return;
+    if (action === 'download') { await downloadAttachment(entry); return; }
+    galleryId = '';
+    await tick();
+    if (!composer?.isConnected) return;
+    if (action === 'share') { attachmentActions = entry.id; sharingAttachment = true; }
+    if (action === 'reply') startReply(entry);
+    if (action === 'show-in-chat') showOriginal(entry.id);
+  }
+
   async function copyText(message: GroupEntry) {
     copyFailed = false;
     try {
@@ -250,6 +317,14 @@
     if (!canCompose || !files.length) return;
     attachmentError = validateAttachmentBatch(files, attachments.length) ?? '';
     if (!attachmentError) attachments = [...attachments, ...files];
+  }
+
+  export function canStageFiles() {
+    return !!room.mls && canCompose && !galleryId && !attachmentActions && !routeId && !membersOpen;
+  }
+
+  export function stageFiles(files: File[]) {
+    if (canStageFiles()) stage(files);
   }
 
   function insertEmoji(emoji: string) {
@@ -372,6 +447,7 @@
           ...Object.keys(message.nodeStatus ?? {}).filter(peer => message.nodeStatus?.[peer] === 'delivered'),
         ])}
         {@const stored = Object.keys(message.nodeStatus ?? {}).filter(peer => message.nodeStatus?.[peer] === 'stored' && !delivered.has(peer)).length}
+        {@const storedFiles = Object.values(message.nodeFileStatus ?? {}).filter(status => status === 'stored').length}
         {@const recipients = groupAudience(room, message).length - 1}
         {@const read = message.receipts?.filter(receipt => receipt.state === 'read').length ?? 0}
         {@const sent = message.sentAt === undefined ? undefined : new Date(message.sentAt)}
@@ -396,8 +472,13 @@
                 aria-label={$i18n.text('Ответить на сообщение')} title={$i18n.text('Ответить')}>↩</button>
               <button class="quick-copy" type="button" onclick={() => void copyText(message)}
                 aria-label={$i18n.text('Скопировать содержимое сообщения')} title={$i18n.text('Скопировать содержимое')}>{copied === message.id ? '✓' : '⧉'}</button>
-              <button class="quick-copy" type="button" onclick={() => { routeId = message.id; }} aria-haspopup="dialog"
-                aria-label={$i18n.text('Путь сообщения')} title={$i18n.text('Путь сообщения')}><ChatIcon name="info" /></button>
+              {#if message.file}
+                <button class="quick-copy" type="button" onclick={() => attachmentActions = message.id} aria-haspopup="dialog"
+                  aria-label={$i18n.text('Действия с сообщением')}>⋯</button>
+              {:else}
+                <button class="quick-copy" type="button" onclick={() => { routeId = message.id; }} aria-haspopup="dialog"
+                  aria-label={$i18n.text('Путь сообщения')} title={$i18n.text('Путь сообщения')}><ChatIcon name="info" /></button>
+              {/if}
               {#if copied === message.id}<span class="copy-feedback" role="status">{$i18n.text('Текст скопирован.')}</span>{/if}
             </div>
             {#if original}
@@ -410,8 +491,12 @@
             {/if}
             {#if message.file}
               <GroupAttachmentCard file={message.file} blocked={blocked}
-                load={() => loadAttachment(message.hash)} obtain={automatic => obtainAttachment(message.hash, automatic)} save={saveAttachment}
-                autoKey={autoReceive && message.from !== self && !!message.file.details?.media ? connectedMembers : ''} />
+                load={() => loadAttachment(message.hash)} obtain={automatic => obtainAttachment(message.hash, automatic)}
+                download={() => downloadAttachment(message)} onReady={() => { if (!localFiles.has(message.hash)) localFiles = new Set([...localFiles, message.hash]); }}
+                openMedia={() => galleryId = message.id} loadPack={() => previewPack(message)} openPack={() => openPack(message)}
+                saveGif={() => void saveMedia(message).catch(() => {})} autoplay={autoplay && !galleryId}
+                connected={connectedMembers} fileNode={message.fileNode} fileRequested={message.fileRequested}
+                autoReceive={autoReceive && message.from !== self} />
             {/if}
             {#if message.mentions?.length}
               {#each groupMentionParts(message.text, message.mentions) as part}
@@ -423,6 +508,9 @@
             <div class="message-actions">
               {#if replies}<small class="reply-count" title={$i18n.text('Ответы в этой переписке')}>↩ {replies}</small>{/if}
               {#if stored}<span>{$i18n.text(message.file ? 'Карточка на ноде' : 'На ноде')} {stored}/{recipients}</span>{/if}
+              {#if message.file && storedFiles}
+                <span>{$i18n.text('Файл на ноде')} {storedFiles}/{recipients}</span>
+              {/if}
               <span>{$i18n.text(message.file ? 'Карточка доставлена' : 'Доставлено')} {delivered.size}/{recipients}</span>
               <span>{$i18n.text('Прочитали')} {read}/{recipients}</span>
             </div>
@@ -517,8 +605,39 @@
   </div>
 {/if}
 
+{#if galleryEntry?.file}
+  <MediaViewer id={galleryEntry.id} name={galleryEntry.file.name} kind={inlineMediaFor(galleryEntry.file)?.kind === 'video' ? 'video' : 'image'}
+    fileInfo={{size:galleryEntry.file.size,mime:galleryEntry.file.mime,timestamp:galleryEntry.sentAt ?? 0,
+      sender:galleryEntry.from === self ? 'Вы' : name(galleryEntry.from),senderAddress:galleryEntry.from}}
+    sticker={galleryEntry.file.details?.media?.kind === 'sticker' ? {
+      packName:galleryEntry.file.details.media.packName, canRequest:canRequestPack(galleryEntry)
+    } : undefined}
+    onStickerAction={action => action === 'request' ? requestPack(galleryEntry) : saveMedia(galleryEntry)} url={galleryUrl} failed={galleryFailed}
+    index={galleryIndex} count={gallery.length} onMove={direction => galleryId = gallery[(galleryIndex + direction + gallery.length) % gallery.length].id}
+    onClose={() => galleryId = ''} onAction={action => void galleryAction(action)}
+    canReply={canCompose} canForward={false} actionsDisabled={blocked} />
+{/if}
+
+{#if actionEntry?.file}
+  <CompactDialog title={$i18n.text(sharingAttachment ? 'Поделиться вне Automesh' : 'Действия с сообщением')} onClose={closeAttachmentActions}>
+    {#if sharingAttachment}
+      <FileSharePanel name={actionEntry.file.name} load={() => loadShareFile(actionEntry)}
+        download={() => { void downloadAttachment(actionEntry); closeAttachmentActions(); }} close={closeAttachmentActions} />
+    {:else}
+      <div class="attachment-actions">
+        {#if localFiles.has(actionEntry.hash) || actionEntry.fileNode || actionEntry.from === self}
+          <button type="button" onclick={() => sharingAttachment = true}><ChatIcon name="share" /> {$i18n.text('Поделиться вне Automesh')}</button>
+          <button type="button" onclick={() => { void downloadAttachment(actionEntry); closeAttachmentActions(); }}><ChatIcon name="download" /> {$i18n.text('Скачать файл')}</button>
+        {/if}
+        <button type="button" onclick={() => { routeId = actionEntry.id; closeAttachmentActions(); }}><ChatIcon name="info" /> {$i18n.text('Путь сообщения')}</button>
+      </div>
+    {/if}
+  </CompactDialog>
+{/if}
+
 {#if routeMessage}
   <CompactDialog title={$i18n.text('Путь сообщения')} literalTitle onClose={() => { routeId = ''; queueRead(); }}>
+    {#if routeMessage.fileNode}<p>{$i18n.text('Файл получен с ноды')}</p>{/if}
     {#if routeMessage.route}
       <p>{routeMessage.route.node ? $i18n.text('Получено с ноды') : $i18n.text('Получено по P2P')}</p>
       {#if routeMessage.route.node}<p class="route-peer">{$i18n.text('Нода')} · {routeMessage.route.node}</p>{/if}
@@ -616,6 +735,8 @@
 {/if}
 
 <style>
+  .attachment-actions { display:grid; gap:8px; }
+  .attachment-actions button { display:flex; align-items:center; gap:8px; text-align:start; }
   .group-mention-menu { display:grid; max-height:min(32dvh, 228px); overflow:auto; padding:4px; gap:2px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
   .group-mention-menu button { display:flex; align-items:center; gap:8px; min-height:36px; padding:4px 8px; text-align:start; border-color:transparent; }
   .group-mention-menu button[aria-selected=true], .group-mention-menu button:hover { background:var(--accent-soft); border-color:var(--line); }

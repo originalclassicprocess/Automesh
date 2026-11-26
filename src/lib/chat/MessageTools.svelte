@@ -1,10 +1,10 @@
 <script lang="ts">
   import {locale as uiLocale} from '$lib/i18n/language';
   import { tr as i18n } from '$lib/i18n/language';
-  import { untrack } from 'svelte';
   import type { ChatEntry } from './session-chats';
   import { canDownloadMessage, canStopFile, type MessageStatus } from './message-presentation';
   import HelpInfo from '$lib/application/HelpInfo.svelte';
+  import FileSharePanel from './FileSharePanel.svelte';
   import {LEGACY_REACTIONS as REACTIONS} from './reactions';
   type View = 'menu' | 'status' | 'route' | 'share';
   let { message, status, recipient, courier, shareText, openView, disabled = false, canReply, onOpen, onClose,
@@ -19,41 +19,20 @@
     loadShareFile: () => Promise<File>;
     onReact?:(emoji:string)=>void;onEdit?:()=>void;
   } = $props();
-  let prepared = $state<File | null>(null); let preparing = $state(false); let error = $state('');
+  let error = $state('');
   let request = 0;
-  let shareOpened = false;
   const downloadable = $derived(canDownloadMessage(message));
   function mountDialog(node: HTMLDialogElement) {
     const previous = document.activeElement as HTMLElement | null;
     node.showModal();
-    return { destroy() { request++; prepared = null; preparing = false; error = ''; node.close(); if (previous?.isConnected) previous.focus(); } };
+    return { destroy() { request++; error = ''; node.close(); if (previous?.isConnected) previous.focus(); } };
   }
   function run(action: () => void) { onClose(); action(); }
-  async function prepareShare(open = true) {
-    if (open) onOpen('share');
-    if (!message.file || prepared || preparing) return;
-    error = '';
-    preparing = true; const token = ++request;
-    try { const file = await loadShareFile(); if (token === request) prepared = file; }
-    catch (e) { if (token === request) error = e instanceof Error ? e.message : 'Не удалось подготовить файл.'; }
-    finally { if (token === request) preparing = false; }
-  }
-  // The media viewer can open this view directly. Prepare once per opening;
-  // native sharing still requires a second click after verified file loading.
-  $effect(() => {
-    if (openView !== 'share') { shareOpened = false; return; }
-    if (!shareOpened) { shareOpened = true; untrack(() => void prepareShare(false)); }
-  });
-  function canShareFile() { return !!prepared && typeof navigator !== 'undefined' && !!navigator.share && !!navigator.canShare?.({ files: [prepared] }); }
   function canShareText() { return typeof navigator !== 'undefined' && typeof navigator.share === 'function'; }
   async function share() {
     const token = request; error = '';
     try {
-      // A second, explicit click retains transient activation on iOS after file verification.
-      if (message.file) {
-        if (!canShareFile()) return;
-        await navigator.share({ files: [prepared!] });
-      } else if (canShareText()) await navigator.share({ text: shareText });
+      if (canShareText()) await navigator.share({ text: shareText });
       else { await navigator.clipboard.writeText(shareText); if (token === request) error = 'Текст скопирован.'; return; }
       if (token === request) onClose();
     } catch (e) {
@@ -79,7 +58,7 @@
         {#if onRetryNode && ['canceled','expired'].includes(message.nodeQueue??'')}<button disabled={disabled || !!message.fileDeleted} onclick={()=>run(onRetryNode!)}><span class="action-icon" aria-hidden="true">↻</span> {$i18n.text("Отправить снова")}</button>{/if}
         {#if onRetryRadio}<button disabled={disabled||['queued','transmitting'].includes(message.radioDelivery??'')} onclick={()=>run(onRetryRadio!)}><span class="action-icon" aria-hidden="true">↻</span> {$i18n.text('Повторить по LoRa')}</button>{/if}
         {#if canStopFile(message) && !onCancelNode}<button disabled={disabled} onclick={() => run(onStop)}><span class="action-icon" aria-hidden="true">⊘</span> {$i18n.text("Остановить передачу")}</button>{/if}
-        <button disabled={disabled || !downloadable} onclick={() => void prepareShare()}><span class="action-icon" aria-hidden="true">↑</span> {$i18n.text("Поделиться вне Automesh")}</button>
+        <button disabled={disabled || !downloadable} onclick={() => onOpen('share')}><span class="action-icon" aria-hidden="true">↑</span> {$i18n.text("Поделиться вне Automesh")}</button>
         <button disabled={disabled || !downloadable} onclick={() => run(onDownload)}><span class="action-icon" aria-hidden="true">↓</span> {$i18n("m_c82942a6cdbc", {v0: (message.file ? $i18n.text("файл") : $i18n.text("текст"))})}</button>
         <button onclick={() => onOpen('status')}><span class="action-icon" aria-hidden="true">ⓘ</span> {$i18n.text("Подробнее о статусе")}</button>
         {#if !channelMode}<button onclick={() => onOpen('route')}><span class="action-icon" aria-hidden="true">⌁</span> {$i18n.text("Проверить путь")}</button>{/if}
@@ -99,19 +78,14 @@
       <p>{message.courierVia ? $i18n.text("Принято через эту ноду; подписи автора и пересыльщика проверены.") : courier ? $i18n.text("Эта нода подтвердила хранение. Доставка получателю ещё не подтверждена.") : $i18n.text("Сведения о промежуточной ноде не сохранены. Полный сетевой маршрут неизвестен.")}</p>
       <small>{$i18n.text("Это известные участники доставки, не трассировка IP и не доказательство всех промежуточных переходов. Автор пересланного сообщения указан переславшим; его исходная подпись здесь не подтверждается.")}</small>
     {:else}
-      <p>{$i18n.text(channelMode?"Получатели и выбранное приложение смогут сохранить копию текста.":"Снаружи Automesh это уже не защищённый чат. Получатели и выбранное приложение смогут сохранить копию.")}</p>
       {#if message.file}
-        <p>{message.file.name}</p>
-        {#if preparing}<p role="status">{$i18n.text("Проверяем файл…")}</p>
-        {:else if prepared}
-          {#if canShareFile()}<button onclick={() => void share()}>{$i18n.text("Поделиться файлом")}</button>
-          {:else}<p>{$i18n.text("Этот браузер не поддерживает внешнюю отправку такого файла.")}</p><button onclick={() => run(onDownload)}>{$i18n.text("Скачать файл")}</button>{/if}
-        {/if}
+        {#key message.id}<FileSharePanel name={message.file.name} load={loadShareFile} download={() => run(onDownload)} close={onClose} />{/key}
       {:else}
+        <p>{$i18n.text(channelMode?"Получатели и выбранное приложение смогут сохранить копию текста.":"Снаружи Automesh это уже не защищённый чат. Получатели и выбранное приложение смогут сохранить копию.")}</p>
         <textarea readonly aria-label={$i18n.text("Текст для внешней отправки")} value={shareText}></textarea>
         <button onclick={() => void share()}>{canShareText() ? $i18n.text("Поделиться текстом") : $i18n.text("Скопировать текст")}</button>
+        {#if error}<p role="status">{$i18n.text(error)}</p>{/if}
       {/if}
-      {#if error}<p role="status">{$i18n.text(error)}</p>{/if}
     {/if}
   </dialog>
 {/if}

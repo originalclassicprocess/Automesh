@@ -9,7 +9,9 @@ import { validateManifest, type AttachmentManifest } from './attachment-crypto';
 import type { CourierHop } from './courier-crypto';
 import { validateAttachment } from './attachment-protocol.js';
 import {MAX_PRIVATE_COURIER_KEYS,validateKeyLifetime,validateKeySource} from './courier-prekeys.js';
-export type IncomingAttachment = { job: CourierJob; hop: CourierHop; manifest: AttachmentManifest; nextIndex: number; source?:QueueSource };
+export type IncomingAttachment = { job: CourierJob; hop: CourierHop; manifest: AttachmentManifest; nextIndex: number; source?:QueueSource; group?: GroupNodeReference };
+const validGroupRef = (ref: GroupNodeReference | undefined) =>
+  uuid(ref?.group) && digest(ref?.hash) && (ref?.file === undefined || ref.file === true);
 export type CourierState = { version: 1|2|3; enabled: boolean; node: (NodeAddress & { address: string }) | null;
   keys: CourierKey[]; bundles: Record<string, CourierBundle>; used: Record<string, number>;
   pending: CourierJob[]; acks: { id: string; sender: string; digest: string; receipt: string; expiresAt: number }[];
@@ -50,9 +52,9 @@ export function restoreCourierState(value: unknown): CourierState {
         typeof a.receipt !== 'string' || a.receipt.length > 2048 || !Number.isSafeInteger(a.expiresAt))) throw new Error('invalid_courier_state');
   if (s.groupJobs !== undefined) {
     if (!s.groupJobs || typeof s.groupJobs !== 'object' || Array.isArray(s.groupJobs) || Object.keys(s.groupJobs).length > 100 ||
-        Object.values(s.groupJobs).some(ref => !uuid(ref?.group) || !digest(ref?.hash))) throw Error('invalid_group_node_jobs');
-    s.groupJobs = Object.fromEntries(Object.entries(s.groupJobs).filter(([id]) =>
-      s.pending.some(job => job.body.id === id && !job.body.attachment)));
+        Object.values(s.groupJobs).some(ref => !validGroupRef(ref))) throw Error('invalid_group_node_jobs');
+    s.groupJobs = Object.fromEntries(Object.entries(s.groupJobs).filter(([id, ref]) =>
+      s.pending.some(job => job.body.id === id && !!job.body.attachment === !!ref.file)));
   }
   if (s.node && (homeNodeUrl(s.node.url) !== s.node.url || !/^[a-f0-9]{32}$/.test(s.node.nodeId) || !isValidAccountId(s.node.address))) throw new Error('invalid_courier_state');
   for(const k of s.keys){
@@ -72,6 +74,7 @@ export function restoreCourierState(value: unknown): CourierState {
   }
   const incomingIds = new Set();
   for (const r of s.incomingFiles) {
+    if (r.group !== undefined && (!validGroupRef(r.group) || !r.group.file)) throw Error('invalid_group_node_jobs');
     if(r.source){validateQueueSource(r.source,r.job?.body?.from,r.job?.body?.to,true);if(r.source.address!==r.job?.body?.courier)throw Error('invalid_courier_source');}
     if (!r.job?.body?.attachment || !courierId(r.job.body.id) || incomingIds.has(r.job.body.id) || !isValidAccountId(r.job.body.from) || !isValidAccountId(r.job.body.to) ||
         !Number.isSafeInteger(r.nextIndex) || r.nextIndex < 0 || r.nextIndex > r.job.body.attachment.chunks || r.job.body.packet.length > COURIER_MAX_PACKET || !r.hop?.body) throw new Error('invalid_courier_files');

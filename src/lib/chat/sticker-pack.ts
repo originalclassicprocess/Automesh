@@ -3,6 +3,7 @@ import { MAX_FILE_BYTES } from './file-transfer';
 import { makePack, prepareMedia, PACK_ITEMS, type PreparedMedia, type StickerPack } from './media-library';
 
 export type PreparedPack = { pack: StickerPack; files: PreparedMedia[] };
+export const isStickerPackFile = (name: string): boolean => /\.automesh-stickers\.zip$/i.test(name);
 export function unpackBounded(bytes: Uint8Array): Map<string, Uint8Array> {
   if (bytes.length > MAX_FILE_BYTES || bytes.length < 4 || bytes[0] !== 80 || bytes[1] !== 75) throw new Error('Нужен ZIP до 20 МБ.');
   const output = new Map<string, Uint8Array>(); const seen = new Set<string>(); let total = 0, pending = 0, fileCount = 0;

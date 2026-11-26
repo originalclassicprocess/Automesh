@@ -150,8 +150,8 @@
           {#if sticker.canRequest}<button disabled={actionsDisabled || stickerWorking} onclick={() => void stickerAction('request')}><ChatIcon name="send" />{$i18n.text("Запросить набор")}</button>{/if}
         {/if}
         <button disabled={actionsDisabled} onclick={() => action('download')}><ChatIcon name="download" />{$i18n.text("Скачать")}</button>
-        <button disabled={actionsDisabled || !canShare} onclick={() => action('share')}><ChatIcon name="share" />{$i18n.text("Поделиться")}</button>
-        <button disabled={actionsDisabled || !canForward} onclick={() => action('forward')}><ChatIcon name="forward" />{$i18n.text("Переслать")}</button>
+        {#if canShare}<button disabled={actionsDisabled} onclick={() => action('share')}><ChatIcon name="share" />{$i18n.text("Поделиться")}</button>{/if}
+        {#if canForward}<button disabled={actionsDisabled} onclick={() => action('forward')}><ChatIcon name="forward" />{$i18n.text("Переслать")}</button>{/if}
         <button disabled={actionsDisabled || !canReply} onclick={() => action('reply')}><ChatIcon name="reply" />{$i18n.text("Ответить")}</button>
         <button class="show-in-chat" disabled={actionsDisabled} onclick={() => action('show-in-chat')}><ChatIcon name="chat" />{$i18n.text("Показать в чате")}</button>
         <button onclick={() => infoOpen = true}><ChatIcon name="info" />{$i18n.text("О файле")}</button>

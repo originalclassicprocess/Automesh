@@ -20,6 +20,7 @@ import type { GroupNodeStatus } from '$lib/groups/storage';
 import { createAttachmentManifest, decryptAttachmentPart, encryptAttachmentPart, attachmentHash, FILE_CONTENT_PREFIX, EPHEMERAL_FILE_PREFIX, validateManifest } from './attachment-crypto';
 import { ATTACHMENT_PROTOCOL, FILE_POLICY_BYTES } from './attachment-protocol.js';
 import { manifestContent, type CourierFileIO } from './courier-files';
+import type { FileOffer } from '$lib/chat/file-transfer';
 import {readQueueSnapshot,type QueueSnapshot} from './queue-quota';
 import type {QueueCleanup} from './queue-cleanup';
 import { base64 } from './offline-crypto';
@@ -34,13 +35,21 @@ export type CourierReply = ((id: string, receipt: string) => unknown) & {
 export type CourierStatus = { connection: 'idle' | 'checking' | 'connected' | 'offline'; relay: string; lan?: string; stored: number; keyStocks?:Record<string,RemoteKeyStock>;queue?:QueueSnapshot;cleanup?:QueueCleanup };
 export const idleCourierStatus = (): CourierStatus => ({ connection: 'idle', relay: 'disabled', stored: 0 });
 const keyLookupIssue=(error:unknown):DeliveryIssue=>error instanceof Error&&['prekeys_unavailable','prekey_capacity'].includes(error.message)?'keys_exhausted':'keys_source_unavailable';
+const GROUP_FILE_PREFIX = '\u0000automesh-group-file-v1:';
 type Port = { address: string; identity: IdentityProvider; state(): CourierState; update(s: CourierState): void;
   groups?: {
-    posts(): Iterable<GroupNodePost>;
+    posts(file?: boolean): Iterable<GroupNodePost>;
     eligible(ref: GroupNodeReference, peer: string): boolean;
     release?(ref: GroupNodeReference, peer: string): boolean;
     status(ref: GroupNodeReference, peer: string, status: GroupNodeStatus): Promise<void>;
     receive(peer: string, frame: Extract<GroupFrame, { type:'message' }>, node: string): Promise<boolean>;
+    files?: {
+      load(ref: GroupNodeReference): Promise<Uint8Array | null>;
+      receive(peer: string, frame: Extract<GroupFrame, { type:'message' }>, node: string, offer: FileOffer): Promise<GroupNodeReference | undefined>;
+      allowed(ref: GroupNodeReference, peer: string, offer: FileOffer): boolean;
+      accepted(ref: GroupNodeReference, peer: string, offer: FileOffer): boolean;
+      complete(ref: GroupNodeReference, peer: string, node: string, offer: FileOffer, bytes: Uint8Array): Promise<void>;
+    };
   };
   chats(): SessionChats; persist(): Promise<boolean>; receive(m: ChatMessage): void; committedIncoming?:CommittedIncomingListener;
   authorize?(peer: string): Promise<void>; issue?(peer: string, id: string, issue: DeliveryIssue | undefined, error?: unknown): void;
@@ -220,7 +229,8 @@ export class CourierController {
     this.current();
     const bundle = await signCourier('prekeys', { protocol: COURIER_PROTOCOL, from: this.port.address, to: peer,
       ...(route ? { route } : {}), consumedKeys, requestKeys,
-      ...(this.port.groups ? { groupPosts:true as const, groupRelay:true as const } : {}),
+      ...(this.port.groups ? { groupPosts:true as const, groupRelay:true as const,
+        ...(this.port.files && this.port.groups.files ? { groupFiles:true as const } : {}) } : {}),
       ...(this.port.files ? { attachmentProtocol: ATTACHMENT_PROTOCOL, maxFileBytes: FILE_POLICY_BYTES } : {}),
       ...(batch.every(k=>k.publishUntil!==undefined)?{deliveryTtlMs:COURIER_TTL,retainUntil:Math.min(...batch.map(k=>k.publishUntil!))+COURIER_TTL}:{}),
       ...(this.prekeysSupported&&node?{keySource:{url:node.url,nodeId:node.nodeId}}:{}),
@@ -349,27 +359,43 @@ export class CourierController {
     return value;
   }
 
-  private async reserveGroupPosts(lanOnly: boolean, syncRoute: boolean) {
+  private async reserveGroupPosts(lanOnly: boolean, syncRoute: boolean, fileLimit?: number) {
     const groups = this.port.groups;
     const state = this.port.state();
     if (!groups || !state.enabled || !state.node) return;
+    const file = fileLimit !== undefined;
+    if (file && (!groups.files || !this.port.files || fileLimit <= 0)) return;
+    const limit = file ? 2 : 4;
     let count = 0, sourceFailures = 0;
-    for (const post of groups.posts()) {
+    for (const post of groups.posts(file)) {
       const current = this.port.state();
-      if (count >= 4 || current.pending.length >= 100 || Object.keys(current.used).length >= 4096) break;
+      if (count >= limit || current.pending.length >= 100 || Object.keys(current.used).length >= 4096 ||
+          file && Object.keys(current.outgoingFiles).length >= 16) break;
       const bundle = current.bundles[post.peer];
       if (!bundle?.body.groupPosts || (post.relay && !bundle.body.groupRelay) ||
           current.pending.some(job => job.body.id === post.id) ||
           this.port.chats().byPeer[post.peer]?.contact !== 'accepted') continue;
+      if (file && (!post.offer || !bundle.body.groupFiles || bundle.body.attachmentProtocol !== ATTACHMENT_PROTOCOL ||
+          post.offer.size > Math.min(FILE_POLICY_BYTES, fileLimit, bundle.body.maxFileBytes ?? 0))) continue;
       const key = bundle.body.expiresAt > Date.now() ? bundle.body.keys.find(key => !current.used[key.id]) : undefined;
       const source = bundle.body.keySource;
       if (!key && (!source || !this.sourceAllowed(source) || sourceFailures >= 2 ||
           Date.now() < (this.keySourceRetryAt.get(post.peer)?.at ?? 0))) continue;
       let allocation: PrekeyAllocation | undefined;
       let job: CourierJob;
+      let manifest: import('./attachment-crypto').AttachmentManifest | undefined;
       try {
         await this.port.authorize?.(post.peer);
         this.current();
+        if (file && post.offer) {
+          const bytes = await groups.files!.load(post);
+          this.current();
+          if (!bytes) continue;
+          try { manifest = await createAttachmentManifest({ ...post.offer, id:post.id }, bytes, this.port.address, post.peer); }
+          finally { bytes.fill(0); }
+          this.current();
+          if (!groups.eligible(post, post.peer)) continue;
+        }
         if (!key && source) {
           try {
             allocation = await this.allocateCourierPrekey(post.peer, source, post.id, syncRoute);
@@ -380,8 +406,9 @@ export class CourierController {
             this.keySourceRetryAt.set(post.peer,{ at:Date.now() + 5000, issue:keyLookupIssue(error) });
           }
         }
-        if (allocation) job = await createAllocatedCourierJob(this.port.identity, this.port.address, state.node.address, post.peer, allocation, post.id, Date.now(), post.content, lanOnly);
-        else if (key) job = await createCourierJob(this.port.identity, this.port.address, state.node.address, bundle, key, post.id, Date.now(), post.content, lanOnly);
+        const content = manifest ? GROUP_FILE_PREFIX + JSON.stringify({ manifest, message:post.content }) : post.content;
+        if (allocation) job = await createAllocatedCourierJob(this.port.identity, this.port.address, state.node.address, post.peer, allocation, post.id, Date.now(), content, lanOnly, manifest?.attachment);
+        else if (key) job = await createCourierJob(this.port.identity, this.port.address, state.node.address, bundle, key, post.id, Date.now(), content, lanOnly, manifest?.attachment);
         else continue;
       } catch { this.current(); continue; }
       this.current();
@@ -390,11 +417,12 @@ export class CourierController {
       const reservedKey = allocation?.key.body ?? key!;
       const expiry = allocation?.key.body.retainUntil ?? job.body.expiresAt;
       this.update({ ...latest, used:{ ...latest.used, [reservedKey.id]:expiry + 86400000 },
-        groupJobs:{ ...latest.groupJobs, [post.id]:{ group:post.group, hash:post.hash } }, pending:[...latest.pending, job] });
+        groupJobs:{ ...latest.groupJobs, [post.id]:{ group:post.group, hash:post.hash, ...(manifest ? { file:true } : {}) } },
+        outgoingFiles:{ ...latest.outgoingFiles, ...(manifest ? { [post.id]:manifest } : {}) }, pending:[...latest.pending, job] });
       await this.persist();
       count++;
     }
-    if (count === 4) this.wake();
+    if (count === limit) this.wake();
   }
 
   poll() { return this.serial(async () => {
@@ -545,11 +573,14 @@ export class CourierController {
       }
     }
     // Reserve AND durably commit before sending, within this pass (no extra timer).
+    if (health.fileQueue?.protocol === ATTACHMENT_PROTOCOL) await this.reserveGroupPosts(lanOnly,
+      health.routingProtocol === COURIER_ROUTE_PROTOCOL && !lanOnly, health.fileQueue.maxFileBytes ?? 0);
     await this.persist();
     if (this.health.connection !== 'connected') this.report('checking');
     this.report('connected', health.routes?.localInternet === 'connected' ? 'connected' : health.routes?.internet ?? health.status ?? 'connecting', health.routes?.lan);
     const waiting = this.port.state().pending.filter(j => j.body.expiresAt > Date.now() && !this.uploaded.has(j.body.id) && (!lanOnly || j.body.lanOnly) &&
-      (!j.body.attachment || this.port.chats().byPeer[j.body.to]?.messages.some(m => m.id === j.body.id && m.fileStatus !== 'canceled' && !m.fileDeleted)));
+      (!j.body.attachment || this.port.state().groupJobs?.[j.body.id]?.file ||
+        this.port.chats().byPeer[j.body.to]?.messages.some(m => m.id === j.body.id && m.fileStatus !== 'canceled' && !m.fileDeleted)));
     const offset = waiting.length ? this.uploadOffset % waiting.length : 0;
     const window = [...waiting.slice(offset), ...waiting.slice(0, offset)].slice(0, 20);
     const batch = [...window.filter(job => !job.body.attachment), ...window.filter(job => job.body.attachment)];
@@ -641,14 +672,24 @@ export class CourierController {
     if (!key || this.port.state().acks.length >= 2000) throw new Error('courier_key_unavailable');
     const packet = await openCourier(job, hop, key, this.port.address); this.current();
     if (job.body.attachment) {
-      const prefix = packet.content.startsWith(EPHEMERAL_FILE_PREFIX) ? EPHEMERAL_FILE_PREFIX : FILE_CONTENT_PREFIX;
+      const groupFile = packet.content.startsWith(GROUP_FILE_PREFIX);
+      const prefix = groupFile ? GROUP_FILE_PREFIX : packet.content.startsWith(EPHEMERAL_FILE_PREFIX) ? EPHEMERAL_FILE_PREFIX : FILE_CONTENT_PREFIX;
       if (!this.port.files || !packet.content.startsWith(prefix) || this.port.state().incomingFiles.length >= 16) throw new Error('invalid_attachment_manifest');
-      const manifest = validateManifest(JSON.parse(packet.content.slice(prefix.length)), job.body.from, this.port.address, job.body.id);
+      const value = JSON.parse(packet.content.slice(prefix.length));
+      const manifest = validateManifest(groupFile ? value?.manifest : value, job.body.from, this.port.address, job.body.id);
       if ((prefix === EPHEMERAL_FILE_PREFIX) !== !!manifest.offer.details?.ephemeral) throw new Error('invalid_attachment_manifest');
       if (JSON.stringify(manifest.attachment) !== JSON.stringify(job.body.attachment)) throw new Error('invalid_attachment_manifest');
-      this.port.files.offer(job.body.from, manifest.offer, packet.body.timestamp, data.from);
+      let group: GroupNodeReference | undefined;
+      if (groupFile) {
+        const frame = typeof value.message === 'string' && value.message.startsWith(GROUP_PREFIX)
+          ? parseGroupFrame(JSON.parse(value.message.slice(GROUP_PREFIX.length))) : null;
+        if (frame?.type !== 'message' || !(group = await this.port.groups?.files?.receive(job.body.from, frame, data.from, manifest.offer))) {
+          throw new Error('group_node_not_saved');
+        }
+        this.current();
+      } else this.port.files.offer(job.body.from, manifest.offer, packet.body.timestamp, data.from);
       this.update({ ...this.port.state(), keys: this.port.state().keys.filter(k => k.id !== key.id),
-        incomingFiles: [...this.port.state().incomingFiles, { job, hop, manifest, nextIndex: 0,...reply.source?{source:reply.source}:{} }] });
+        incomingFiles: [...this.port.state().incomingFiles, { job, hop, manifest, nextIndex: 0,...reply.source?{source:reply.source}:{}, ...(group ? { group } : {}) }] });
       await this.persist(); this.fileReplies.set(job.body.id, reply); this.wake(); return;
     }
     let content: ReturnType<typeof decodeChatContent> = null;
@@ -757,12 +798,15 @@ export class CourierController {
     this.activity(job.body.to,job.body.id,'uploading');
     this.port.issue?.(job.body.to,job.body.id,undefined);this.port.error('');
     io.progress(job.body.to,job.body.id,Math.min(m.offer.size,received.size*m.attachment.chunkBytes),true);
-    const bytes = await io.load(job.body.to, job.body.id); this.current();
+    const group = this.port.state().groupJobs?.[job.body.id];
+    const bytes = group ? await this.port.groups?.files?.load(group) : await io.load(job.body.to, job.body.id);
     if (!bytes) throw new Error('attachment_source_missing');
     try {
+      this.current();
       if (bytes.length !== m.offer.size || await attachmentHash(bytes) !== m.offer.sha256) throw new Error('attachment_source_changed');
       this.current();
       for (const index of missing.slice(0, 8)) {
+        if (group && !this.port.groups?.eligible(group, job.body.to)) return false;
         if (this.port.chats().byPeer[job.body.to]?.messages.some(m => m.id === job.body.id && (m.fileStatus === 'canceled' || m.fileDeleted))) return false;
         const cipher = await encryptAttachmentPart(m, index, bytes.subarray(index * m.attachment.chunkBytes, Math.min(bytes.length, (index + 1) * m.attachment.chunkBytes))); this.current();
         const result = await this.request('/outbox/file/part', { id: m.attachment.id, index, cipher: base64(cipher) });
@@ -895,24 +939,28 @@ export class CourierController {
     this.downloadOffset = offset + 2;
     for (const r of [...pending.slice(offset), ...pending.slice(0, offset)]) {
       const { job, manifest: m } = r, peer = job.body.from, id = job.body.id;
+      const group = r.group, groupFiles = this.port.groups?.files;
+      const allowed = () => this.port.chats().byPeer[peer]?.contact === 'accepted' &&
+        (!group || groupFiles?.allowed(group, peer, m.offer) === true);
+      const accepted = () => allowed() && (group ? groupFiles?.accepted(group, peer, m.offer) === true : io.accepted(peer, id));
       if (job.body.expiresAt <= Date.now()) {
         await io.cleanup(peer, id, m.attachment.chunks); this.current();
         this.update({ ...this.port.state(), incomingFiles: this.port.state().incomingFiles.filter(v => v !== r) }); await this.persist(); continue;
       }
       const reply = this.fileReplies.get(id);
-      if (!reply?.chunk || this.port.chats().byPeer[peer]?.contact !== 'accepted') continue;
+      if (!reply?.chunk || !allowed()) continue;
       let receiptSent = false, fileCommitted = false;
       try {
       validateCourierJob(job, job.body.courier); validateManifest(m, peer, this.port.address, id);
       if (job.body.to !== this.port.address || r.hop.body.id !== id || r.hop.body.courier !== job.body.courier || r.hop.body.digest !== await cipherDigest(job.body.packet)) throw new Error('invalid_courier_hop');
       if (JSON.stringify(m.attachment) !== JSON.stringify(job.body.attachment)) throw new Error('invalid_attachment_manifest');
       await verifyCourier(job, 'job', peer); await verifyCourier(r.hop, 'hop', job.body.courier); this.current();
-      let cached=await io.cached?.(peer,m.offer)??null;this.current();
+      let cached=(group ? await groupFiles?.load(group) : await io.cached?.(peer,m.offer))??null;this.current();
       if(cached&&(cached.length!==m.offer.size||await attachmentHash(cached)!==m.offer.sha256)){cached.fill(0);cached=null;}this.current();
-      if(!cached&&!io.accepted(peer,id))continue;
+      if(!allowed() || !cached&&!accepted()){cached?.fill(0);continue;}
       if(downloads++>=2){cached?.fill(0);this.wake();continue;}
       for (let n = 0; !cached&&n < 8 && r.nextIndex < m.attachment.chunks; n++) {
-        if (!io.accepted(peer, id) || this.port.chats().byPeer[peer]?.contact !== 'accepted') break;
+        if (!accepted()) break;
         const index = r.nextIndex;
         const request = await signCourier('attachment-request', { protocol: ATTACHMENT_PROTOCOL, from: this.port.address, to: job.body.courier,
           id: m.attachment.id, index, requestId: crypto.randomUUID().replaceAll('-', ''), expiresAt: Date.now() + 30000 }, this.port.identity); this.current();
@@ -925,7 +973,7 @@ export class CourierController {
         await this.persist();
         if (!reply.pull && r.nextIndex < m.attachment.chunks) await this.pace(75);
       }
-      if (!cached&&r.nextIndex < m.attachment.chunks) { if (io.accepted(peer, id)) this.wake(); continue; }
+      if (!cached&&r.nextIndex < m.attachment.chunks) { if (accepted()) this.wake(); continue; }
       const plain = cached??new Uint8Array(m.offer.size); let offset = 0;
       try {
         for (let index = 0; !cached&&index < m.attachment.chunks; index++) {
@@ -937,7 +985,9 @@ export class CourierController {
           plain.set(bytes, offset); offset += bytes.length; bytes.fill(0);
         }
         if (await attachmentHash(plain) !== m.offer.sha256) throw new Error('attachment_digest_mismatch'); this.current();
-        await io.complete(peer, id, plain); this.current();
+        if (group) await groupFiles!.complete(group, peer, job.body.courier, m.offer, plain);
+        else await io.complete(peer, id, plain);
+        this.current();
         const digest = await cipherDigest(job.body.packet);
         const receipt = JSON.stringify(await signCourier('receipt', { protocol: COURIER_PROTOCOL, from: this.port.address, to: peer, id, digest }, this.port.identity)); this.current();
         if (this.port.state().acks.length >= 2000) throw new Error('courier_ack_limit');
