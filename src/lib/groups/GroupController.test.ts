@@ -34,6 +34,7 @@ describe('experimental closed MLS groups', () => {
     const waitingForWelcome = new Set<string>();
     const privateReads = new Set<string>();
     let delayedRecipient: string | undefined, delayedPacket: string | undefined;
+    let heldPacket: string | undefined, hold: (() => Promise<void>) | undefined;
     const traces: { from:string; to:string; frame:GroupFrame }[] = [];
     const peers = new Map<string, GroupController>();
     const saved = new Map<string, GroupRooms>();
@@ -52,6 +53,7 @@ describe('experimental closed MLS groups', () => {
         send:async (to, frame) => {
           if (!ready(id, to)) throw new Error('unreachable');
           traces.push({ from:id, to, frame });
+          if (id === b && to === d && frame.type === 'message' && frame.packet === heldPacket) await hold?.();
           if (frame.type === 'message' && to === delayedRecipient && (!delayedPacket || frame.packet === delayedPacket)) return;
           if ((frame.type === 'welcome' || frame.type === 'welcome-proof') && waitingForWelcome.has(to)) return;
           await peers.get(to)?.receive(id, frame);
@@ -175,6 +177,27 @@ describe('experimental closed MLS groups', () => {
         .toBeLessThan(ordered.findIndex(message => message.id === replyId));
     });
     expect(JSON.stringify(traces)).not.toContain('A reply to the original');
+
+    // Two syncs can arrive while the first history replay is still writing to
+    // the channel. The second must cover a post queued during that replay.
+    for (const peer of [a, c, e]) offline.add(peer);
+    delayedPacket = undefined;
+    await peers.get(b)!.send(room, 'Missed while disconnected');
+    heldPacket = saved.get(b)![0].entries.at(-1)!.packet;
+    const gate = Promise.withResolvers<void>();
+    let replaying = false;
+    hold = () => { replaying = true; return gate.promise; };
+    const sync = { type:'sync' as const, group:room, known:saved.get(d)![0].entries.map(post => post.hash) };
+    await peers.get(b)!.receive(d, sync);
+    try {
+      await vi.waitFor(() => expect(replaying).toBe(true));
+      const later = await peers.get(b)!.send(room, 'Queued during replay');
+      await peers.get(b)!.receive(d, sync);
+      expect(saved.get(d)![0].entries.some(post => post.id === later)).toBe(false);
+      delayedRecipient = undefined;
+      gate.resolve();
+      await vi.waitFor(() => expect(saved.get(d)![0].entries.filter(post => post.id === later)).toHaveLength(1));
+    } finally { gate.resolve(); }
   }, 20000);
 
   it('adds and removes members through MLS, recovers a missed commit, and hands over administration', async () => {

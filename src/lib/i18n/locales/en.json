@@ -3382,5 +3382,8 @@
   "m_bd9876b7146d": "Relayed by participant",
   "m_17339c4ddf9e": "Delivery route unknown",
   "m_963159525f46": "Delivered via a node",
-  "m_e3c401fa111c": "Delivery not confirmed"
+  "m_e3c401fa111c": "Delivery not confirmed",
+  "m_9498e9f8ad7c": "First block of the latest upload",
+  "m_f68be81d016f": "Latest node storage confirmation",
+  "m_845176a8d331": "First block of the latest download"
 }

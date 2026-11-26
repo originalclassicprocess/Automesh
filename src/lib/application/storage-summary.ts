@@ -6,7 +6,7 @@ import { isLibraryFileId, libraryFileId, type MediaLibrary } from '$lib/chat/med
 import type { AppCacheUsage } from './app-cache';
 import { nativeChannelToken, nativeMessageKey } from '$lib/radio/native-channels';
 export type FileCategory = 'image' | 'audio' | 'video' | 'other';
-export type ManagedFile = { id: string; peer: string; messageId: string; name: string; category: FileCategory; bytes: number; memoryBytes: number; timestamp?: number; shared?: boolean };
+export type ManagedFile = { id: string; peer: string; messageId: string; name: string; category: FileCategory; bytes: number; memoryBytes: number; timestamp?: number; shared?: boolean; stickerPack?: true };
 export const categoryNames: Record<FileCategory, string> = { image: 'Изображения', audio: 'Аудио', video: 'Видео', other: 'Другие файлы' };
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return 'Неизвестно';
@@ -26,6 +26,7 @@ export function managedFiles(state: SessionChats, disk: StorageInventory, memory
     const shared = !message.fileDeleted && !!message.mediaRef && libraryIds.has(message.mediaRef) && ids.has(libraryFileId(message.mediaRef));
     if (shared) ids.add(id);
     entries.set(id, { peer, messageId: message.id, name: message.file.name, shared,
+      ...(message.details?.media?.kind === 'sticker-pack' ? { stickerPack:true } : {}),
       category: inlineMediaFor(message.file)?.kind ?? 'other', timestamp: message.timestamp });
   }
   return [...ids].filter(id => !isLibraryFileId(id)).map(id => ({ id, ...(entries.get(id) ?? { peer: '', messageId: '', name: 'Файл вне истории', category: 'other' as const }),

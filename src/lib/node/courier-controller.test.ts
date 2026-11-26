@@ -102,6 +102,48 @@ describe('courier durable actor', () => {
       rejectFirst=false;now+=6000;await worker.poll();await worker.settled();expect(cursors).toEqual(['','']);expect(acked.size).toBe(2);
     }finally{worker.stop();await worker.settled();clock.mockRestore();for(const who of[a,b,n])who.identity.dispose();}
   });
+  it('uses an available pull slot when earlier nodes are still busy or cooling down', async () => {
+    const [receiver, node, ...senders] = await Promise.all(Array.from({length:6}, account));
+    const now = Date.now(), expiresAt = now + 60000, nodeId = 'a'.repeat(32);
+    const key = await generateCourierKey(receiver.address, expiresAt);
+    let chats = emptySessionChats(), state = emptyCourierState();
+    for (const [index, sender] of senders.entries()) {
+      chats = setContactState(ensureConversation(chats, sender.address), sender.address, 'accepted');
+      const grant = await signCourier('recipient-inbox', { protocol:'automesh-recipient-inbox-v1',
+        from:sender.address, to:receiver.address, courier:node.address, nodeId, issuedAt:now, expiresAt }, sender.identity);
+      state.bundles[sender.address] = await signCourier('prekeys', { protocol:COURIER_PROTOCOL,
+        from:sender.address, to:receiver.address, expiresAt, keys:[{ id:key.id, publicKey:key.publicKey }],
+        senderQueue:{ url:'https://queue' + index + '.example', address:node.address, nodeId, grant } }, sender.identity);
+    }
+    const inbox = { protocol:'automesh-inbox-v1', cursor:'', deliveries:[] };
+    const slow = Promise.withResolvers<typeof inbox>(), fast = Promise.withResolvers<typeof inbox>();
+    const requests: string[] = [];
+    const diagnostics = vi.fn();
+    const worker = new CourierController({ ...receiver, state:() => state, update:next => state = next, chats:() => chats,
+      persist:async () => true, receive:() => {}, publish:async () => {}, delivery:() => {}, error:() => {}, diagnostics,
+      request:async url => {
+        requests.push(url);
+        if (requests.length === 1) return slow.promise;
+        if (requests.length === 2) return fast.promise;
+        return inbox;
+      },
+    });
+    try {
+      await worker.poll();
+      await worker.poll();
+      expect(requests).toHaveLength(2);
+      fast.resolve(inbox);
+      await vi.waitFor(() => expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ remoteInboxAt:expect.any(Number) })));
+      await worker.poll();
+      expect(requests).toEqual(['https://queue0.example', 'https://queue1.example', 'https://queue2.example']);
+    } finally {
+      slow.resolve(inbox);
+      fast.resolve(inbox);
+      await worker.settled();
+      worker.stop();
+      for (const who of [receiver, node, ...senders]) who.identity.dispose();
+    }
+  });
   it('ignores a late node health response after lock and leaves a fresh receiver independent',async()=>{
     const receiver=await account(), node=await account();
     let state={...emptyCourierState(),node:{url:'https://node.example',nodeId:'a'.repeat(32),address:node.address}};

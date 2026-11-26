@@ -3,8 +3,9 @@
   import type { ManagedFile } from './storage-summary';
   let {file, imageUrl = '', load}: {file:ManagedFile; imageUrl?:string; load?:(file:ManagedFile)=>Promise<Blob|null>} = $props();
   let node:HTMLSpanElement, url=$state('');
+  const hasPreview = $derived(file.category === 'image' || file.stickerPack);
   onMount(()=>{
-    if (imageUrl || !load || file.category!=='image') return;
+    if (imageUrl || !load || !hasPreview) return;
     let disposed=false, ownUrl='';
     const observer=new IntersectionObserver(entries=>{
       if (!entries.some(entry=>entry.isIntersecting)) return;
@@ -19,7 +20,7 @@
   });
 </script>
 <span class="thumbnail" bind:this={node}>
-  {#if (url||imageUrl)&&file.category==='image'}<img src={url||imageUrl} alt="" loading="lazy" />
+  {#if (url||imageUrl)&&hasPreview}<img src={url||imageUrl} alt="" loading="lazy" />
   {:else}<span class="file-icon" aria-hidden="true">{file.category==='image'?'▧':file.category==='video'?'▷':file.category==='audio'?'♫':'▤'}</span>{/if}
 </span>
 <style>

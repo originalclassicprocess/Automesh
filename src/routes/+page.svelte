@@ -3392,7 +3392,7 @@ function fileTransferKey(peer: string, id: string): string { return `${peer}:${i
 
 function mediaCanOpen(message: ChatEntry): boolean {
   if (message.details?.ephemeral) return false;
-  return !message.fileDeleted && !!message.file && (message.direction === 'outgoing'
+  return message.delivery !== 'saving' && !message.fileDeleted && !!message.file && (message.direction === 'outgoing'
     ? message.fileStatus !== 'canceled' && message.fileStatus !== 'rejected'
     : message.fileStatus === 'ready');
 }
@@ -3421,9 +3421,15 @@ async function verifiedMedia(peer: string, id: string): Promise<{ bytes: Uint8Ar
   return { bytes, ...media };
 }
 
-async function ensureImageUrl(peer: string, id: string): Promise<void> {
+async function ensureImageUrl(peer: string, id: string, retry = false): Promise<void> {
   const key = fileTransferKey(peer, id);
-  if (imageUrls[key] || imageLoading.has(key) || imageErrors[key]) return;
+  if (imageLoading.has(key)) return;
+  if (retry && imageErrors[key]) {
+    const errors = { ...imageErrors };
+    delete errors[key];
+    imageErrors = errors;
+  }
+  if (imageUrls[key] || imageErrors[key]) return;
   const generation = previewGeneration;
   const account = address;
   imageLoading.add(key);
@@ -3449,7 +3455,19 @@ async function ensureImageUrl(peer: string, id: string): Promise<void> {
       imageErrors = { ...imageErrors, [key]: true };
 
     }
-  } finally { imageLoading.delete(key); }
+  } finally { if (generation === previewGeneration) imageLoading.delete(key); }
+}
+
+function imagePreviewFailed(key: string, event: Event): void {
+  const url = (event.currentTarget as HTMLImageElement).getAttribute('src');
+  if (!url || imageUrls[key] !== url) return;
+  const urls = { ...imageUrls };
+  delete urls[key];
+  imageUrls = urls;
+  const index = imageUrlOrder.indexOf(key);
+  if (index >= 0) imageUrlOrder.splice(index, 1);
+  URL.revokeObjectURL(url);
+  imageErrors = { ...imageErrors, [key]: true };
 }
 
 function observeImage(node: HTMLElement, details: { peer: string; id: string }) {
@@ -3467,10 +3485,22 @@ function loadStoragePreview(file: ManagedFile): Promise<Blob | null> {
   const current = () => address === owner && generation === previewGeneration && screen === 'account' &&
     accountView === 'profile' && settingsSection === 'files' && mediaSettingsSection === 'storage';
   const work = storagePreviewQueue.catch(() => {}).then(async () => {
-    if (!current() || file.category !== 'image') return null;
-    const media = await verifiedMedia(file.peer, file.messageId);
-    if (!current() || media.kind !== 'image') return null;
-    const blob = await storageThumbnail(media.bytes, media.mime);
+    if (!current()) return null;
+    let blob: Blob | null;
+    if (file.stickerPack) {
+      const entry = sessionChats.byPeer[file.peer]?.messages.find(message => message.id === file.messageId);
+      if (!entry || !mediaCanOpen(entry) || entry.details?.media?.kind !== 'sticker-pack') return null;
+      const archive = await prepareMessageFile(file.peer, file.messageId, false);
+      if (!current()) return null;
+      const { files } = await importStickerPack(new Uint8Array(await archive.arrayBuffer()), entry.details.media.packId);
+      if (!current() || !files[0]) return null;
+      blob = await storageThumbnail(files[0].bytes, files[0].asset.mime);
+    } else {
+      if (file.category !== 'image') return null;
+      const media = await verifiedMedia(file.peer, file.messageId);
+      if (!current() || media.kind !== 'image') return null;
+      blob = await storageThumbnail(media.bytes, media.mime);
+    }
     return current() ? blob : null;
   });
   storagePreviewQueue = work.then(() => {}, () => {});
@@ -3486,7 +3516,7 @@ function observeContactPreview(node: HTMLElement, details: { peer: string; id: s
 
 function openGallery(peer: string, id: string): void {
   galleryId = id;
-  void ensureImageUrl(peer, id);
+  void ensureImageUrl(peer, id, true);
 }
 function closeGallery(): Promise<void> {
   if (!galleryId) return Promise.resolve();
@@ -3825,12 +3855,26 @@ async function storeFileBytesNow(peer: string, id: string, bytes: Uint8Array,off
 
 async function getFileBytes(peer: string, id: string): Promise<Uint8Array | null> {
   const storageId = fileTransferKey(peer, id);
-  const message=sessionChats.byPeer[peer]?.messages.find(m=>m.id===id);
-  if(message?.mediaRef&&!message.fileDeleted){
-    const physical=libraryFileId(message.mediaRef),bytes=sessionFiles.get(physical)??(chatStoreKey?await loadLocalFileData(chatStoreKey,address,physical):null);
-    if(bytes&&message.file&&bytes.length===message.file.size&&await sha256Hex(bytes)===message.file.sha256)return bytes;
-  }
-  return sessionFiles.get(storageId) ?? (chatStoreKey ? await loadLocalFileData(chatStoreKey, address, storageId) : null);
+  const generation = authGeneration, owner = address, key = chatStoreKey;
+  const currentMessage = () => sessionChats.byPeer[peer]?.messages.find(m => m.id === id);
+  const read = (storedId: string) => sessionFiles.get(storedId) ?? (key ? loadLocalFileData(key, owner, storedId) : null);
+  const readShared = async (message: ChatEntry | undefined) => {
+    if (!message?.mediaRef || message.fileDeleted || !message.file) return null;
+    const bytes = await read(libraryFileId(message.mediaRef));
+    return bytes && bytes.length === message.file.size && await sha256Hex(bytes) === message.file.sha256 ? bytes : null;
+  };
+  const message = currentMessage();
+  const shared = await readShared(message);
+  if (generation !== authGeneration) return null;
+  if (shared) return shared;
+  const original = await read(storageId);
+  if (generation !== authGeneration) return null;
+  if (original) return original;
+  // Sticker deduplication may replace the original record while it is being read.
+  const latest = currentMessage();
+  if (latest?.mediaRef === message?.mediaRef) return null;
+  const migrated = await readShared(latest);
+  return generation === authGeneration ? migrated : null;
 }
 
 async function chooseFile(event: Event): Promise<void> {
@@ -5703,11 +5747,12 @@ function chatSnapshot(): LocalChatData {
   });
 }
 
-function wakeGroupConnections(): void {
+function wakeGroupConnections(groupId?: string): void {
   if (!chat || !groupController || !trustedSession || !profileNetwork || navigationBusy()) return;
   const service = chat;
   if (groupRooms.some(room => room.plan || room.leaves?.length)) void groupController.resumeMembership().catch(() => {});
-  for (const peer of new Set(groupRooms.flatMap(room => groupPeers(room, address)))) {
+  const rooms = groupId ? groupRooms.filter(room => room.id === groupId) : groupRooms;
+  for (const peer of new Set(rooms.flatMap(room => groupPeers(room, address)))) {
     if (peer === address || sessionChats.byPeer[peer]?.contact === 'blocked') continue;
     if (service.isDirectReady(peer)) groupController.peerOnline(peer);
     else void service.connect(peer).catch(() => {});
@@ -6954,10 +6999,11 @@ async function changePassword(): Promise<void> {
             send={async (text, replyTo) => {
               if (!groupController) throw new Error('group_inactive');
               const id = await groupController.send(groupId, text, replyTo);
+              wakeGroupConnections(groupId);
               courierDelivery?.wake();
               return id;
             }}
-            sync={wakeGroupConnections} direct={() => openConnectionSection('direct')} back={showChatList} />
+            sync={() => wakeGroupConnections(groupId)} direct={() => openConnectionSection('direct')} back={showChatList} />
         {/key}
       {:else if localAgentOpen}
         <LocalAgentChat messages={localAgentHistory} bind:draft={localAgentDraft} ready={localAgentReady}
@@ -7141,7 +7187,7 @@ async function changePassword(): Promise<void> {
                     {#if imageUrls[fileTransferKey(activeConversation.peerAddress, message.id)] && !imageErrors[fileTransferKey(activeConversation.peerAddress, message.id)]}
                       <img width={message.details?.imagePreview?.width} height={message.details?.imagePreview?.height} src={imageUrls[fileTransferKey(activeConversation.peerAddress, message.id)]}
                         alt={message.file.name} loading="lazy"
-                        onerror={() => imageErrors = { ...imageErrors, [fileTransferKey(activeConversation.peerAddress, message.id)]: true }}
+                        onerror={(event) => imagePreviewFailed(fileTransferKey(activeConversation.peerAddress, message.id), event)}
                         />
                     {:else if imageErrors[fileTransferKey(activeConversation.peerAddress, message.id)]}
                       {$i18n.text("Не удалось показать миниатюру")}
