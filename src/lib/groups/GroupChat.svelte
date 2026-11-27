@@ -7,6 +7,9 @@
   import ComposerEmojiToggle from '$lib/chat/ComposerEmojiToggle.svelte';
   import { autoSizeComposer } from '$lib/chat/composer-size';
   import MessageTools from '$lib/chat/MessageTools.svelte';
+  import EditMessageDialog from '$lib/chat/EditMessageDialog.svelte';
+  import MessageReactions from '$lib/chat/MessageReactions.svelte';
+  import ReactionPicker from '$lib/chat/ReactionPicker.svelte';
   import MessageDelivery from '$lib/chat/MessageDelivery.svelte';
   import MessageSelectionBar from '$lib/chat/MessageSelectionBar.svelte';
   import ChatSearch from '$lib/chat/ChatSearch.svelte';
@@ -28,13 +31,14 @@
   import type { createChatScroll } from '$lib/chat/chat-scroll';
   import { submitOnEnter } from '$lib/chat/conversation-list';
   import { GROUP_TEXT_BYTES, MAX_GROUP_MEMBERS } from './protocol';
+  import { applyGroupEdit, groupCanAddress, groupCanEdit, groupEdits, groupPins, groupReactions, type GroupActionRequest } from './actions';
   import { groupChronology, groupEntryUnread, type GroupEntry, type GroupRoom } from './storage';
   import { groupChatEntry, groupDelivery, groupRecipients, type GroupDeliveryPhase } from './presentation';
   import { editGroupMentions, groupMentionParts, mentionQuery, moveGroupMentions, type GroupMention, type MentionEdit } from './mentions';
 
   let { room, self, name, photo, connected, searching, deliveryPhase, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, scroll, jump, accept, send,
     library, loadSticker, manageStickers, sendSticker, autoplay, loadAttachment, obtainAttachment, saveAttachment, previewPack, openPack, saveMedia,
-    canRequestPack, requestPack, canMention, openProfile, forward, forwardDone, hide, sync, direct, back }: {
+    canRequestPack, requestPack, canMention, openProfile, forward, forwardDone, hide, update, sync, direct, back }: {
     room: GroupRoom; self: string; name(peer: string): string; photo(peer: string): string;
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
     searching: ReadonlySet<string>; deliveryPhase(hash: string): GroupDeliveryPhase | undefined;
@@ -57,6 +61,7 @@
     forward(entries: GroupEntry[]): void;
     forwardDone: number;
     hide(ids: string[]): Promise<void>;
+    update(request: GroupActionRequest): Promise<void>;
   } = $props();
   let draft = $state(''), busy = $state(false), failed = $state(false);
   let transcript = $state<HTMLDivElement>();
@@ -73,6 +78,8 @@
   const inputPanel = new ComposerInput(() => pickerOpen, open => pickerOpen = open, mobile => mobileInput = mobile);
   let replyTo = $state('');
   let routeId = $state('');
+  let reactionTarget = $state(''), pinsOpen = $state(false);
+  let editDraft = $state<{ id:string; text:string; revision:number }>();
   let routeView = $state<'status' | 'route'>('route');
   function showDelivery(id: string, view: 'status' | 'route') { routeId = id; routeView = view; }
   let messageTools = $state<{ id:string; view:'menu' | 'status' | 'route' | 'share' } | null>(null), galleryId = $state('');
@@ -137,7 +144,11 @@
       .map(item => ({ ...item, duplicate:(duplicates.get(foldNickname(item.nickname)) ?? 0) > 1 }));
   });
   const activeMention = $derived(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)]);
-  const timeline = $derived(groupChronology(room.entries).filter(entry => !entry.hidden));
+  const edits = $derived(groupEdits(room));
+  const reactions = $derived(groupReactions(room));
+  const pins = $derived(groupPins(room));
+  const ownPin = $derived(pins.find(pin => pin.actor === self)?.targetId);
+  const timeline = $derived(groupChronology(room.entries).filter(entry => !entry.hidden).map(entry => applyGroupEdit(entry, edits)));
   const searchable = $derived(searchOpen ? timeline.map(entry => ({ ...groupChatEntry(entry, self), details:entry.file?.details })) : []);
   const selectedEntries = $derived(timeline.filter(entry => selected.includes(entry.id)));
   const readyFile = (entry: GroupEntry) => !!(entry.fileReady || entry.fileNode || localFiles.has(entry.hash) || entry.from === self);
@@ -179,6 +190,30 @@
     return counts;
   });
   const byId = $derived(new Map(timeline.map(entry => [entry.id, entry])));
+  const reacting = $derived(byId.get(reactionTarget));
+  const canAddress = (entry: GroupEntry) => groupCanAddress(room, entry);
+  const react = (targetId: string, emoji: string) => void act(() => update({ kind:'reaction', targetId, emoji }));
+  const setPin = (targetId: string | null) => void act(() => update({ kind:'pin', targetId }));
+
+  function startEdit(entry: GroupEntry) {
+    editDraft = { id:entry.id, text:entry.text, revision:edits.get(entry.id)?.revision ?? 0 };
+  }
+
+  async function saveEdit(text: string) {
+    if (!editDraft || blocked) throw new Error('group_message_unavailable');
+    await update({ kind:'edit', targetId:editDraft.id, previousRevision:editDraft.revision, text });
+  }
+
+  function closePins() {
+    pinsOpen = false;
+    queueRead();
+  }
+
+  async function jumpToPin(id: string) {
+    closePins();
+    await tick();
+    showOriginal(id, 'instant');
+  }
   const replyDraft = $derived(byId.get(replyTo));
   const routeMessage = $derived(byId.get(routeId));
   const unread = $derived(timeline.filter(entry => groupEntryUnread(entry, self)));
@@ -402,7 +437,8 @@
   }
 
   export function canStageFiles() {
-    return !!room.mls && canCompose && !galleryId && !messageTools && !routeId && !membersOpen && !selecting;
+    return !!room.mls && canCompose && !galleryId && !messageTools && !routeId && !membersOpen && !selecting &&
+      !reactionTarget && !editDraft && !pinsOpen;
   }
 
   export function stageFiles(files: File[]) {
@@ -541,6 +577,14 @@
 {/if}
 {#if selectionError}<small role="alert">{$i18n.system(selectionError)}</small>{/if}
 
+{#if pins.length}
+  <button type="button" class="group-pins" aria-haspopup="dialog" aria-expanded={pinsOpen} onclick={() => pinsOpen = true}>
+    <span aria-hidden="true">⌖</span>
+    <span class="group-pins-label">{$i18n.text('Закреплённые сообщения')}</span>
+    <span class="group-pins-count">{pins.length}</span>
+  </button>
+{/if}
+
 <div class="message-history">
   <div class="message-scroll" bind:this={transcript} use:scroll={{ peer: room.id, messages: scrollMessages, openToken: 0 }}
     role="log" aria-label={$i18n.text('Переписка группы')} onwheel={reviewHistory} onpointerdown={reviewHistory}>
@@ -551,6 +595,9 @@
         {@const sent = message.sentAt === undefined ? undefined : new Date(message.sentAt)}
         {@const dateMoved = sent && dates[i] !== sent.toDateString()}
         {@const replies = replyCounts.get(message.id) ?? 0}
+        {@const addressable = canAddress(message)}
+        {@const pinned = ownPin === message.id}
+        {@const messageReactions = reactions.get(message.id)}
         {#if sent && dates[i] !== dates[i - 1]}
           <HistoryDivider timestamp={message.sentAt} />
         {/if}
@@ -558,6 +605,8 @@
           <MessageCard outgoing={message.from === self} preview={message.text} highlighted={highlighted === message.id}
             sticker={message.file?.details?.media?.kind === 'sticker'} {selecting}
             selected={selected.includes(message.id)} busy={busy || blocked}
+            onReaction={addressable ? () => reactionTarget = message.id : undefined}
+            reactionOpen={reactionTarget === message.id} reactionBusy={!canCompose}
             onSelect={() => selected = toggleSelection(selected, message.id)} onBeginSelect={() => beginSelection(message)}>
             <div class="message-header">
               <button type="button" class="group-author" onclick={() => openProfile(message.from)} title={$i18n.text('Открыть карточку')}>
@@ -577,6 +626,10 @@
               <MessageTools message={groupChatEntry(message, self, readyFile(message))} status={delivery.status} recipient={self}
                 shareText={message.text} openView={messageTools?.id === message.id ? messageTools.view : null} disabled={busy || blocked}
                 canReply={canCompose} canForward={canUseFile(message)}
+                pinLabel={$i18n.text('Закрепить в группе')} {pinned}
+                onPin={addressable || pinned ? () => setPin(pinned ? null : message.id) : undefined}
+                onEdit={addressable && message.from === self && groupCanEdit(message) ? () => startEdit(message) : undefined}
+                onReact={addressable && canCompose ? emoji => react(message.id, emoji) : undefined}
                 onOpen={view => messageTools = {id:message.id,view}} onClose={() => messageTools = null}
                 onReply={() => startReply(message)} onForward={() => forwardEntries([message])} onSelect={() => beginSelection(message)}
                 onDownload={() => void downloadAttachment(message)} onHide={() => confirmingHide = [message.id]} onCopy={() => void copyText(message)}
@@ -608,7 +661,10 @@
                 {:else}<MessageText text={part.text} largeEmoji={false} />{/if}
               {/each}
             {:else if !message.file || message.text !== message.file.name}<MessageText text={message.text} />{/if}
+            {#if edits.has(message.id)}<small class="edit-note">{$i18n.text('изменено')}</small>{/if}
             <div class="message-actions">
+              {#if messageReactions}<MessageReactions reactions={messageReactions} {self} disabled={!canCompose}
+                onReact={addressable ? emoji => react(message.id, emoji) : undefined} />{/if}
               {#if replies}<small class="reply-count" title={$i18n.text('Ответы в этой переписке')}>↩ {replies}</small>{/if}
               {#if message.from === self || message.file}
                 <MessageDelivery status={delivery.status} count={delivery.count} onDetails={() => showDelivery(message.id, 'status')} />
@@ -861,7 +917,52 @@
   </CompactDialog>
 {/if}
 
+{#if pinsOpen}
+  <CompactDialog title={$i18n.text('Закреплённые сообщения')} literalTitle onClose={closePins}>
+    <ul class="group-pin-list">
+      {#each pins as pin (pin.actor)}
+        {@const original = byId.get(pin.targetId)}
+        <li>
+          <button type="button" class="group-pin-link" disabled={!original} onclick={() => void jumpToPin(pin.targetId)}
+            title={$i18n.text('Перейти к закреплённому сообщению')}>
+            <small>{pin.actor === self ? $i18n.text('Ваш закреп') : $i18n("m_b8b2240669c9", {v0:name(pin.actor)})}</small>
+            <span>{original?.text ?? (room.entries.some(entry => entry.id === pin.targetId && entry.hidden)
+              ? $i18n.text('Сообщение удалено у вас') : $i18n.text('Сообщение пока отсутствует на этом устройстве'))}</span>
+          </button>
+          {#if pin.actor === self}
+            <button type="button" class="group-pin-remove" disabled={!canCompose} onclick={() => setPin(null)}
+              aria-label={$i18n.text('Снять мой закреп')} title={$i18n.text('Снять мой закреп')}><ChatIcon name="close" /></button>
+          {/if}
+        </li>
+      {:else}
+        <li>{$i18n.text('Нет закреплённых сообщений.')}</li>
+      {/each}
+    </ul>
+    {#if failed}<p role="alert">{$i18n.text('Действие с группой не выполнено. Проверьте подключение и попробуйте снова.')}</p>{/if}
+  </CompactDialog>
+{/if}
+{#if reacting && canAddress(reacting)}
+  <ReactionPicker selected={reactions.get(reacting.id)?.find(reaction => reaction.actors.includes(self))?.emoji}
+    onClose={() => { reactionTarget = ''; queueRead(); }}
+    onSelect={emoji => {
+      const id = reactionTarget;
+      reactionTarget = '';
+      if (id) react(id, emoji);
+      queueRead();
+    }} />
+{/if}
+{#if editDraft}<EditMessageDialog text={editDraft.text} onSave={saveEdit} onClose={() => { editDraft = undefined; queueRead(); }} />{/if}
+
 <style>
+  .group-pins { display:flex; align-items:center; gap:7px; flex:none; text-align:start; min-width:0; min-height:36px; padding:4px 9px; color:var(--accent); }
+  .group-pins-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .group-pins-count { border-radius:12px; background:var(--accent-soft); padding:1px 7px; font-variant-numeric:tabular-nums; }
+  .group-pin-list { display:grid; gap:5px; list-style:none; padding:0 3px 0 0; margin:0; max-height:min(46dvh,360px); overflow:auto; overscroll-behavior:contain; }
+  .group-pin-list li { display:flex; gap:6px; min-width:0; align-items:stretch; }
+  .group-pin-link { display:grid; grid-template-columns:minmax(0,1fr); gap:3px; min-width:0; flex:1; text-align:start; }
+  .group-pin-link small, .group-pin-link span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .group-pin-link small { color:var(--accent); }
+  .group-pin-remove { display:grid; place-items:center; min-width:44px; padding:5px; }
   .group-selection-row { display:flex; flex:none; min-width:0; }
   .group-jumps { position:absolute; inset-inline-end:14px; bottom:12px; display:flex; gap:6px; pointer-events:none; }
   .group-jumps .jump-down { position:relative; inset:auto; pointer-events:auto; }

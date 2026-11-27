@@ -1,11 +1,12 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 import { normalizeFileOffer, type FileOffer } from '$lib/chat/file-transfer';
 import { parseGroupMentions, type GroupMention } from './mentions';
-import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, MAX_GROUP_MEMBERS, parseGroupFrame, parseGroupProfile, uuid,
+import { parseGroupAction, retainGroupActions, type GroupAction } from './actions';
+import { digest, encodedMls, GROUP_ACTION_HISTORY, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, MAX_GROUP_MEMBERS, parseGroupFrame, parseGroupProfile, uuid,
   validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProfile, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
-export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string; after?: string[]; forwarded?: true; file?: FileOffer; mentions?: GroupMention[] };
+export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string; after?: string[]; forwarded?: true; file?: FileOffer; mentions?: GroupMention[]; action?: GroupAction };
 export type GroupNodeStatus = 'stored' | 'delivered' | 'finished';
 export type GroupRoute = { peer: string; node?: string };
 export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; route?: GroupRoute; nodeSince?: number;
@@ -13,7 +14,7 @@ export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: 
   fileReady?: true; hidden?: true; fileReceivedBy?: string[]; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
-  draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
+  draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[]; actions?: GroupEntry[];
   activityAt?: number;
   epoch?: number;
   departed?: string;
@@ -86,8 +87,10 @@ export function groupFileOffer(value: unknown, id: string): FileOffer | null {
 export const validPost = (value: unknown): value is GroupPost => {
   if (!value || typeof value !== 'object') return false;
   const post = value as GroupPost;
-  return uuid(post.id) && isValidAccountId(post.from) && typeof post.text === 'string' &&
-    !!post.text.trim() && post.text.length <= GROUP_TEXT_BYTES && encoder.encode(post.text).length <= GROUP_TEXT_BYTES &&
+  if (!uuid(post.id) || !isValidAccountId(post.from) || typeof post.text !== 'string') return false;
+  if (post.action !== undefined) return post.text === '' && !!parseGroupAction(post.action) &&
+    !post.file && !post.replyTo && !post.after && !post.forwarded && !post.mentions;
+  return !!post.text.trim() && post.text.length <= GROUP_TEXT_BYTES && encoder.encode(post.text).length <= GROUP_TEXT_BYTES &&
     (post.file === undefined || groupFileOffer(post.file, post.id) !== null);
 };
 
@@ -101,12 +104,13 @@ export function restoreGroups(value: unknown): GroupRooms {
     const keys = Object.fromEntries(members.filter(member => member !== raw.owner && encodedMls(raw.keys?.[member]))
       .map(member => [member, raw.keys[member]]));
     const draft = raw.draft;
-    const records: GroupEntry[] = Array.isArray(raw.entries) ? raw.entries.slice(-GROUP_HISTORY) : [];
-    const entries = records.filter(entry => validPost(entry) &&
+    const restoreRecords = (records: unknown, limit: number, controls = false): GroupEntry[] =>
+      (Array.isArray(records) ? records.slice(-limit) as GroupEntry[] : []).filter(entry => validPost(entry) && !!entry.action === controls &&
       (groupMembers(entry.audience) ? entry.audience : members).includes(entry.from) &&
       digest(entry.hash) && encodedMls(entry.packet, 6000)).map(entry => {
       const audience = groupMembers(entry.audience) ? entry.audience : members;
       const file = groupFileOffer(entry.file, entry.id);
+      const action = parseGroupAction(entry.action);
       const mentions = parseGroupMentions(entry.text, entry.mentions)?.filter(([, , peer]) => peer !== entry.from && audience.includes(peer));
       const restoreNodeStatus = (statuses?: Record<string, GroupNodeStatus>) => Object.fromEntries(audience.flatMap(peer => {
         const value = statuses?.[peer];
@@ -115,6 +119,7 @@ export function restoreGroups(value: unknown): GroupRooms {
       return {
         id:entry.id, from:entry.from, text:entry.text, hash:entry.hash, packet:entry.packet, audience,
         ...(file ? { file } : {}),
+        ...(action ? { action } : {}),
         ...(mentions?.length ? { mentions } : {}),
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
         ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
@@ -140,6 +145,7 @@ export function restoreGroups(value: unknown): GroupRooms {
         }) : [],
       };
     });
+    const entries = restoreRecords(raw.entries, GROUP_HISTORY);
     const plan = storedFrame(raw.plan, 'group-plan', raw.id);
     const epoch = groupEpoch(raw.epoch) ? raw.epoch : undefined;
     const memberEpochs = Object.fromEntries(members.flatMap(peer => {
@@ -155,7 +161,7 @@ export function restoreGroups(value: unknown): GroupRooms {
       return plan && commit && plan.change === commit.change && plan.epoch === commit.epoch && groupMembers(value.previous)
         ? [{ plan, commit, previous:value.previous }] : [];
     }) : undefined;
-    rooms.push({ id:raw.id, title:raw.title, owner:raw.owner, members, keys, entries,
+    const room: GroupRoom = { id:raw.id, title:raw.title, owner:raw.owner, members, keys, entries,
       epoch, memberEpochs, ...(Object.keys(profiles).length ? { profiles } : {}),
       departed:typeof raw.departed === 'string' && isValidAccountId(raw.departed) ? raw.departed : undefined,
       leaving:storedFrame(raw.leaving, 'group-leave', raw.id),
@@ -171,7 +177,9 @@ export function restoreGroups(value: unknown): GroupRooms {
       ...(encodedMls(raw.welcome) && validGroupProof(raw.welcomeProof) ? { welcomeProof:raw.welcomeProof } : {}),
       ...(draft && encodedMls(draft.packet) && [draft.init, draft.leaf, draft.signature].every(key => encodedMls(key, 256))
         ? { draft:{ packet:draft.packet, init:draft.init, leaf:draft.leaf, signature:draft.signature } } : {}),
-    });
+    };
+    if (Array.isArray(raw.actions)) room.actions = retainGroupActions(room, restoreRecords(raw.actions, GROUP_ACTION_HISTORY, true));
+    rooms.push(room);
   }
   return rooms;
 }

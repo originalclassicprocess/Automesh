@@ -3,6 +3,7 @@ import { FILE_CHUNK_BYTES } from '$lib/chat/file-transfer';
 
 export const MAX_GROUP_MEMBERS = 10;
 export const GROUP_HISTORY = 128;
+export const GROUP_ACTION_HISTORY = GROUP_HISTORY * (MAX_GROUP_MEMBERS + 1) + MAX_GROUP_MEMBERS + 32;
 export const GROUP_KEY_HISTORY = 4;
 export const GROUP_CHANGE_HISTORY = 24;
 export const GROUP_TEXT_BYTES = 2048;
@@ -75,7 +76,7 @@ export type GroupFrame =
   | { type: 'ack'; group: string; hash: string }
   | { type: 'file-ack'; group: string; hashes: string[] }
   | { type: 'receipts'; group: string; receipts: GroupReceipt[] }
-  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number; requestEpoch?: boolean; profiles?: GroupProfile[] };
+  | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number; requestEpoch?: boolean; profiles?: GroupProfile[]; actionKnown?: string };
 
 // The adapter supplies authenticated Mesh IDs. It owns discovery, framing,
 // reconnection and any fragmentation required by its transport.
@@ -125,8 +126,10 @@ export function parseGroupFrame(value: unknown): GroupFrame | null {
       const profiles = Array.isArray(frame.profiles) && frame.profiles.length <= MAX_GROUP_MEMBERS
         ? frame.profiles.flatMap(value => { const profile = parseGroupProfile(value); return profile ? [profile] : []; })
         : undefined;
+      const actionKnown = typeof frame.actionKnown === 'string' && frame.actionKnown.length <= GROUP_ACTION_HISTORY * 16 &&
+        frame.actionKnown.length % 16 === 0 && /^[A-Za-z0-9+/]*$/.test(frame.actionKnown) ? frame.actionKnown : undefined;
       return { type:'sync', group, known:frame.known, seen, hasWelcome:frame.hasWelcome, epoch:groupEpoch(frame.epoch) ? frame.epoch : undefined,
-        requestEpoch:frame.requestEpoch === true, ...(profiles?.length ? { profiles } : {}) };
+        requestEpoch:frame.requestEpoch === true, ...(profiles?.length ? { profiles } : {}), ...(actionKnown !== undefined ? { actionKnown } : {}) };
     }
     case 'ack':
       return digest(frame.hash) ? { type:'ack', group, hash:frame.hash } : null;
