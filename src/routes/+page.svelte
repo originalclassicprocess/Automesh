@@ -27,7 +27,7 @@ import { navigationLevel } from '$lib/application/navigation-level';
 import { toggleSelection, selectEveryMessage } from '$lib/chat/message-selection';
 import { selectionSummary } from '$lib/chat/message-selection';
 import MessageSelectionBar from '$lib/chat/MessageSelectionBar.svelte';
-import { bulkTasks, downloadableSelection, archiveFileName, type BulkAction } from '$lib/chat/bulk-actions';
+import { bulkTasks, downloadableSelection, messageArchive, type BulkAction } from '$lib/chat/bulk-actions';
 import ChatIcon from '$lib/chat/ChatIcon.svelte';
 import CallPanel from '$lib/calls/CallPanel.svelte';
 import CallHistoryCard from '$lib/calls/CallHistoryCard.svelte';
@@ -38,6 +38,8 @@ import OfflineKeyBadge from '$lib/chat/OfflineKeyBadge.svelte';
 import CompactDialog from '$lib/application/CompactDialog.svelte';
 import { installFileDrop } from '$lib/chat/file-drop';
 import { autoSizeComposer } from '$lib/chat/composer-size';
+import ComposerEmojiToggle from '$lib/chat/ComposerEmojiToggle.svelte';
+import { groupChatEntry, type GroupDeliveryPhase } from '$lib/groups/presentation';
 import { ComposerInput } from '$lib/chat/composer-input';
 import { otherUnreadCount } from '$lib/chat/chat-header';
 import MessageCard from '$lib/chat/MessageCard.svelte';
@@ -196,7 +198,7 @@ import { managedFiles, chatStorageUsage, measureMediaLibrary, prepareChatStorage
 import { clearAiRuntimeCache, measureAppCache } from '$lib/application/app-cache';
 import { RESET_KEY, beginStorageReset, requireStorageEpoch, storageEpoch } from '$lib/application/storage-reset';
 import { encodeChatContent, type MessageDetails, type ReplyReference } from '$lib/chat/message-details';
-import { displayedReply, savedConversation, replyReference, replyCount, messagePreview, forwardingDetails, removeMessages, transcript } from '$lib/chat/chat-actions';
+import { displayedReply, savedConversation, replyReference, replyCount, messagePreview, forwardingDetails, removeMessages } from '$lib/chat/chat-actions';
 import ChatActionDialog from '$lib/application/ChatActionDialog.svelte';
 import ContactCard from '$lib/chat/ContactCard.svelte';
 import { contactLink, contactFromHash } from '$lib/chat/contact-link';
@@ -420,6 +422,8 @@ let groupWelcomeErrors = $state.raw<ReadonlySet<string>>(new Set());
 let groupRooms = $state.raw<GroupRooms>([]);
 let groupConnectionRevision = $state(0);
 let groupController: GroupController | null = null;
+let groupSearchPeers = $state.raw<ReadonlySet<string>>(new Set());
+let groupDeliveryPhases = $state.raw<ReadonlyMap<string, GroupDeliveryPhase>>(new Map());
 const connectedGroupPeers = $derived.by(() => {
   void groupConnectionRevision;
   return new Set(groupRooms.flatMap(room => room.members).filter(peer => chat?.isDirectReady(peer)));
@@ -916,13 +920,15 @@ let meshtastic=$state(emptyNativeChannels()),nativeOpen=$state(false),nativeSele
 let nativeSendDone = Promise.resolve();
 let nativeLive=$state<string[]>([]),nativeSaveTimer:ReturnType<typeof setTimeout>|null=null;
 let nativeInitialUnread=$state(0),nativeAtBottom=$state(true),nativeForwardDone=$state(0);
-let textForward=$state<{messages:ForwardText[];native?:string;peer?:string}|null>(null);
+let groupForwardDone=$state(0);
+let textForward=$state<{messages:ForwardText[];native?:string;peer?:string;group?:string}|null>(null);
 function nativeListConversation(c:NativeChannel){return {peerAddress:nativeToken(c),messages:[],draft:c.draft??'',unread:c.unread,connection:'offline' as const,error:'',sending:false,contact:'accepted' as const};}
 function openNativeForward(c:NativeChannel,messages:ChannelMessage[]){if(!messages.length)return;textForward={native:nativeToken(c),messages:messages.map(m=>({key:nativeMessageKey(m),text:m.text,source:`Meshtastic · ${c.name||'LoRa'} · ${m.name||'!'+m.from.toString(16)}`}))};}
 async function sendForwardText(target:string,m:ForwardText){
   const generation=authGeneration,source=textForward;
   if(!source||endingSession||screen!=='account')throw Error('Сеанс завершён.');
-  if(target.startsWith('radio:')){
+  if (source.group) await forwardGroupMessage(source.group, m.key, target);
+  else if(target.startsWith('radio:')){
     const c=meshtastic.channels.find(c=>nativeToken(c)===target.slice(6));if(!c)throw Error('Канал недоступен.');
     await sendNativeText(c,m.text);
   }else{
@@ -935,7 +941,46 @@ async function sendForwardText(target:string,m:ForwardText){
   }
   if(generation!==authGeneration)throw Error('Сеанс завершён.');
 }
-function finishTextForward(){if(textForward?.native)nativeForwardDone++;textForward=null;selecting=false;selectedMessages=[];status='Переслано или добавлено в очередь доставки.';}
+function openGroupForward(room: GroupRooms[number], entries: GroupEntry[]) {
+  if (navigationBusy() || activeGroup?.id !== room.id || !entries.length) return;
+  textForward = { group:room.id, messages:entries.map(entry => ({
+    key:entry.id, text:entry.file ? `📎 ${entry.file.name}` : entry.text,
+    source:entry.from === address ? selfNickname : groupContactName(room, entry.from),
+  })) };
+}
+
+async function forwardGroupMessage(source: string, id: string, target: string) {
+  const controller = groupController, generation = authGeneration;
+  const current = () => controller === groupController && generation === authGeneration && activeGroup?.id === source &&
+    accountView === 'chats' && !navigationBusy();
+  const room = activeGroup, entry = room?.entries.find(entry => entry.id === id && !entry.hidden);
+  if (!controller || !room || !entry || !current()) throw Error('Исходное сообщение удалено или отсутствует на этом устройстве.');
+  const bytes = entry.file ? await controller.readFile(source, entry.hash) : null;
+  try {
+    if (entry.file && !bytes) throw Error('Сначала получите файл целиком.');
+    if (entry.file && bytes && (bytes.length !== entry.file.size || await sha256Hex(bytes) !== entry.file.sha256))
+      throw Error('Исходный файл отсутствует или повреждён.');
+    if (!current()) throw Error('Сеанс завершён.');
+    if (target.startsWith('group:')) {
+      const group = target.slice(6);
+      const destination = groupRooms.find(room => room.id === group && groupVisible(room) && room.mls);
+      if (!destination) throw Error('Чат изменился.');
+      const file = entry.file && bytes ? { name:entry.file.name, mime:entry.file.mime, details:entry.file.details, bytes } : undefined;
+      await controller.send(group, entry.text, undefined, file, undefined, true);
+      wakeGroupConnections(group);
+      courierDelivery?.wake();
+      return;
+    }
+    if (!target.startsWith('chat:')) throw Error('Чат изменился.');
+    const peer = target.slice(5);
+    if (sessionChats.byPeer[peer]?.contact !== 'accepted') throw Error('Сначала дождитесь принятия запроса или разблокируйте контакт.');
+    const details = forwardingDetails({ ...groupChatEntry(entry,address), details:{ media:entry.file?.details?.media,
+      allowForwardAttribution:entry.from === address } }, { accountId:entry.from, nickname:groupContactName(room,entry.from) }, allowForwardAttribution, address);
+    if (entry.file && bytes) await sendLibraryFile(new File([bytes as BlobPart],entry.file.name,{type:entry.file.mime}), details, peer, false);
+    else await queueRichMessage(peer, entry.text, details);
+  } finally { bytes?.fill(0); }
+}
+function finishTextForward(){if(textForward?.native)nativeForwardDone++;if(textForward?.group)groupForwardDone++;textForward=null;selecting=false;selectedMessages=[];status='Переслано или добавлено в очередь доставки.';}
 function setNativeDraft(c:NativeChannel,text:string,replyId?:number){meshtastic={...meshtastic,channels:meshtastic.channels.map(entry=>nativeToken(entry)===nativeToken(c)?{...entry,draft:text.slice(0,600),replyId}:entry)};saveNativeSoon();}
 function nativeBottom(value:boolean){nativeAtBottom=value;if(value&&nativeOpen&&accountView==='chats'&&(!narrowScreen||mobilePane==='chat')&&document.visibilityState==='visible'){const c=meshtastic.channels.find(c=>nativeToken(c)===nativeSelected);if(c?.unread){meshtastic={...meshtastic,channels:meshtastic.channels.map(entry=>nativeToken(entry)===nativeSelected?{...entry,unread:0}:entry)};saveNativeSoon();}}}
 async function setNativePreferences(patch:Partial<Pick<typeof meshtastic,'showAll'|'historyLimit'>>){
@@ -1084,14 +1129,16 @@ const conversationItems=$derived([
     .filter(room => room.title.toLowerCase().includes(chatSearch.trim().toLowerCase()))
     .map(room => ({
       kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
-      time:room.activityAt ?? 0, last:groupChronology(room.entries).at(-1),
+      time:room.activityAt ?? 0, last:groupChronology(room.entries).findLast(entry => !entry.hidden),
       unread:room.entries.filter(entry => groupEntryUnread(entry, address)).length,
       mentioned:room.entries.some(entry => groupEntryUnread(entry, address) && groupPostMentions(entry, address)),
     })) : [])
 ].sort((a,b)=>b.time-a.time));
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
-  ...sessionChats.order.filter(peer=>['new','accepted'].includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false,accountId:peer,photo:contactPhoto(peer),activity:forwardActivity(sessionChats.byPeer[peer].messages)})),
-  ...(meshtastic.enabled&&radioConnection==='connected'?meshtastic.channels.filter(c=>nativeLive.includes(nativeToken(c))).map(c=>({id:'radio:'+nativeToken(c),name:`${c.name||'Meshtastic'} · ${c.boardName||radioBoardLabel}`,radio:true,node:c.node,activity:forwardActivity(c.messages),signatureBytes:c.signature?new TextEncoder().encode('\n'+channelSignature(contactLink(address))).length:0})):[])
+  ...sessionChats.order.filter(peer=>(textForward?.group ? ['accepted'] : ['new','accepted']).includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false,accountId:peer,photo:contactPhoto(peer),activity:forwardActivity(sessionChats.byPeer[peer].messages)})),
+  ...(textForward?.group ? groupRooms.filter(room => groupVisible(room) && room.mls).map(room => ({
+    id:'group:'+room.id, name:room.title, radio:false, group:true as const, activity:room.activityAt ?? 0,
+  })) : meshtastic.enabled&&radioConnection==='connected'?meshtastic.channels.filter(c=>nativeLive.includes(nativeToken(c))).map(c=>({id:'radio:'+nativeToken(c),name:`${c.name||'Meshtastic'} · ${c.boardName||radioBoardLabel}`,radio:true,node:c.node,activity:forwardActivity(c.messages),signatureBytes:c.signature?new TextEncoder().encode('\n'+channelSignature(contactLink(address))).length:0})):[])
 ]));
 
 function disconnectRadio() {
@@ -1722,8 +1769,8 @@ function contactName(accountId: string): string {
 }
 
 function groupContactName(room: GroupRooms[number], accountId: string): string {
-  const profile = room.members.includes(accountId) ? room.profiles?.[accountId] : undefined;
-  return profile ? aliases[accountId] || profile.nickname || `${accountId.slice(0, 12)}…` : contactName(accountId);
+  const profile = room.profiles?.[accountId];
+  return profile ? profile.nickname || `${accountId.slice(0, 12)}…` : contactName(accountId);
 }
 
 function contactPhoto(accountId: string): string { return accountId === address ? selfAvatar : peerAvatars[accountId] ?? ''; }
@@ -3682,16 +3729,20 @@ async function preparedLibraryPack(pack: StickerPack): Promise<PreparedMedia[]> 
   }
   return result;
 }
-function sendLibraryFile(file: File, details: MessageDetails, peer = sessionChats.activePeer): Promise<void> {
-  return attachmentTasks.track(sendLibraryFileNow(file, details, peer));
+function sendLibraryFile(file: File, details: MessageDetails, peer = sessionChats.activePeer, useDraftRule = true): Promise<void> {
+  return attachmentTasks.track(sendLibraryFileNow(file, details, peer, useDraftRule));
 }
-async function sendLibraryFileNow(file: File, details: MessageDetails, peer: string): Promise<void> {
+async function sendLibraryFileNow(file: File, details: MessageDetails, peer: string, useDraftRule: boolean): Promise<void> {
   const activeChat = chat;
   if (!activeChat || navigationBusy() || attachingFiles || sessionChats.byPeer[peer]?.contact !== 'accepted') throw new Error('Откройте чат с принятым контактом.');
   const pending = sessionChats.byPeer[peer].messages.filter(m => m.direction === 'outgoing' && m.file && !['ready','canceled','rejected'].includes(m.fileStatus ?? '')).length;
   const error = validateAttachmentBatch([file],pending); if (error) throw new Error(error);
   attachingFiles = true;
-  try { if (!await enqueueAttachment(file,peer,activeChat,{ ...details, ...(sendRule ? { ephemeral:{ ...sendRule } } : {}) })) throw new Error(status || 'Не удалось добавить в очередь.'); sendRule = undefined; }
+  try {
+    const rule = useDraftRule ? sendRule : undefined;
+    if (!await enqueueAttachment(file,peer,activeChat,{ ...details, ...(rule ? { ephemeral:{ ...rule } } : {}) })) throw new Error(status || 'Не удалось добавить в очередь.');
+    if (useDraftRule) sendRule = undefined;
+  }
   finally { attachingFiles = false; }
 }
 async function sendLibraryAsset(asset: MediaAsset, pack?: StickerPack): Promise<void> {
@@ -4648,18 +4699,12 @@ async function downloadSelection(): Promise<void> {
   if (!messages.length || actionBusy) return;
   actionBusy = true;
   try {
-    const size=messages.reduce((sum,m)=>sum+(m.file?.size??0)+m.text.length*4,0);
-    if(size>64*1024*1024)throw new Error('Для одного архива выберите не больше 64 МБ. Скачайте остальные файлы отдельно.');
-    const files:Record<string,Uint8Array>={'messages.txt':new TextEncoder().encode(transcript(messages))};
-    let index=0;
-    for(const message of messages)if(message.file){
-      const file=await prepareMessageFile(peer,message.id);
-      files[archiveFileName(file.name,index++)]=new Uint8Array(await file.arrayBuffer());
-    }
-    const hasFiles=index>0;
-    const bytes=hasFiles?(await import('fflate')).zipSync(files,{level:0}):files['messages.txt'];
-    if (generation !== authGeneration || peer !== sessionChats.activePeer||downloadableSelection(sessionChats.byPeer[peer]?.messages??[],messages.map(m=>m.id)).length!==messages.length) return;
-    saveDownload(bytes as BlobPart, `Automesh-messages-${new Date().toISOString().slice(0, 10)}.${hasFiles?'zip':'txt'}`);
+    const { bytes, name } = await messageArchive(messages, async message =>
+      new Uint8Array(await (await prepareMessageFile(peer,message.id)).arrayBuffer()));
+    try {
+      if (generation !== authGeneration || peer !== sessionChats.activePeer||downloadableSelection(sessionChats.byPeer[peer]?.messages??[],messages.map(m=>m.id)).length!==messages.length) return;
+      saveDownload(bytes as BlobPart, name);
+    } finally { bytes.fill(0); }
     const done=new Set(messages.map(m=>m.id));selectedMessages=selectedMessages.filter(id=>!done.has(id));selecting=selectedMessages.length>0;
     status = 'Файлы переданы браузеру для скачивания. Сохранение на диск управляется браузером.';
   } catch (error) { if (generation === authGeneration) status = error instanceof Error ? error.message : 'Не удалось подготовить скачивание. Выбор сохранён.'; }
@@ -5259,6 +5304,18 @@ async function initializeChat() {
   const groupAccount = address, groupIdentity = identity;
   const groupActive = () => chat === nextChat && generation === authGeneration && trustedSession && profileNetwork &&
     screen === 'account' && !endingSession && !memoryBusy && !panicBusy;
+  groupSearchPeers = new Set();
+  groupDeliveryPhases = new Map();
+  const groupWork = new Map<string | symbol, { key: string; phase: GroupDeliveryPhase }>();
+  function setGroupWork(id: string | symbol, key: string, phase?: GroupDeliveryPhase) {
+    if (!groupActive()) return;
+    if (phase) groupWork.set(id, { key, phase });
+    else if (!groupWork.delete(id)) return;
+    const phases = new Map<string, GroupDeliveryPhase>();
+    for (const work of groupWork.values())
+      if (phases.get(work.key) !== 'sending') phases.set(work.key, work.phase);
+    groupDeliveryPhases = phases;
+  }
   const groups = new GroupController({
     self:groupAccount, identity:groupIdentity, active:groupActive,
     contact:peer => sessionChats.byPeer[peer]?.contact === 'accepted',
@@ -5270,6 +5327,11 @@ async function initializeChat() {
       if (groupActive() && !groupWelcomeErrors.has(id)) groupWelcomeErrors = new Set([...groupWelcomeErrors, id]);
     },
     nodeEnabled:() => courierState.enabled && !!courierState.node,
+    trackTransfer: (group, hash) => {
+      const token = Symbol(), key = groupFileStorageId(group, hash);
+      setGroupWork(token, key, 'sending');
+      return () => setGroupWork(token, key);
+    },
     transport:{ ready:peer => nextChat.isDirectReady(peer), send:(peer, frame) => nextChat.sendGroupFrame(peer, frame) },
     files: {
       read: async (group, hash) => {
@@ -5304,11 +5366,41 @@ async function initializeChat() {
     },
   });
   groupController = groups;
-  nextChat.onGroupFrame((peer, frame) => groups.receive(peer, frame));
+  nextChat.onGroupFrame(async (peer, frame) => {
+    await groups.receive(peer, frame);
+    if (frame.type === 'message') void receiveGroupFiles();
+  });
+  let groupDownloads = false;
+  const groupRetry = new Map<string, number>();
+  async function receiveGroupFiles() {
+    if (groupDownloads || !groupActive() || document.hidden || navigationBusy()) return;
+    const now = Date.now();
+    for (const [key, until] of groupRetry) if (until <= now) groupRetry.delete(key);
+    const rooms = [...groupRooms].sort((a,b) => Number(b.id === selectedGroupId) - Number(a.id === selectedGroupId));
+    const pending = rooms.flatMap(room => !room.mls || !groupVisible(room) || !room.members.some(peer => nextChat.isDirectReady(peer))
+      ? [] : [...room.entries].reverse().filter(entry => entry.from !== groupAccount && entry.file && !entry.hidden &&
+        !entry.fileReady && !entry.fileNode && (entry.fileRequested || autoReceiveFilesEnabled))
+        .map(entry => ({ group:room.id, entry, key:groupFileStorageId(room.id,entry.hash) })));
+    const selected = pending.find(({entry,key,group}) => !groupRetry.has(key) &&
+      (entry.fileRequested || automaticFileIds.has(key) || automaticFileBytes + entry.file!.size <= MAX_AUTO_FILE_BYTES) &&
+      !courierState.incomingFiles.some(file => file.group?.group === group && file.group.hash === entry.hash && file.nextIndex > 0));
+    if (!selected) return;
+    groupDownloads = true;
+    try {
+      await obtainGroupFile(selected.group, selected.entry.hash, !selected.entry.fileRequested, true);
+    } catch { /* An unavailable holder does not stop the rest of the queue. */ }
+    finally { groupRetry.set(selected.key, Date.now() + 8000); groupDownloads = false; }
+    void receiveGroupFiles();
+  }
+  const groupFileTimer = setInterval(() => void receiveGroupFiles(), 3500);
   const groupSync = setInterval(() => {
     if (groupActive() && !document.hidden && groupRooms.length) wakeGroupConnections();
   }, 20_000);
-  nextChat.onDisconnect(() => { clearInterval(groupSync); groups.close(); });
+  nextChat.onDisconnect(() => {
+    clearInterval(groupSync); clearInterval(groupFileTimer); groups.close();
+    groupWork.clear();
+    if (groupController === groups) { groupSearchPeers = new Set(); groupDeliveryPhases = new Map(); }
+  });
   const exchange=new StickerCacheExchange({
     current:()=>chat===nextChat&&generation===authGeneration&&screen==='account'&&!endingSession&&!memoryBusy,
     accepted:peer=>sessionChats.byPeer[peer]?.contact==='accepted',
@@ -5386,6 +5478,7 @@ async function initializeChat() {
       groups:{
         posts:file => groups.nodePosts(file), eligible:(ref, peer) => groups.canStoreOnNode(ref, peer),
         release:(ref, peer) => groups.canReleaseNodeCopy(ref, peer),
+        searching:(post, active) => setGroupWork('reserve:' + post.id, groupFileStorageId(post.group, post.hash), active ? 'searching' : undefined),
         status:(ref, peer, value) => groups.recordNodeStatus(ref, peer, value), receive:(peer, frame, node) => groups.receiveNodePost(peer, frame, node),
         files:{
           load:ref => groups.readFile(ref.group, ref.hash),
@@ -5401,6 +5494,12 @@ async function initializeChat() {
       notification: (peer,id,providers) => notificationController?.nodeWake(peer,id,providers) ?? Promise.resolve(undefined),
       activity:(peer,id,stage)=>{
         if(chat!==nextChat)return;
+        const ref = courierState.groupJobs?.[id];
+        if (ref) {
+          setGroupWork(id, groupFileStorageId(ref.group, ref.hash), stage === 'preparing' || stage === 'uploading' ? 'sending' : undefined);
+          return;
+        }
+        if (groupWork.has(id)) setGroupWork(id, '');
         sessionChats=updateConversation(sessionChats,peer,c=>({...c,messages:c.messages.map(m=>m.id===id?nodeTransferUpdate(m,stage):m)}));
       },
       approvedKeySource:source=>(networkSettings.managedNodes??[]).some(n=>n.url===source.url&&n.nodeId===source.nodeId),
@@ -5669,7 +5768,7 @@ async function initializeChat() {
   nextChat.onPeerChange((peer, event) => {
     if (chat !== nextChat) return;
     if (groupRooms.some(room => room.members.includes(peer.address))) groupConnectionRevision++;
-    if (event === 'joined') groups.peerOnline(peer.address);
+    if (event === 'joined') { groups.peerOnline(peer.address); void receiveGroupFiles(); }
     if (event === 'left') {
       groups.peerOffline(peer.address);
       nextCalls.peerUnavailable(peer.address);
@@ -5829,7 +5928,12 @@ function wakeGroupConnections(groupId?: string): void {
   for (const peer of new Set(rooms.flatMap(room => groupPeers(room, address)))) {
     if (peer === address || sessionChats.byPeer[peer]?.contact === 'blocked') continue;
     if (service.isDirectReady(peer)) groupController.peerOnline(peer);
-    else void service.connect(peer).catch(() => {});
+    else if (!groupSearchPeers.has(peer)) {
+      groupSearchPeers = new Set([...groupSearchPeers, peer]);
+      void service.connectAndWait(peer).catch(() => {}).finally(() => {
+        if (chat === service) groupSearchPeers = new Set([...groupSearchPeers].filter(address => address !== peer));
+      });
+    }
   }
 }
 
@@ -5868,21 +5972,22 @@ function reserveAutomaticGroupFile(key: string, size: number): boolean {
   return true;
 }
 
-async function obtainGroupFile(group: string, hash: string, automatic: boolean): Promise<Uint8Array | null> {
+async function obtainGroupFile(group: string, hash: string, automatic: boolean, background = false): Promise<Uint8Array | null> {
   const controller = groupController;
-  const entry = activeGroup?.id === group ? activeGroup.entries.find(item => item.hash === hash) : undefined;
+  const room = background ? groupRooms.find(room => room.id === group && groupVisible(room)) : activeGroup?.id === group ? activeGroup : undefined;
+  const entry = room?.entries.find(item => item.hash === hash && !item.hidden);
   if (!controller || !entry?.file || navigationBusy()) return null;
   const key = groupFileStorageId(group, hash);
   const reserve = automatic && !automaticFileIds.has(key);
   if (automatic && !reserveAutomaticGroupFile(key, entry.file.size)) return null;
-  if (!automatic) {
+  if (!automatic && !background) {
     await controller.requestFile(group, hash);
     courierDelivery?.wake();
   }
   try {
-    wakeGroupConnections(group);
+    if (!background) wakeGroupConnections(group);
     await controller.obtainFile(group, hash);
-    return controller === groupController ? await controller.readFile(group, hash) : null;
+    return !background && controller === groupController ? await controller.readFile(group, hash) : null;
   } catch (error) {
     if (reserve && controller === groupController && automaticFileIds.delete(key)) automaticFileBytes -= entry.file.size;
     throw error;
@@ -6683,7 +6788,8 @@ async function changePassword(): Promise<void> {
   {:else if accountView === 'peer'}
     <button onclick={backWithinApp}>{$i18n.text("← Назад")}</button>
     {#key peerCardAddress}
-      <ContactCard links={peerLinks[peerCardAddress] ?? []} accountId={peerCardAddress} nickname={declaredNames[peerCardAddress] ?? ''} alias={aliases[peerCardAddress] ?? ''}
+      <ContactCard links={peerLinks[peerCardAddress] ?? []} accountId={peerCardAddress}
+        nickname={activeGroup?.profiles?.[peerCardAddress]?.nickname ?? declaredNames[peerCardAddress] ?? ''} alias={aliases[peerCardAddress] ?? ''}
         photo={contactPhoto(peerCardAddress)}
         qr={peerQr} copied={copiedContactId === peerCardAddress} blocked={sessionChats.byPeer[peerCardAddress]?.contact === 'blocked'}
         hasChat={!!sessionChats.byPeer[peerCardAddress]} messages={sessionChats.byPeer[peerCardAddress]?.messages ?? []}
@@ -7192,6 +7298,7 @@ async function changePassword(): Promise<void> {
           {@const groupId = activeGroup.id}
           <GroupChat bind:this={groupChat} room={activeGroup} self={address} name={peer => groupContactName(activeGroup!, peer)} photo={contactPhoto}
             connected={connectedGroupPeers} blocked={navigationBusy()} welcomeFailed={groupWelcomeErrors.has(groupId)}
+            searching={groupSearchPeers} deliveryPhase={hash => groupDeliveryPhases.get(groupFileStorageId(groupId, hash))}
             contacts={newChatContacts}
             invite={async peer => {
               if (!groupController) throw new Error('group_inactive');
@@ -7207,14 +7314,18 @@ async function changePassword(): Promise<void> {
             canMention={peer => sessionChats.byPeer[peer]?.contact !== 'blocked'}
             sendSticker={(asset, pack, replyTo) => sendGroupSticker(groupId, asset, pack, replyTo)}
             library={mediaLibrary} loadSticker={loadLibraryAsset} manageStickers={openMediaLibrary}
-            autoReceive={autoReceiveFilesEnabled} autoplay={autoPlayVideoEnabled && !audioTrack && !callBusy}
+            autoplay={autoPlayVideoEnabled && !audioTrack && !callBusy}
             loadAttachment={hash => groupController?.readFile(groupId, hash) ?? Promise.resolve(null)}
-            obtainAttachment={(hash, automatic) => obtainGroupFile(groupId, hash, automatic)}
+            obtainAttachment={hash => obtainGroupFile(groupId, hash, false)}
             saveAttachment={saveDownload}
             previewPack={entry => previewGroupPack(groupId, entry)}
             openPack={entry => void openGroupPack(groupId, entry)}
             saveMedia={entry => saveGroupMedia(groupId, entry)}
             canRequestPack={canRequestGroupPack} requestPack={requestGroupPack}
+            openProfile={peer => void openPeerCard(peer)}
+            forward={entries => openGroupForward(activeGroup!, entries)}
+            forwardDone={groupForwardDone}
+            hide={ids => groupController?.hideMessages(groupId, ids) ?? Promise.reject(new Error('group_inactive'))}
             sync={() => wakeGroupConnections(groupId)} direct={() => openConnectionSection('direct')} back={showChatList} />
         {/key}
       {:else if localAgentOpen}
@@ -7547,7 +7658,7 @@ async function changePassword(): Promise<void> {
           data-message-composer aria-label={$i18n.text("Сообщение")}
           disabled={actionBusy || composerSending}
         ></textarea>
-        <button class="emoji-toggle" data-composer-toggle type="button" onclick={inputPanel.toggle} disabled={actionBusy || composerSending} aria-label={$i18n.text(emojiOpen && mobileInput ? 'Открыть клавиатуру' : 'Эмодзи, стикеры и GIF')} aria-expanded={emojiOpen} title={$i18n.text(emojiOpen && mobileInput ? 'Открыть клавиатуру' : 'Эмодзи, стикеры и GIF')}><ChatIcon name={emojiOpen && mobileInput ? 'keyboard' : 'emoji'} /></button>
+        <ComposerEmojiToggle open={emojiOpen} mobile={mobileInput} toggle={inputPanel.toggle} disabled={actionBusy || composerSending} />
         </div>
         <div class="composer-controls composer-right">
         {#if activeConversation.contact === 'accepted'}
@@ -7581,7 +7692,7 @@ async function changePassword(): Promise<void> {
   {/if}
   {/if}
   </div>
-  {#if textForward}<TextForwardDialog messages={textForward.messages} targets={textForwardTargets} onSend={sendForwardText} onClose={()=>textForward=null} onComplete={finishTextForward}/>{/if}
+  {#if textForward}<TextForwardDialog messages={textForward.messages} targets={textForwardTargets} multiple={!!textForward.group} onSend={sendForwardText} onClose={()=>textForward=null} onComplete={finishTextForward}/>{/if}
   {#if actionMode}
     <ChatActionDialog mode={actionMode} rows={actionRows} busy={actionBusy} error={actionError}
       onConfirm={(ids) => void confirmChatAction(ids)} onClose={() => { if (!actionBusy) actionMode = null; }} />

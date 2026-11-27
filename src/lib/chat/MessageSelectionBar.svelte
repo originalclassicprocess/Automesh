@@ -2,9 +2,9 @@
   import { tr as i18n } from '$lib/i18n/language';
   import ChatIcon from './ChatIcon.svelte';
   import { selectionSummary } from './message-selection';
-  let { messages, selected, busy = false, onToggleAll, onForward, onDownload, onDelete, onCopy, onRetry, onCancel, retryCount=0, cancelCount=0, downloadCount }:
+  let { messages, selected, busy = false, onToggleAll, onForward, canForward = true, onDownload, onDelete, onHide, onCopy, onRetry, onCancel, retryCount=0, cancelCount=0, downloadCount }:
     { messages: { id: string }[]; selected: string[]; busy?: boolean; onToggleAll(): void;
-      onForward(): void; onDownload(): void; onDelete(): void;onCopy?:()=>void;onRetry?:()=>void;onCancel?:()=>void;retryCount?:number;cancelCount?:number;downloadCount?:number } = $props();
+      onForward(): void; canForward?:boolean; onDownload(): void; onDelete?(): void; onHide?(): void;onCopy?:()=>void;onRetry?:()=>void;onCancel?:()=>void;retryCount?:number;cancelCount?:number;downloadCount?:number } = $props();
   let more=$state(false);
   const summary = $derived(selectionSummary(messages, selected));
 </script>
@@ -17,9 +17,13 @@
   <span class="selection-count" aria-live="polite">{#if summary.count}<span aria-label={$i18n("m_9d4d72ada7e0", {v0: (summary.count), v1: (summary.total)})}>{summary.count}<small>/{summary.total}</small></span>{/if}</span>
   {#if summary.count}
   {#if onCopy}<button type="button" onclick={onCopy} disabled={busy||!summary.count} aria-label={$i18n.text("Скопировать текст")}><ChatIcon name="copy"/></button>{/if}
-  <button type="button" onclick={onForward} disabled={busy || !summary.count} aria-label={$i18n.text("Переслать выбранные сообщения")} title={$i18n.text("Переслать")}><ChatIcon name="forward" /></button>
+  <button type="button" onclick={onForward} disabled={busy || !summary.count || !canForward} aria-label={$i18n.text("Переслать выбранные сообщения")} title={$i18n.text("Переслать")}><ChatIcon name="forward" /></button>
   {#if downloadCount??summary.count}<button type="button" onclick={onDownload} disabled={busy} aria-label={$i18n.text("Скачать выбранные сообщения")} title={$i18n.text("Скачать")}><ChatIcon name="download" /></button>{/if}
-  <button type="button" onclick={onDelete} disabled={busy || !summary.count} aria-label={$i18n.text("Удалить выбранные сообщения у меня")} title={$i18n.text("Удалить у меня")}><ChatIcon name="trash" /></button>
+  {#if onDelete || onHide}
+    <button type="button" onclick={onDelete ?? onHide} disabled={busy || !summary.count}
+      aria-label={$i18n.text(onDelete ? "Удалить выбранные сообщения у меня" : "Скрыть выбранные сообщения у меня")}
+      title={$i18n.text(onDelete ? "Удалить у меня" : "Скрыть у меня")}><ChatIcon name="trash" /></button>
+  {/if}
   {#if onRetry&&retryCount>0||onCancel&&cancelCount>0}<details class="bulk-more" bind:open={more}><summary aria-label={$i18n.text('Другие действия с выбранными сообщениями')}>⋯</summary><div>
     {#if onRetry&&retryCount>0}<button type="button" disabled={busy} onclick={()=>{more=false;onRetry?.();}}>{$i18n.text('Повторить отправку')} · {retryCount}</button>{/if}
     {#if onCancel&&cancelCount>0}<button type="button" disabled={busy} onclick={()=>{more=false;onCancel?.();}}>{$i18n.text('Отменить отправки')} · {cancelCount}</button>{/if}

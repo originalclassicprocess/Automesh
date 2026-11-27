@@ -10,13 +10,15 @@ import { parseGroupMentions, type GroupMention } from './mentions';
 import { normalizeFileOffer, safeFileName, sameFileOffer, sha256Hex, MAX_FILE_BYTES, type FileOffer } from '$lib/chat/file-transfer';
 import { GROUP_HISTORY, GROUP_KEY_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
   GROUP_PREFIX, isGroupFileFrame, validNickname, type GroupFrame, type GroupProfile, type GroupReceipt, type GroupTransport } from './protocol';
-import { epochOf, groupAudience, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
+import { epochOf, groupAudience, groupChronology, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
 
 type GroupMessageFrame = Extract<GroupFrame, { type:'message' }>;
 export type GroupNodeReference = { group: string; hash: string; file?: true };
 export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string; relay: boolean; offer?: FileOffer };
 const encoder = new TextEncoder();
 const availableSince = (entry: GroupEntry) => entry.nodeSince ?? entry.sentAt;
+const newerProfile = (profile: GroupProfile, previous?: GroupProfile) => !previous ||
+  profile.revision > previous.revision || profile.revision === previous.revision && profile.nickname > previous.nickname;
 
 type GroupPort = {
   self: string;
@@ -29,6 +31,7 @@ type GroupPort = {
   nodeEnabled?(): boolean;
   rooms(): GroupRooms;
   save(rooms: GroupRooms, file?: StagedGroupFile): Promise<void>;
+  trackTransfer?(group: string, hash: string): () => void;
   files?: GroupFileStore;
   welcomeFailed?(group: string): void;
   transport: GroupTransport;
@@ -83,13 +86,18 @@ export class GroupController {
   }
 
   private async deliver(peer: string, value: GroupFrame) {
+    let entry: GroupEntry | undefined;
     if (value.type === 'message') {
       const room = this.room(value.group);
       if (!room?.mls || room.leaving || (room.plan && !room.plan.key) || !room.members.includes(peer) ||
         this.peerEpochs.get(room.id + ':' + peer) !== epochOf(room)) return;
+      entry = room.entries.find(item => item.from === this.port.self && item.packet === value.packet);
     }
-    if (this.port.active() && this.port.allowed(peer) && this.port.transport.ready(peer))
-      await this.port.transport.send(peer, value).catch(() => {});
+    if (!this.port.active() || !this.port.allowed(peer) || !this.port.transport.ready(peer)) return;
+    const stop = entry && this.port.trackTransfer?.(value.group, entry.hash);
+    try { await this.port.transport.send(peer, value); }
+    catch { /* The next sync can retry the packet. */ }
+    finally { stop?.(); }
   }
 
   private relay(room: GroupRoom, frame: GroupFrame, skip?: string) {
@@ -149,7 +157,7 @@ export class GroupController {
     });
   }
 
-  async send(id: string, text: string, replyTo?: string, attachment?: GroupFilePayload, mentions?: GroupMention[]) {
+  async send(id: string, text: string, replyTo?: string, attachment?: GroupFilePayload, mentions?: GroupMention[], forwarded = false) {
     return this.run(async () => {
       const room = this.room(id);
       if (attachment && (!this.attachments || attachment.bytes.length > MAX_FILE_BYTES)) throw new Error('group_file_unavailable');
@@ -161,13 +169,20 @@ export class GroupController {
       const moved = parseGroupMentions(trimmedText, mentions?.map(([start, end, peer]) =>
         [start - trimStart, end - trimStart, peer]))?.filter(([, , peer]) =>
         peer !== this.port.self && room?.members.includes(peer) && this.port.allowed(peer));
+      const previous = new Map(groupChronology(room?.entries ?? []).filter(entry => room?.members.includes(entry.from))
+        .map(entry => [entry.from, entry.id]));
+      const after = [...previous.values()];
       const post = { id:postId, from:this.port.self, text:trimmedText || file?.name || '', sentAt:Date.now(), replyTo,
+        ...(after.length ? { after } : {}),
+        ...(forwarded ? { forwarded:true as const } : {}),
         ...(file ? { file } : {}), ...(moved?.length ? { mentions:moved } : {}) };
       if (!room?.mls || (room.plan && !room.plan.key) || room.leaving || !validPost(post)) throw new Error('group_message_unavailable');
       if (replyTo !== undefined && !room.entries.some(entry => entry.id === replyTo)) throw new Error('group_reply_unavailable');
-      const { mls, entry } = await encryptGroupPost(room, post, this.port.identity);
-      const saved = { ...entry, nodeSince:post.sentAt };
-      const next = { ...room, mls, entries:[...room.entries, saved].slice(-GROUP_HISTORY), activityAt:post.sentAt };
+      const profile = await this.ownProfile(room);
+      const { mls, entry } = await encryptGroupPost(room, post, this.port.identity, profile);
+      const saved = { ...entry, nodeSince:post.sentAt, ...(attachment ? { fileReady:true as const } : {}) };
+      const next = { ...room, mls, entries:[...room.entries, saved].slice(-GROUP_HISTORY), activityAt:post.sentAt,
+        ...(profile ? { profiles:{ ...room.profiles, [profile.by]:profile } } : {}) };
       await this.save(next, attachment && { group:id, hash:entry.hash, bytes:attachment.bytes });
       this.relay(next, { type:'message', group:id, packet:entry.packet });
       for (const peer of groupPeers(next, this.port.self)) {
@@ -184,7 +199,22 @@ export class GroupController {
   async obtainFile(group: string, hash: string) {
     if (!this.attachments) throw new Error('group_file_unavailable');
     await this.attachments.obtain(group, hash);
-    if (this.fileRequested(group, hash)) await this.requestFile(group, hash, false);
+    await this.run(async () => {
+      const room = this.room(group), entry = room?.entries.find(item => item.hash === hash);
+      if (!room || !entry?.file || entry.fileReady && !entry.fileRequested) return;
+      await this.save({ ...room, entries:room.entries.map(item =>
+        item === entry ? { ...item, fileReady:true, fileRequested:undefined } : item) });
+      if (entry.from !== this.port.self) void this.deliver(entry.from, { type:'file-ack', group, hashes:[hash] });
+    });
+  }
+
+  hideMessages(group: string, ids: readonly string[]) {
+    return this.run(async () => {
+      const room = this.room(group);
+      if (!room?.mls || room.departed || room.leaving) return;
+      const selected = new Set(ids);
+      await this.save({ ...room, entries:room.entries.map(entry => selected.has(entry.id) ? { ...entry, hidden:true } : entry) });
+    });
   }
 
   fileRequested(group: string, hash: string) {
@@ -222,7 +252,7 @@ export class GroupController {
     // Each sender queues one encrypted copy per recipient. A recipient can
     // still serve verified bytes directly without duplicating node uploads.
     if (file) return entry.from === this.port.self && !!entry.file &&
-      entry.nodeFileStatus?.[peer] !== 'delivered' && entry.nodeFileStatus?.[peer] !== 'finished';
+      !entry.fileReceivedBy?.includes(peer) && entry.nodeFileStatus?.[peer] !== 'delivered' && entry.nodeFileStatus?.[peer] !== 'finished';
     return !entry.receivedBy?.includes(peer) && !entry.receipts?.some(receipt => receipt.by === peer) &&
       entry.nodeStatus?.[peer] !== 'delivered' && entry.nodeStatus?.[peer] !== 'finished';
   }
@@ -233,7 +263,7 @@ export class GroupController {
     if (room.departed || room.leaving || !room.members.includes(peer) || !this.port.allowed(peer)) return true;
     const entry = room.entries.find(post => post.hash === ref.hash);
     if (ref.file) return !!entry && (!room.members.includes(entry.from) ||
-      !groupAudience(room, entry).includes(peer) || epochOf(room) - (entry.epoch ?? 1) >= GROUP_KEY_HISTORY);
+      !groupAudience(room, entry).includes(peer) || entry.fileReceivedBy?.includes(peer) || epochOf(room) - (entry.epoch ?? 1) >= GROUP_KEY_HISTORY);
     return entry !== undefined && (!room.members.includes(entry.from) || entry.receivedBy?.includes(peer) === true ||
       entry.receipts?.some(receipt => receipt.by === peer) === true);
   }
@@ -303,7 +333,7 @@ export class GroupController {
       if (!this.nodeFileOffer(ref, peer, offer) || bytes.length !== offer.size || await sha256Hex(bytes) !== offer.sha256 ||
           !this.nodeFileOffer(ref, peer, offer)) throw new Error('group_file_unavailable');
       const room = this.room(ref.group)!;
-      await this.save({ ...room, entries:room.entries.map(entry => entry.hash === ref.hash ? { ...entry, fileNode:node, fileRequested:undefined } : entry) },
+      await this.save({ ...room, entries:room.entries.map(entry => entry.hash === ref.hash ? { ...entry, fileReady:true, fileNode:node, fileRequested:undefined } : entry) },
         { group:ref.group, hash:ref.hash, bytes });
     });
   }
@@ -416,20 +446,28 @@ export class GroupController {
       seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, entry, receipt), 0)),
       ...(profiles.length ? { profiles } : {}),
     });
+    const hashes = room.entries.filter(entry => entry.from === peer && entry.fileReady && !entry.fileNode).map(entry => entry.hash);
+    if (hashes.length) await this.deliver(peer, { type:'file-ack', group, hashes });
   }
 
   private canShareProfiles(room: GroupRoom) {
     return !room.departed && !room.leaving && !room.plan && room.members.includes(this.port.self);
   }
 
-  private async saveOwnProfile(group: string) {
-    const room = this.room(group), nickname = this.port.nickname?.(), by = this.port.self;
-    if (!room?.mls || !this.canShareProfiles(room) || !validNickname(nickname)) return;
+  private async ownProfile(room: GroupRoom) {
+    const nickname = this.port.nickname?.(), by = this.port.self;
+    if (!this.canShareProfiles(room) || !validNickname(nickname)) return;
     const previous = room.profiles?.[by];
-    if (previous?.nickname === nickname) return;
+    if (previous?.nickname === nickname) return previous;
     const revision = Math.max(Date.now(), (previous?.revision ?? 0) + 1);
-    const profile = await signGroupProfile(group, { by, nickname, revision }, this.port.identity);
-    await this.save({ ...room, profiles:{ ...room.profiles, [by]:profile } });
+    return signGroupProfile(room.id, { by, nickname, revision }, this.port.identity);
+  }
+
+  private async saveOwnProfile(group: string) {
+    const room = this.room(group);
+    if (!room?.mls) return;
+    const profile = await this.ownProfile(room);
+    if (profile && profile !== room.profiles?.[profile.by]) await this.save({ ...room, profiles:{ ...room.profiles, [profile.by]:profile } });
   }
 
   private async receiveProfiles(room: GroupRoom, via: string, profiles: GroupProfile[]) {
@@ -439,8 +477,7 @@ export class GroupController {
     for (const profile of profiles) {
       if (profile.by === this.port.self || !room.members.includes(profile.by) || !this.port.allowed(profile.by)) continue;
       const previous = next[profile.by];
-      if (previous && (profile.revision < previous.revision ||
-        (profile.revision === previous.revision && profile.nickname <= previous.nickname))) continue;
+      if (!newerProfile(profile, previous)) continue;
       if (!await verifyGroupProfile(room.id, profile)) continue;
       next[profile.by] = profile;
       changed = true;
@@ -640,6 +677,14 @@ export class GroupController {
         return;
       }
       if (frame.type === 'ack') { await this.acknowledge(room, peer, [frame.hash]); return; }
+      if (frame.type === 'file-ack') {
+        const hashes = new Set(frame.hashes);
+        const entries = room.entries.map(entry => entry.from === this.port.self && entry.file && hashes.has(entry.hash) &&
+          groupAudience(room, entry).includes(peer) && !entry.fileReceivedBy?.includes(peer)
+          ? { ...entry, fileReceivedBy:[...entry.fileReceivedBy ?? [], peer] } : entry);
+        if (entries.some((entry,index) => entry !== room.entries[index])) await this.save({ ...room, entries });
+        return;
+      }
       if (frame.type === 'receipts') { await this.receiveReceipts(room, peer, frame.receipts); return; }
       if (room.plan && !room.plan.key) return;
       const hash = await groupPacketHash(frame.packet);
@@ -648,13 +693,14 @@ export class GroupController {
         if (known.from !== this.port.self) void this.deliver(known.from, { type:'ack', group:room.id, hash });
         return;
       }
-      const { mls, entry } = await decryptGroupPost(room, frame.packet, hash);
+      const { mls, entry, profile } = await decryptGroupPost(room, frame.packet, hash);
       if (entry.from === this.port.self || (node && !groupAudience(room, entry).includes(peer)) ||
           room.entries.some(item => item.id === entry.id)) return;
       // An accepted carrier already has these ciphertext bytes. Never queue the
       // same packet back to it, or to the original author.
       const received = await this.ownReceived(room, { ...entry, unread:true, route:{ peer, ...(node ? { node } : {}) }, nodeSince:Date.now(), receivedBy:[peer] });
-      const next = { ...room, mls, entries:[...room.entries, received].slice(-GROUP_HISTORY), activityAt:Date.now() };
+      const next = { ...room, mls, entries:[...room.entries, received].slice(-GROUP_HISTORY), activityAt:Date.now(),
+        ...(profile && newerProfile(profile, room.profiles?.[profile.by]) ? { profiles:{ ...room.profiles, [profile.by]:profile } } : {}) };
       await this.save(next);
       void this.deliver(entry.from, { type:'ack', group:room.id, hash });
       this.relay(next, { type:'message', group:room.id, packet:entry.packet }, peer);

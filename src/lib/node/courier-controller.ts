@@ -41,6 +41,7 @@ type Port = { address: string; identity: IdentityProvider; state(): CourierState
     posts(file?: boolean): Iterable<GroupNodePost>;
     eligible(ref: GroupNodeReference, peer: string): boolean;
     release?(ref: GroupNodeReference, peer: string): boolean;
+    searching?(post: GroupNodePost, active: boolean): void;
     status(ref: GroupNodeReference, peer: string, status: GroupNodeStatus): Promise<void>;
     receive(peer: string, frame: Extract<GroupFrame, { type:'message' }>, node: string): Promise<boolean>;
     files?: {
@@ -384,6 +385,7 @@ export class CourierController {
       let allocation: PrekeyAllocation | undefined;
       let job: CourierJob;
       let manifest: import('./attachment-crypto').AttachmentManifest | undefined;
+      groups.searching?.(post, true);
       try {
         await this.port.authorize?.(post.peer);
         this.current();
@@ -411,6 +413,7 @@ export class CourierController {
         else if (key) job = await createCourierJob(this.port.identity, this.port.address, state.node.address, bundle, key, post.id, Date.now(), content, lanOnly, manifest?.attachment);
         else continue;
       } catch { this.current(); continue; }
+      finally { groups.searching?.(post, false); }
       this.current();
       if (!groups.eligible(post, post.peer)) continue;
       const latest = this.port.state();

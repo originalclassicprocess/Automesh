@@ -11,11 +11,11 @@
   import type { FileOffer } from '$lib/chat/file-transfer';
 
   let { file, load, obtain, download, onReady, openMedia, loadPack, openPack, saveGif,
-    connected = '', fileNode, fileRequested = false, autoReceive = false, blocked = false, autoplay = false }: {
-    file: FileOffer; load(): Promise<Uint8Array | null>; obtain(automatic: boolean): Promise<Uint8Array | null>;
+    fileReady = false, fileRequested = false, blocked = false, autoplay = false }: {
+    file: FileOffer; load(): Promise<Uint8Array | null>; obtain(): Promise<Uint8Array | null>;
     download(): Promise<void>; onReady(): void; openMedia(): void;
     loadPack(): Promise<PreparedPack>; openPack(): void; saveGif(): void;
-    connected?: string; fileNode?: string; fileRequested?: boolean; autoReceive?: boolean; blocked?: boolean; autoplay?: boolean;
+    fileReady?: boolean; fileRequested?: boolean; blocked?: boolean; autoplay?: boolean;
   } = $props();
 
   const media = $derived(inlineMediaFor(file));
@@ -59,26 +59,17 @@
     return () => { mounted = false; observer.disconnect(); if (url) URL.revokeObjectURL(url); };
   });
 
-  async function receive(automatic: boolean) {
+  async function receive() {
     if (busy || blocked || ready || !mounted) return;
-    if (!automatic) requested = true;
+    requested = true;
     busy = true;
-    try { show(await obtain(automatic)); }
+    try { show(await obtain()); }
     catch { /* The offer remains available while either route reconnects. */ }
     finally { if (mounted) busy = false; }
   }
 
   $effect(() => {
-    if (fileNode && visible) untrack(() => read(true));
-  });
-
-  $effect(() => {
-    const manual = requested || fileRequested;
-    if (!visible || blocked || ready || !connected || (!autoReceive && !manual)) return;
-    const retry = () => { if (!document.hidden) void receive(!manual); };
-    untrack(retry);
-    const timer = setInterval(retry, 7000);
-    return () => clearInterval(timer);
+    if (fileReady && visible) untrack(() => read(true));
   });
 
   async function loadMedia() {
@@ -108,7 +99,7 @@
     <InlineVideo load={loadMedia} {autoplay} />
     <button onclick={openMedia}>{$i18n.text('⛶ Открыть видео')}</button>
   {:else}
-    <button type="button" class="file-tile" onclick={() => ready ? void download() : void receive(false)} disabled={blocked || busy}
+    <button type="button" class="file-tile" onclick={() => ready ? void download() : void receive()} disabled={blocked || busy}
       aria-label={(ready ? $i18n.text('Скачать файл') : $i18n.text('Получить файл')) + ' · ' + file.name}>
       <ChatIcon name={ready ? 'attachment' : 'download'} />
       <span><strong>{file.name}</strong><small>{busy ? $i18n.text('Получаем') + '…'
@@ -118,7 +109,8 @@
 </div>
 
 <style>
-  .attachment { min-width:0; display:grid; justify-items:start; gap:6px; margin:6px 0; }
+  .attachment { min-width:0; max-width:100%; display:grid; grid-template-columns:minmax(0,1fr); justify-items:start; gap:6px; margin:6px 0; }
+  .attachment > :global(button), .attachment > :global(video) { box-sizing:border-box; min-width:0; max-width:100%; }
   .file-tile { display:flex; align-items:center; gap:8px; max-width:100%; text-align:start; padding:6px 8px; }
   .file-tile :global(svg) { flex-shrink:0; width:19px; height:19px; }
   .file-tile span { min-width:0; display:grid; gap:2px; }

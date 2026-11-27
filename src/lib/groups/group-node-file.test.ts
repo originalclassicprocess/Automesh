@@ -9,9 +9,11 @@ import { COURIER_PROTOCOL } from '$lib/node/courier-protocol.js';
 import { emptyCourierState, restoreCourierState, type CourierState } from '$lib/node/courier-state';
 import { cipherDigest } from '$lib/node/offline-crypto';
 import { GroupController } from './GroupController';
+import { groupDelivery } from './presentation';
 import { restoreGroups, type GroupRooms } from './storage';
 
-it('downloads a verified group attachment after unlock from the offline sender’s node', async () => {
+it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
+'downloads $count verified group attachments from the offline sender’s node (automatic: $automatic)', async ({ count, automatic }) => {
   async function account() {
     const identity = new WebCryptoIdentity();
     await identity.create();
@@ -21,10 +23,11 @@ it('downloads a verified group attachment after unlock from the offline sender�
   const accounts = [sender, recipient];
   const rooms: GroupRooms[] = [[], []];
   const files = accounts.map(() => new Map<string, Uint8Array>());
-  let direct = true, authorOnline = true, now = Date.now();
+  let direct = true, authorOnline = true, autoReceive = false, now = Date.now(), senderNickname = 'Original name';
   const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
   const groups: GroupController[] = accounts.map(({ address, identity }, index) => new GroupController({
     self:address, identity, active:() => index !== 0 || authorOnline, allowed:() => true,
+    nickname:() => index === 0 ? senderNickname : 'Recipient',
     contact:peer => peer === accounts[1 - index].address, rooms:() => rooms[index], nodeEnabled:() => index === 0,
     save:async (value, file) => {
       rooms[index] = structuredClone(value);
@@ -50,15 +53,22 @@ it('downloads a verified group attachment after unlock from the offline sender�
     await vi.waitFor(() => expect(rooms.every(([room]) => !!room.mls)).toBe(true));
 
     direct = false;
-    const bytes = Uint8Array.from({ length:36_135 }, (_, index) => index % 251);
-    const message = await groups[0].send(group, 'A group attachment', undefined,
-      { name:'group.bin', mime:'application/octet-stream', bytes });
-    const { hash } = rooms[0][0].entries.find(entry => entry.id === message)!;
+    senderNickname = 'Updated offline name';
+    const payloads = new Map<string, Uint8Array>();
+    for (let index = 0; index < count; index++) {
+      const bytes = Uint8Array.from({ length:36_135 + index }, (_, offset) => (offset + index) % 251);
+      const message = await groups[0].send(group, 'A group attachment', undefined,
+        { name:`group-${index}.bin`, mime:'application/octet-stream', bytes });
+      const { hash } = rooms[0][0].entries.find(entry => entry.id === message)!;
+      payloads.set(hash, bytes);
+    }
+    const [hash] = payloads.keys();
+    const messages = rooms[0][0].entries.map(entry => entry.id);
     expect(rooms[1][0].entries).toHaveLength(0);
     now += 3000;
 
     const expiresAt = now + 60_000;
-    const keys = await Promise.all([generateCourierKey(sender.address, expiresAt), generateCourierKey(sender.address, expiresAt)]);
+    const keys = await Promise.all(Array.from({ length:count * 2 }, () => generateCourierKey(sender.address, expiresAt)));
     const server = { url:'https://queue.example', nodeId:'a'.repeat(32), address:node.address };
     const receiverBundle = await signCourier('prekeys', { protocol:COURIER_PROTOCOL, from:recipient.address,
       to:sender.address, expiresAt, keys:keys.map(({id, publicKey}) => ({ id, publicKey })),
@@ -76,7 +86,7 @@ it('downloads a verified group attachment after unlock from the offline sender�
     const deliveries = new Map<string, CourierDelivery>();
     const cipherParts = new Map<string, { index:number; cipher:string }[]>();
     const acknowledgements = new Map<string, string>();
-    const partial = new Map<number, Uint8Array>();
+    const partial = new Map<string, Map<number, Uint8Array>>();
     const unexpectedPrivateOffer = vi.fn();
 
     function courier(index: number) {
@@ -93,15 +103,20 @@ it('downloads a verified group attachment after unlock from the offline sender�
             load:ref => groupController.readFile(ref.group, ref.hash),
             receive:(from, frame, via, offer) => groupController.receiveNodeFile(from, frame, via, offer),
             allowed:(ref, from, offer) => !!groupController.nodeFileOffer(ref, from, offer),
-            accepted:ref => groupController.fileRequested(ref.group, ref.hash),
+            accepted:ref => autoReceive || groupController.fileRequested(ref.group, ref.hash),
             complete:(ref, from, via, offer, contents) => groupController.completeNodeFile(ref, from, via, offer, contents),
           },
         },
         files:{
           load:async () => null, offer:unexpectedPrivateOffer, accepted:() => false,
           complete:async () => { throw Error('unexpected private file completion'); }, progress:() => {},
-          savePart:async (_peer, _id, part, contents) => { partial.set(part, contents.slice()); },
-          loadPart:async (_peer, _id, part) => partial.get(part)?.slice() ?? null, cleanup:async () => { partial.clear(); },
+          savePart:async (_peer, id, part, contents) => {
+            const parts = partial.get(id) ?? new Map();
+            parts.set(part, contents.slice());
+            partial.set(id, parts);
+          },
+          loadPart:async (_peer, id, part) => partial.get(id)?.get(part)?.slice() ?? null,
+          cleanup:async (_peer, id) => { partial.delete(id); },
         },
         request:async (_url, _node, _identity, _address, path, value: any) => {
           if (path === '/outbox/status') return { address:node.address, fileQueue:{ protocol:ATTACHMENT_PROTOCOL, maxFileBytes:FILE_POLICY_BYTES } };
@@ -132,7 +147,12 @@ it('downloads a verified group attachment after unlock from the offline sender�
           if (path === '/receive/ack') {
             const receipt = JSON.parse(value.receipt);
             await verifyCourier(receipt, 'receipt', recipient.address);
-            if (deliveries.get(receipt.body.id)?.job.body.attachment) expect(files[1].get(hash)).toEqual(bytes);
+            if (deliveries.get(receipt.body.id)?.job.body.attachment) {
+              const ref = states[0].groupJobs?.[receipt.body.id];
+              if (!ref) throw Error('missing group attachment reservation');
+              expect(payloads.has(ref.hash)).toBe(true);
+              expect(files[1].get(ref.hash)).toEqual(payloads.get(ref.hash));
+            }
             acknowledgements.set(receipt.body.id, value.receipt);
             return { acknowledged:true };
           }
@@ -143,10 +163,13 @@ it('downloads a verified group attachment after unlock from the offline sender�
       return worker;
     }
 
-    await courier(0).poll();
-    expect([...deliveries.values()].filter(delivery => delivery.job.body.attachment)).toHaveLength(1);
-    expect([...cipherParts.values()][0]).toHaveLength(2);
-    expect(rooms[0][0].entries[0].nodeFileStatus?.[recipient.address]).toBe('stored');
+    const senderWorker = courier(0);
+    for (let poll = 0; poll < count; poll++) await senderWorker.poll();
+    expect([...deliveries.values()].filter(delivery => delivery.job.body.attachment)).toHaveLength(count);
+    for (const parts of cipherParts.values()) expect(parts).toHaveLength(2);
+    expect(rooms[0][0].entries.every(entry => entry.nodeFileStatus?.[recipient.address] === 'stored')).toBe(true);
+    for (const entry of rooms[0][0].entries)
+      expect(groupDelivery(rooms[0][0], entry, sender.address).status).toMatchObject({ label:'Сохранено на ноде', tone:'success' });
     expect(restoreCourierState(states[0]).groupJobs).toEqual(states[0].groupJobs);
     authorOnline = false;
     workers[0].stop();
@@ -154,22 +177,28 @@ it('downloads a verified group attachment after unlock from the offline sender�
     const firstReceiver = courier(1);
     await firstReceiver.poll();
     await firstReceiver.settled();
-    expect(rooms[1][0].entries.map(entry => entry.id)).toEqual([message]);
-    expect(acknowledgements.size).toBe(1);
-    expect(files[1].has(hash)).toBe(false);
-    expect(states[1].incomingFiles[0]?.group).toMatchObject({ group, hash, file:true });
-    const queued = states[1].incomingFiles[0];
+    expect(rooms[1][0].entries.map(entry => entry.id).sort()).toEqual(messages.sort());
+    expect(rooms[1][0].profiles?.[sender.address]?.nickname).toBe(senderNickname);
+    expect(acknowledgements.size).toBe(count);
+    expect(files[1].size).toBe(0);
+    expect(states[1].incomingFiles).toHaveLength(count);
+    const queued = states[1].incomingFiles.find(file => file.group?.hash === hash)!;
+    expect(queued.group).toMatchObject({ group, hash, file:true });
     expect(groups[1].nodeFileOffer(queued.group!, sender.address, { ...queued.manifest.offer, sha256:'0'.repeat(64) })).toBeUndefined();
     expect(groups[1].nodeFileOffer(queued.group!, node.address, queued.manifest.offer)).toBeUndefined();
-    await groups[1].requestFile(group, hash);
+    if (!automatic) await groups[1].requestFile(group, hash);
     firstReceiver.stop();
     states[1] = restoreCourierState(states[1]);
     rooms[1] = restoreGroups(rooms[1]);
-    await courier(1).poll();
-    expect(await groups[1].readFile(group, hash)).toEqual(bytes);
-    expect(rooms[1][0].entries[0].fileNode).toBe(node.address);
-    expect(groups[1].fileRequested(group, hash)).toBe(false);
-    expect(acknowledgements.size).toBe(2);
+    autoReceive = automatic;
+    const receiver = courier(1);
+    for (let poll = 0; poll < Math.ceil(count / 2); poll++) await receiver.poll();
+    for (const [hash, bytes] of payloads) {
+      expect(await groups[1].readFile(group, hash)).toEqual(bytes);
+      expect(rooms[1][0].entries.find(entry => entry.hash === hash)).toMatchObject({ fileNode:node.address, fileReady:true });
+      expect(groups[1].fileRequested(group, hash)).toBe(false);
+    }
+    expect(acknowledgements.size).toBe(count * 2);
     expect(states[1].incomingFiles).toHaveLength(0);
     expect(unexpectedPrivateOffer).not.toHaveBeenCalled();
   } finally {

@@ -1,16 +1,16 @@
 import { isValidAccountId } from '$lib/addressing/bech32m.js';
 import { normalizeFileOffer, type FileOffer } from '$lib/chat/file-transfer';
 import { parseGroupMentions, type GroupMention } from './mentions';
-import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, parseGroupFrame, parseGroupProfile, uuid,
+import { digest, encodedMls, GROUP_HISTORY, GROUP_TEXT_BYTES, groupEpoch, groupMembers, groupTitle, GROUP_CHANGE_HISTORY, MAX_GROUPS, MAX_GROUP_MEMBERS, parseGroupFrame, parseGroupProfile, uuid,
   validGroupProof, validGroupReceipt, type GroupCommit, type GroupFrame, type GroupLeave, type GroupOffer, type GroupPlan, type GroupProfile, type GroupProof, type GroupReceipt } from './protocol';
 
 export type GroupKeyDraft = { packet: string; init: string; leaf: string; signature: string };
-export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string; file?: FileOffer; mentions?: GroupMention[] };
+export type GroupPost = { id: string; from: string; text: string; sentAt?: number; replyTo?: string; after?: string[]; forwarded?: true; file?: FileOffer; mentions?: GroupMention[] };
 export type GroupNodeStatus = 'stored' | 'delivered' | 'finished';
 export type GroupRoute = { peer: string; node?: string };
 export type GroupEntry = GroupPost & { hash: string; packet: string; audience?: string[]; epoch?: number; unread?: true; route?: GroupRoute; nodeSince?: number;
   nodeStatus?: Record<string, GroupNodeStatus>; nodeFileStatus?: Record<string, GroupNodeStatus>; fileNode?: string; fileRequested?: true;
-  receivedBy?: string[]; receipts?: GroupReceipt[] };
+  fileReady?: true; hidden?: true; fileReceivedBy?: string[]; receivedBy?: string[]; receipts?: GroupReceipt[] };
 export type GroupRoom = {
   id: string; title: string; owner: string; members: string[];
   draft?: GroupKeyDraft; keys: Record<string, string>; welcome?: string; mls?: string; entries: GroupEntry[];
@@ -34,37 +34,31 @@ export const groupAudience = (room: GroupRoom, entry: GroupEntry) => entry.audie
 
 export const groupTimestamp = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 8.64e15;
-export const groupEntryUnread = (entry: GroupEntry, self: string) => entry.unread === true && entry.from !== self;
+export const groupEntryUnread = (entry: GroupEntry, self: string) => !entry.hidden && entry.unread === true && entry.from !== self;
 export const groupPostMentions = (entry: GroupEntry, accountId: string) =>
   entry.mentions?.some(mention => mention[2] === accountId) === true;
 
+export function groupPredecessors(value: unknown, self: string) {
+  return Array.isArray(value) && value.length <= MAX_GROUP_MEMBERS &&
+    value.every(id => uuid(id) && id !== self) && new Set(value).size === value.length ? value as string[] : undefined;
+}
+
 export function groupChronology(entries: readonly GroupEntry[]): GroupEntry[] {
-  const byTime = [...entries].sort((a, b) => {
-    if (a.sentAt === undefined) return b.sentAt === undefined ? 0 : -1;
-    if (b.sentAt === undefined) return 1;
-    return a.sentAt - b.sentAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  });
+  const pending = [...entries].sort((a, b) =>
+    (a.sentAt ?? 0) - (b.sentAt ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const ids = new Set(entries.map(entry => entry.id));
   const placed = new Set<string>();
-  const waiting = new Map<string, GroupEntry[]>();
   const timeline: GroupEntry[] = [];
-  const place = (entry: GroupEntry) => {
-    timeline.push(entry);
-    placed.add(entry.id);
-    for (const reply of waiting.get(entry.id) ?? []) place(reply);
-    waiting.delete(entry.id);
-  };
-  for (const entry of byTime) {
-    const original = entry.replyTo;
-    // A reply can arrive before its original or have an earlier timestamp.
-    if (original && ids.has(original) && !placed.has(original)) {
-      const replies = waiting.get(original);
-      if (replies) replies.push(entry);
-      else waiting.set(original, [entry]);
-    } else place(entry);
+  const dependencies = new Map(pending.map(entry => [entry, [...entry.after ?? [], entry.replyTo]
+    .filter((id): id is string => !!id && ids.has(id) && id !== entry.id)]));
+  while (pending.length) {
+    // The author can prove what they had already seen. Between independent
+    // messages, sender time and ID give all clients the same order.
+    const ready = pending.findIndex(entry => dependencies.get(entry)!.every(id => placed.has(id)));
+    const [next] = pending.splice(Math.max(0, ready), 1);
+    timeline.push(next);
+    placed.add(next.id);
   }
-  // Inconsistent references must never hide a message from the transcript.
-  for (const entry of byTime) if (!placed.has(entry.id)) timeline.push(entry);
   return timeline;
 }
 
@@ -125,10 +119,15 @@ export function restoreGroups(value: unknown): GroupRooms {
         epoch:groupEpoch(entry.epoch) ? entry.epoch : 1,
         ...(groupTimestamp(entry.sentAt) ? { sentAt:entry.sentAt } : {}),
         ...(uuid(entry.replyTo) && entry.replyTo !== entry.id ? { replyTo:entry.replyTo } : {}),
+        ...(entry.after ? { after:groupPredecessors(entry.after, entry.id) } : {}),
+        ...(entry.forwarded === true ? { forwarded:true as const } : {}),
         ...(groupTimestamp(entry.nodeSince) ? { nodeSince:entry.nodeSince, nodeStatus:restoreNodeStatus(entry.nodeStatus) } : {}),
         ...(file && entry.nodeFileStatus ? { nodeFileStatus:restoreNodeStatus(entry.nodeFileStatus) } : {}),
         ...(file && isValidAccountId(entry.fileNode ?? '') ? { fileNode:entry.fileNode } : {}),
         ...(file && entry.fileRequested === true ? { fileRequested:true as const } : {}),
+        ...(file && entry.fileReady === true ? { fileReady:true as const } : {}),
+        ...(file && Array.isArray(entry.fileReceivedBy) ? { fileReceivedBy:audience.filter(peer => peer !== entry.from && entry.fileReceivedBy!.includes(peer)) } : {}),
+        ...(entry.hidden === true ? { hidden:true as const } : {}),
         ...(isValidAccountId(entry.route?.peer ?? '') ? { route:{ peer:entry.route!.peer,
           ...(isValidAccountId(entry.route?.node ?? '') ? { node:entry.route!.node } : {}) } } : {}),
         ...(entry.unread === true ? { unread:true as const } : {}),

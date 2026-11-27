@@ -50,13 +50,17 @@
         hub.style.setProperty('--hub-max',`${node.clientWidth}px`);
       });
     }
-    const observer=new ResizeObserver(fit);
+    let fitFrame=0;
+    const observer=new ResizeObserver(()=>{
+      if(fitFrame)return;
+      fitFrame=requestAnimationFrame(()=>{fitFrame=0;fit();});
+    });
     for(const element of [node,identity,content,security])observer.observe(element);
     function outside(event:PointerEvent){if(hubOpen&&!hub.contains(event.target as Node))hubOpen=false;}
     function action(event:MouseEvent){if(hubOpen&&content.contains(event.target as Node)&&(event.target as Element).closest('button')){hubOpen=false;toggle.focus({preventScroll:true});}}
     function escape(event:KeyboardEvent){if(hubOpen&&event.key==='Escape'){event.preventDefault();event.stopPropagation();hubOpen=false;toggle.focus();}}
     document.addEventListener('pointerdown',outside);document.addEventListener('click',action);document.addEventListener('keydown',escape);
-    fit();return{destroy:()=>{observer.disconnect();document.removeEventListener('pointerdown',outside);document.removeEventListener('click',action);document.removeEventListener('keydown',escape);}};
+    fit();return{destroy:()=>{observer.disconnect();cancelAnimationFrame(fitFrame);document.removeEventListener('pointerdown',outside);document.removeEventListener('click',action);document.removeEventListener('keydown',escape);}};
   }
   $effect(()=>{accountId;qrOpen=false;hubOpen=false;copied='';copyError='';});
   onDestroy(()=>clearTimeout(feedbackTimer));

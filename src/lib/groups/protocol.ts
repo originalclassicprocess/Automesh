@@ -73,6 +73,7 @@ export type GroupFrame =
   | { type: 'welcome-proof'; group: string; packet: string; proof: GroupProof }
   | { type: 'message'; group: string; packet: string }
   | { type: 'ack'; group: string; hash: string }
+  | { type: 'file-ack'; group: string; hashes: string[] }
   | { type: 'receipts'; group: string; receipts: GroupReceipt[] }
   | { type: 'sync'; group: string; known: string[]; seen?: number[]; hasWelcome?: boolean; epoch?: number; requestEpoch?: boolean; profiles?: GroupProfile[] };
 
@@ -129,6 +130,9 @@ export function parseGroupFrame(value: unknown): GroupFrame | null {
     }
     case 'ack':
       return digest(frame.hash) ? { type:'ack', group, hash:frame.hash } : null;
+    case 'file-ack':
+      return Array.isArray(frame.hashes) && frame.hashes.length > 0 && frame.hashes.length <= GROUP_HISTORY &&
+        frame.hashes.every(digest) ? { type:'file-ack', group, hashes:frame.hashes } : null;
     default: return null;
   }
 }

@@ -4,6 +4,13 @@
   import CompactDialog from '$lib/application/CompactDialog.svelte';
   import Avatar from '$lib/chat/Avatar.svelte';
   import ChatIcon from '$lib/chat/ChatIcon.svelte';
+  import ComposerEmojiToggle from '$lib/chat/ComposerEmojiToggle.svelte';
+  import { autoSizeComposer } from '$lib/chat/composer-size';
+  import MessageTools from '$lib/chat/MessageTools.svelte';
+  import MessageDelivery from '$lib/chat/MessageDelivery.svelte';
+  import MessageSelectionBar from '$lib/chat/MessageSelectionBar.svelte';
+  import { selectEveryMessage, selectionSummary, toggleSelection } from '$lib/chat/message-selection';
+  import { messageArchive } from '$lib/chat/bulk-actions';
   import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
   import MessageCard from '$lib/chat/MessageCard.svelte';
   import MessageText from '$lib/chat/MessageText.svelte';
@@ -15,34 +22,39 @@
   import type { MediaAsset, MediaLibrary, StickerPack } from '$lib/chat/media-library';
   import GroupAttachmentCard from './GroupAttachmentCard.svelte';
   import MediaViewer from '$lib/chat/MediaViewer.svelte';
-  import FileSharePanel from '$lib/chat/FileSharePanel.svelte';
   import { inlineMediaFor } from '$lib/chat/media-preview';
   import type { PreparedPack } from '$lib/chat/sticker-pack';
   import { createChatScroll } from '$lib/chat/chat-scroll';
   import { submitOnEnter } from '$lib/chat/conversation-list';
   import { GROUP_TEXT_BYTES, MAX_GROUP_MEMBERS } from './protocol';
-  import { groupAudience, groupChronology, groupEntryUnread, type GroupEntry, type GroupRoom } from './storage';
+  import { groupChronology, groupEntryUnread, type GroupEntry, type GroupRoom } from './storage';
+  import { groupChatEntry, groupDelivery, groupRecipients, type GroupDeliveryPhase } from './presentation';
   import { editGroupMentions, groupMentionParts, mentionQuery, moveGroupMentions, type GroupMention, type MentionEdit } from './mentions';
 
-  let { room, self, name, photo, connected, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, accept, send,
-    library, loadSticker, manageStickers, sendSticker, autoReceive, autoplay, loadAttachment, obtainAttachment, saveAttachment, previewPack, openPack, saveMedia,
-    canRequestPack, requestPack, canMention, sync, direct, back }: {
+  let { room, self, name, photo, connected, searching, deliveryPhase, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, accept, send,
+    library, loadSticker, manageStickers, sendSticker, autoplay, loadAttachment, obtainAttachment, saveAttachment, previewPack, openPack, saveMedia,
+    canRequestPack, requestPack, canMention, openProfile, forward, forwardDone, hide, sync, direct, back }: {
     room: GroupRoom; self: string; name(peer: string): string; photo(peer: string): string;
     connected: ReadonlySet<string>; blocked: boolean; welcomeFailed: boolean;
+    searching: ReadonlySet<string>; deliveryPhase(hash: string): GroupDeliveryPhase | undefined;
     contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
     trackReads: boolean; markRead(hashes: string[]): Promise<void>;
     accept(): Promise<void>; send(text: string, replyTo?: string, file?: File, mentions?: GroupMention[]): Promise<string>;
     canMention(peer: string): boolean; sync(): void; direct(): void; back(): void;
     library: MediaLibrary; loadSticker(hash: string): Promise<Uint8Array | null>; manageStickers(tab: 'stickers' | 'gifs'): void;
     sendSticker(asset: MediaAsset, pack: StickerPack | undefined, replyTo?: string): Promise<string>;
-    autoReceive: boolean; autoplay: boolean; loadAttachment(hash: string): Promise<Uint8Array | null>;
-    obtainAttachment(hash: string, automatic: boolean): Promise<Uint8Array | null>;
+    autoplay: boolean; loadAttachment(hash: string): Promise<Uint8Array | null>;
+    obtainAttachment(hash: string): Promise<Uint8Array | null>;
     saveAttachment(bytes: BlobPart, name: string): void;
     previewPack(entry: GroupEntry): Promise<PreparedPack>;
     openPack(entry: GroupEntry): void;
     saveMedia(entry: GroupEntry): Promise<string>;
     canRequestPack(entry: GroupEntry): boolean;
     requestPack(entry: GroupEntry): Promise<string>;
+    openProfile(peer: string): void;
+    forward(entries: GroupEntry[]): void;
+    forwardDone: number;
+    hide(ids: string[]): Promise<void>;
   } = $props();
   let draft = $state(''), busy = $state(false), failed = $state(false);
   let transcript = $state<HTMLDivElement>();
@@ -59,7 +71,11 @@
   const inputPanel = new ComposerInput(() => pickerOpen, open => pickerOpen = open, mobile => mobileInput = mobile);
   let replyTo = $state('');
   let routeId = $state('');
-  let attachmentActions = $state(''), sharingAttachment = $state(false), galleryId = $state('');
+  let routeView = $state<'status' | 'route'>('route');
+  function showDelivery(id: string, view: 'status' | 'route') { routeId = id; routeView = view; }
+  let messageTools = $state<{ id:string; view:'menu' | 'status' | 'route' | 'share' } | null>(null), galleryId = $state('');
+  let selecting = $state(false), selected = $state<string[]>([]), confirmingHide = $state<string[]>([]);
+  let selectionError = $state('');
   let galleryUrl = $state(''), galleryFailed = $state(false);
   let localFiles = $state(new Set<string>());
   let copied = $state(''), highlighted = $state(''), copyFailed = $state(false);
@@ -117,10 +133,12 @@
       .map(item => ({ ...item, duplicate:(duplicates.get(foldNickname(item.nickname)) ?? 0) > 1 }));
   });
   const activeMention = $derived(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)]);
-  const connectedMembers = $derived(room.members.filter(peer => connected.has(peer)).join(' '));
-  const timeline = $derived(groupChronology(room.entries));
+  const timeline = $derived(groupChronology(room.entries).filter(entry => !entry.hidden));
+  const selectedEntries = $derived(timeline.filter(entry => selected.includes(entry.id)));
+  const readyFile = (entry: GroupEntry) => !!(entry.fileReady || entry.fileNode || localFiles.has(entry.hash) || entry.from === self);
+  const canUseFile = (entry: GroupEntry) => !entry.file || readyFile(entry);
   const gallery = $derived(timeline.filter(entry => {
-    if (!entry.file || !(entry.from === self || entry.fileNode || localFiles.has(entry.hash))) return false;
+    if (!entry.file || !readyFile(entry)) return false;
     const kind = inlineMediaFor(entry.file)?.kind;
     return kind === 'image' || kind === 'video';
   }));
@@ -128,7 +146,6 @@
   const galleryEntry = $derived(gallery[galleryIndex]);
   const galleryHash = $derived(galleryEntry?.hash);
   const galleryMime = $derived(galleryEntry?.file && inlineMediaFor(galleryEntry.file)?.mime);
-  const actionEntry = $derived(room.entries.find(entry => entry.id === attachmentActions));
   $effect(() => {
     const hash = galleryHash, mime = galleryMime;
     galleryUrl = ''; galleryFailed = false;
@@ -245,6 +262,10 @@
   }
 
   async function downloadAttachment(entry: GroupEntry) {
+    if (!entry.file) {
+      saveAttachment(entry.text, `Automesh-message-${entry.id}.txt`);
+      return;
+    }
     const bytes = entry.file && await loadAttachment(entry.hash).catch(() => null);
     if (!bytes || !entry.file) return;
     try { if (composer?.isConnected) saveAttachment(bytes as BlobPart, entry.file.name); }
@@ -259,8 +280,43 @@
     finally { bytes.fill(0); }
   }
 
-  function closeAttachmentActions() {
-    attachmentActions = ''; sharingAttachment = false;
+  function beginSelection(entry?: GroupEntry) {
+    selecting = true;
+    selected = entry ? [entry.id] : [];
+    selectionError = '';
+  }
+
+  function exitSelection() { selecting = false; selected = []; selectionError = ''; }
+  $effect(() => { void forwardDone; exitSelection(); });
+
+  function forwardEntries(entries: GroupEntry[]) {
+    if (!entries.length || !entries.every(canUseFile)) return;
+    forward(entries);
+  }
+
+  async function copySelection() {
+    selectionError = '';
+    try { await navigator.clipboard.writeText(selectedEntries.map(entry => entry.file?.name ?? entry.text).join('\n\n')); exitSelection(); }
+    catch { selectionError = 'Не удалось скопировать текст.'; }
+  }
+
+  function downloadSelection() {
+    const entries = selectedEntries.filter(canUseFile);
+    if (!entries.length) return;
+    selectionError = '';
+    void act(async () => {
+      try {
+        const { bytes, name } = await messageArchive(entries.map(entry => groupChatEntry(entry, self)), async message => {
+          const entry = entries.find(entry => entry.id === message.id)!;
+          const bytes = await loadAttachment(entry.hash);
+          if (!bytes) throw new Error('Файл отсутствует или повреждён.');
+          return bytes;
+        });
+        try { if (composer?.isConnected) saveAttachment(bytes as BlobPart, name); }
+        finally { bytes.fill(0); }
+        exitSelection();
+      } catch (error) { selectionError = error instanceof Error ? error.message : 'Не удалось подготовить скачивание. Выбор сохранён.'; }
+    });
   }
 
   async function galleryAction(action: 'download' | 'share' | 'forward' | 'reply' | 'show-in-chat') {
@@ -270,7 +326,8 @@
     galleryId = '';
     await tick();
     if (!composer?.isConnected) return;
-    if (action === 'share') { attachmentActions = entry.id; sharingAttachment = true; }
+    if (action === 'share') messageTools = { id:entry.id, view:'share' };
+    if (action === 'forward') forwardEntries([entry]);
     if (action === 'reply') startReply(entry);
     if (action === 'show-in-chat') showOriginal(entry.id);
   }
@@ -320,7 +377,7 @@
   }
 
   export function canStageFiles() {
-    return !!room.mls && canCompose && !galleryId && !attachmentActions && !routeId && !membersOpen;
+    return !!room.mls && canCompose && !galleryId && !messageTools && !routeId && !membersOpen && !selecting;
   }
 
   export function stageFiles(files: File[]) {
@@ -434,7 +491,20 @@
   <button type="button" class="select-messages-button" onclick={sync} disabled={blocked}
     title={$i18n.text(room.mls ? 'Догрузить сообщения' : 'Обновить')}
     aria-label={$i18n.text(room.mls ? 'Догрузить сообщения' : 'Обновить')}><ChatIcon name="repeat" /></button>
+  {#if room.mls}
+    <button type="button" class="select-messages-button" onclick={() => selecting ? exitSelection() : beginSelection()}
+      aria-pressed={selecting} disabled={blocked || busy}
+      aria-label={$i18n.text(selecting ? 'Отмена выбора' : 'Выбрать сообщения')}><ChatIcon name={selecting ? 'close' : 'select'} /></button>
+  {/if}
 </div>
+{#if selecting}
+  <MessageSelectionBar messages={timeline} {selected} busy={busy || blocked}
+    onToggleAll={() => selected = selectionSummary(timeline, selected).all ? [] : selectEveryMessage(timeline)}
+    onCopy={() => void copySelection()} onForward={() => forwardEntries(selectedEntries)}
+    canForward={selectedEntries.every(canUseFile)} onDownload={downloadSelection}
+    downloadCount={selectedEntries.filter(canUseFile).length} onHide={() => confirmingHide = selectedEntries.map(entry => entry.id)} />
+{/if}
+{#if selectionError}<small role="alert">{$i18n.system(selectionError)}</small>{/if}
 
 <div class="message-history">
   <div class="message-scroll" bind:this={transcript} use:scroll={{ peer: room.id, messages: scrollMessages, openToken: 0 }}
@@ -442,14 +512,7 @@
     {#if room.mls}
       {#each timeline as message, i (message.id)}
         {@const original = message.replyTo ? byId.get(message.replyTo) : undefined}
-        {@const delivered = new Set([
-          ...(message.receipts ?? []).map(receipt => receipt.by),
-          ...Object.keys(message.nodeStatus ?? {}).filter(peer => message.nodeStatus?.[peer] === 'delivered'),
-        ])}
-        {@const stored = Object.keys(message.nodeStatus ?? {}).filter(peer => message.nodeStatus?.[peer] === 'stored' && !delivered.has(peer)).length}
-        {@const storedFiles = Object.values(message.nodeFileStatus ?? {}).filter(status => status === 'stored').length}
-        {@const recipients = groupAudience(room, message).length - 1}
-        {@const read = message.receipts?.filter(receipt => receipt.state === 'read').length ?? 0}
+        {@const delivery = groupDelivery(room, message, self, readyFile(message), deliveryPhase(message.hash), searching)}
         {@const sent = message.sentAt === undefined ? undefined : new Date(message.sentAt)}
         {@const dateMoved = sent && dates[i] !== sent.toDateString()}
         {@const replies = replyCounts.get(message.id) ?? 0}
@@ -458,10 +521,14 @@
         {/if}
         <div data-chat-message-id={message.id} use:observeRead={message}>
           <MessageCard outgoing={message.from === self} preview={message.text} highlighted={highlighted === message.id}
-            sticker={message.file?.details?.media?.kind === 'sticker'}>
+            sticker={message.file?.details?.media?.kind === 'sticker'} {selecting}
+            selected={selected.includes(message.id)} busy={busy || blocked}
+            onSelect={() => selected = toggleSelection(selected, message.id)} onBeginSelect={() => beginSelection(message)}>
             <div class="message-header">
-              <Avatar accountId={message.from} photo={photo(message.from)} size={18} />
-              <strong class="message-author">{message.from === self ? $i18n.text('Вы') : name(message.from)}</strong>
+              <button type="button" class="group-author" onclick={() => openProfile(message.from)} title={$i18n.text('Открыть карточку')}>
+                <Avatar accountId={message.from} photo={photo(message.from)} size={18} />
+                <strong class="message-author">{message.from === self ? $i18n.text('Вы') : name(message.from)}</strong>
+              </button>
               {#if sent}
                 <time datetime={sent.toISOString()} title={sent.toLocaleString($locale)}>{sent.toLocaleString($locale, { hour:'2-digit', minute:'2-digit', ...(dateMoved ? {day:'numeric', month:'short'} : {}) })}</time>
               {/if}
@@ -472,15 +539,17 @@
                 aria-label={$i18n.text('Ответить на сообщение')} title={$i18n.text('Ответить')}>↩</button>
               <button class="quick-copy" type="button" onclick={() => void copyText(message)}
                 aria-label={$i18n.text('Скопировать содержимое сообщения')} title={$i18n.text('Скопировать содержимое')}>{copied === message.id ? '✓' : '⧉'}</button>
-              {#if message.file}
-                <button class="quick-copy" type="button" onclick={() => attachmentActions = message.id} aria-haspopup="dialog"
-                  aria-label={$i18n.text('Действия с сообщением')}>⋯</button>
-              {:else}
-                <button class="quick-copy" type="button" onclick={() => { routeId = message.id; }} aria-haspopup="dialog"
-                  aria-label={$i18n.text('Путь сообщения')} title={$i18n.text('Путь сообщения')}><ChatIcon name="info" /></button>
-              {/if}
+              <MessageTools message={groupChatEntry(message, self, readyFile(message))} status={delivery.status} recipient={self}
+                shareText={message.text} openView={messageTools?.id === message.id ? messageTools.view : null} disabled={busy || blocked}
+                canReply={canCompose} canForward={canUseFile(message)}
+                onOpen={view => messageTools = {id:message.id,view}} onClose={() => messageTools = null}
+                onReply={() => startReply(message)} onForward={() => forwardEntries([message])} onSelect={() => beginSelection(message)}
+                onDownload={() => void downloadAttachment(message)} onHide={() => confirmingHide = [message.id]} onCopy={() => void copyText(message)}
+                onRoute={() => showDelivery(message.id, 'route')} onStatus={() => showDelivery(message.id, 'status')}
+                loadShareFile={() => loadShareFile(message)} />
               {#if copied === message.id}<span class="copy-feedback" role="status">{$i18n.text('Текст скопирован.')}</span>{/if}
             </div>
+            {#if message.forwarded}<small class="forward-label">{$i18n.text('↪ Переслано')}</small>{/if}
             {#if original}
               <button class="reply-preview" type="button" onclick={() => showOriginal(original.id)} title={$i18n.text('Перейти к исходному сообщению')}>
                 <small>↩ {original.from === self ? $i18n.text('Вы') : name(original.from)}</small>
@@ -491,12 +560,11 @@
             {/if}
             {#if message.file}
               <GroupAttachmentCard file={message.file} blocked={blocked}
-                load={() => loadAttachment(message.hash)} obtain={automatic => obtainAttachment(message.hash, automatic)}
+                load={() => loadAttachment(message.hash)} obtain={() => obtainAttachment(message.hash)}
                 download={() => downloadAttachment(message)} onReady={() => { if (!localFiles.has(message.hash)) localFiles = new Set([...localFiles, message.hash]); }}
                 openMedia={() => galleryId = message.id} loadPack={() => previewPack(message)} openPack={() => openPack(message)}
                 saveGif={() => void saveMedia(message).catch(() => {})} autoplay={autoplay && !galleryId}
-                connected={connectedMembers} fileNode={message.fileNode} fileRequested={message.fileRequested}
-                autoReceive={autoReceive && message.from !== self} />
+                fileReady={message.fileReady || !!message.fileNode} fileRequested={message.fileRequested} />
             {/if}
             {#if message.mentions?.length}
               {#each groupMentionParts(message.text, message.mentions) as part}
@@ -507,12 +575,9 @@
             {:else if !message.file || message.text !== message.file.name}<MessageText text={message.text} />{/if}
             <div class="message-actions">
               {#if replies}<small class="reply-count" title={$i18n.text('Ответы в этой переписке')}>↩ {replies}</small>{/if}
-              {#if stored}<span>{$i18n.text(message.file ? 'Карточка на ноде' : 'На ноде')} {stored}/{recipients}</span>{/if}
-              {#if message.file && storedFiles}
-                <span>{$i18n.text('Файл на ноде')} {storedFiles}/{recipients}</span>
+              {#if message.from === self || message.file}
+                <MessageDelivery status={delivery.status} count={delivery.count} onDetails={() => showDelivery(message.id, 'status')} />
               {/if}
-              <span>{$i18n.text(message.file ? 'Карточка доставлена' : 'Доставлено')} {delivered.size}/{recipients}</span>
-              <span>{$i18n.text('Прочитали')} {read}/{recipients}</span>
             </div>
           </MessageCard>
         </div>
@@ -584,7 +649,8 @@
       <ChatIcon name="attachment" />
     </button>
     <div class="composer-field">
-    <textarea rows="1" enterkeyhint="send" bind:this={composer} value={draft} maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text('Сообщение...')}
+    <textarea rows="1" enterkeyhint="send" bind:this={composer} value={draft} use:autoSizeComposer={draft}
+      maxlength={GROUP_TEXT_BYTES} placeholder={$i18n.text(attachments.length ? 'Сообщение к вложениям…' : 'Сообщение...')}
       onpaste={event => { const files = clipboardImages(event.clipboardData); if (files.length) { event.preventDefault(); stage(files); } }}
       onbeforeinput={event => mentionEdit = { start:event.currentTarget.selectionStart, end:event.currentTarget.selectionEnd, type:event.inputType }}
       oninput={event => applyDraftInput(event.currentTarget, event instanceof InputEvent && event.isComposing)}
@@ -595,8 +661,7 @@
       aria-controls={mentionCandidates.length ? mentionMenuId : undefined}
       aria-activedescendant={activeMention ? mentionMenuId + '-' + activeMention.peer : undefined}
       onkeydown={composerKey}></textarea>
-    <button data-composer-toggle type="button" class="icon-button" aria-pressed={pickerOpen} aria-label={$i18n.text(pickerOpen && mobileInput ? 'Клавиатура' : 'Эмодзи, стикеры и GIF')}
-      onclick={inputPanel.toggle} disabled={busy || blocked}><ChatIcon name={pickerOpen && mobileInput ? 'keyboard' : 'emoji'} /></button>
+    <ComposerEmojiToggle open={pickerOpen} mobile={mobileInput} toggle={inputPanel.toggle} disabled={busy || blocked} />
     </div>
     <button data-composer-send type="submit" class="primary send-button" disabled={!canSend} aria-label={$i18n.text('Отправить сообщение')}>
       <ChatIcon name="send" />
@@ -615,28 +680,41 @@
     onStickerAction={action => action === 'request' ? requestPack(galleryEntry) : saveMedia(galleryEntry)} url={galleryUrl} failed={galleryFailed}
     index={galleryIndex} count={gallery.length} onMove={direction => galleryId = gallery[(galleryIndex + direction + gallery.length) % gallery.length].id}
     onClose={() => galleryId = ''} onAction={action => void galleryAction(action)}
-    canReply={canCompose} canForward={false} actionsDisabled={blocked} />
+    canReply={canCompose} actionsDisabled={blocked} />
 {/if}
 
-{#if actionEntry?.file}
-  <CompactDialog title={$i18n.text(sharingAttachment ? 'Поделиться вне Automesh' : 'Действия с сообщением')} onClose={closeAttachmentActions}>
-    {#if sharingAttachment}
-      <FileSharePanel name={actionEntry.file.name} load={() => loadShareFile(actionEntry)}
-        download={() => { void downloadAttachment(actionEntry); closeAttachmentActions(); }} close={closeAttachmentActions} />
-    {:else}
-      <div class="attachment-actions">
-        {#if localFiles.has(actionEntry.hash) || actionEntry.fileNode || actionEntry.from === self}
-          <button type="button" onclick={() => sharingAttachment = true}><ChatIcon name="share" /> {$i18n.text('Поделиться вне Automesh')}</button>
-          <button type="button" onclick={() => { void downloadAttachment(actionEntry); closeAttachmentActions(); }}><ChatIcon name="download" /> {$i18n.text('Скачать файл')}</button>
-        {/if}
-        <button type="button" onclick={() => { routeId = actionEntry.id; closeAttachmentActions(); }}><ChatIcon name="info" /> {$i18n.text('Путь сообщения')}</button>
-      </div>
-    {/if}
+{#if confirmingHide.length}
+  <CompactDialog title={$i18n.text('Скрыть у меня')} onClose={() => { if (!busy) confirmingHide = []; }}>
+    <p>{$i18n.text('Сообщения будут скрыты в вашей переписке. Другие участники сохранят свои копии.')}</p>
+    <button type="button" disabled={busy || blocked} onclick={() => void act(async () => {
+      await hide(confirmingHide); confirmingHide = []; exitSelection();
+    })}>{$i18n.text('Скрыть у меня')}</button>
   </CompactDialog>
 {/if}
 
 {#if routeMessage}
-  <CompactDialog title={$i18n.text('Путь сообщения')} literalTitle onClose={() => { routeId = ''; queueRead(); }}>
+  {@const delivery = groupDelivery(room, routeMessage, self, readyFile(routeMessage), deliveryPhase(routeMessage.hash), searching)}
+  {@const recipients = groupRecipients(room, routeMessage)}
+  <CompactDialog title={$i18n.text(routeView === 'status' ? 'Статус сообщения' : 'Путь сообщения')} literalTitle onClose={() => { routeId = ''; queueRead(); }}>
+    {#if routeView === 'status'}
+      <p><strong>{$i18n.system(delivery.status.label)}{delivery.count ? ' ' + delivery.count : ''}</strong></p>
+      <p>{$i18n.system(delivery.status.detail)}</p>
+      {#if routeMessage.from === self && recipients.length}
+        <dl class="delivery-details">
+          <dt>{$i18n.text(routeMessage.file ? 'Карточка на ноде' : 'На ноде')}</dt>
+          <dd>{recipients.filter(item => !item.card && item.cardNode === 'stored').length}/{recipients.length}</dd>
+          {#if routeMessage.file}
+            <dt>{$i18n.text('Файл на ноде')}</dt><dd>{recipients.filter(item => item.stored).length}/{recipients.length}</dd>
+          {/if}
+          <dt>{$i18n.text(routeMessage.file ? 'Карточка доставлена' : 'Доставлено')}</dt>
+          <dd>{recipients.filter(item => item.card).length}/{recipients.length}</dd>
+          {#if routeMessage.file}
+            <dt>{$i18n.text('Файл получен')}</dt><dd>{recipients.filter(item => item.file).length}/{recipients.length}</dd>
+          {/if}
+          <dt>{$i18n.text('Прочитали')}</dt><dd>{recipients.filter(item => item.read).length}/{recipients.length}</dd>
+        </dl>
+      {/if}
+    {/if}
     {#if routeMessage.fileNode}<p>{$i18n.text('Файл получен с ноды')}</p>{/if}
     {#if routeMessage.route}
       <p>{routeMessage.route.node ? $i18n.text('Получено с ноды') : $i18n.text('Получено по P2P')}</p>
@@ -651,18 +729,21 @@
     {/if}
     {#if routeMessage.from === self || Object.keys(routeMessage.nodeStatus ?? {}).length}
       <ul class="message-route">
-        {#each groupAudience(room, routeMessage).filter(peer => peer !== routeMessage.from && peer !== self) as peer (peer)}
-          {@const node = routeMessage.nodeStatus?.[peer]}
-          {@const receipt = routeMessage.receipts?.find(item => item.by === peer)}
+        {#each recipients.filter(item => item.peer !== self) as recipient (recipient.peer)}
           <li>
-            <strong>{name(peer)}</strong>
+            <strong>{name(recipient.peer)}</strong>
+            {#if routeMessage.file}
+              {#if recipient.fileNode === 'delivered'}<small>{$i18n.text('Файл получен с ноды')}</small>
+              {:else if recipient.file}<small>{$i18n.text('Файл получен')} · P2P</small>
+              {:else if recipient.fileNode === 'stored'}<small>{$i18n.text('Файл на ноде')}</small>{/if}
+            {/if}
             <small>
-              {#if node === 'delivered'}
+              {#if recipient.cardNode === 'delivered'}
                 {$i18n.text('Доставлено через ноду')}
-                {#if receipt?.state === 'read'} · {$i18n.text('Прочитали')}{/if}
-              {:else if receipt}
-                {$i18n.text(receipt.state === 'read' ? 'Прочитали' : 'Доставлено')} · {$i18n.text('Маршрут доставки неизвестен')}
-              {:else if node === 'stored'}
+                {#if recipient.read} · {$i18n.text('Прочитали')}{/if}
+              {:else if recipient.card}
+                {$i18n.text(recipient.read ? 'Прочитали' : 'Доставлено')} · {$i18n.text('Маршрут доставки неизвестен')}
+              {:else if recipient.cardNode === 'stored'}
                 {$i18n.text('На ноде')}
               {:else}
                 {$i18n.text('Нет подтверждения доставки')}
@@ -701,10 +782,13 @@
       <ul class="members">
         {#each room.members as peer (peer)}
           <li>
-            <Avatar accountId={peer} photo={photo(peer)} size={28} />
-            <span>{peer === self ? $i18n.text('Вы') : name(peer)}
-              {#if peer === room.owner}<small>{$i18n.text('Администратор')}</small>{/if}
-            </span>
+            <button type="button" class="group-author member-profile" onclick={() => { closeMembers(); openProfile(peer); }}
+              title={$i18n.text('Открыть карточку')} disabled={busy || blocked}>
+              <Avatar accountId={peer} photo={photo(peer)} size={28} />
+              <span>{peer === self ? $i18n.text('Вы') : name(peer)}
+                {#if peer === room.owner}<small>{$i18n.text('Администратор')}</small>{/if}
+              </span>
+            </button>
             {#if owner && peer !== self && room.mls}
               <button type="button" disabled={busy || blocked || !!room.plan} onclick={() => confirm('exclude', peer)}>{$i18n.text('Исключить')}</button>
             {/if}
@@ -735,8 +819,10 @@
 {/if}
 
 <style>
-  .attachment-actions { display:grid; gap:8px; }
-  .attachment-actions button { display:flex; align-items:center; gap:8px; text-align:start; }
+  .delivery-details { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 14px; padding-block:8px; border-block:1px solid var(--line); }
+  .delivery-details dd { margin:0; font-variant-numeric:tabular-nums; }
+  .group-author { display:inline-flex; align-items:center; gap:5px; min-width:0; padding:0; border:0; background:transparent; text-align:start; }
+  .member-profile { flex:1; gap:8px; padding:5px; }
   .group-mention-menu { display:grid; max-height:min(32dvh, 228px); overflow:auto; padding:4px; gap:2px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
   .group-mention-menu button { display:flex; align-items:center; gap:8px; min-height:36px; padding:4px 8px; text-align:start; border-color:transparent; }
   .group-mention-menu button[aria-selected=true], .group-mention-menu button:hover { background:var(--accent-soft); border-color:var(--line); }

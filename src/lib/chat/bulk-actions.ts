@@ -1,5 +1,6 @@
 import type {ChatEntry} from './session-chats';
 import {canDownloadMessage,canStopFile} from './message-presentation';
+import { transcript } from './chat-actions';
 export type BulkAction='retry'|'cancel';
 export type BulkTask={id:string;kind:'resume'|'new'|'file'|'node'};
 export function bulkTasks(messages:readonly ChatEntry[],selected:readonly string[],action:BulkAction,self:string,nodePending:ReadonlySet<string>):BulkTask[]{
@@ -22,4 +23,19 @@ export function downloadableSelection(messages:readonly ChatEntry[],selected:rea
 export function archiveFileName(name:string,index:number):string{
   const clean=name.replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').replace(/^\.+/,'').trim().slice(0,120)||'file';
   return `files/${String(index+1).padStart(3,'0')}-${clean}`;
+}
+
+export async function messageArchive(messages: readonly ChatEntry[], load: (message: ChatEntry) => Promise<Uint8Array>) {
+  if (messages.reduce((size, message) => size + (message.file?.size ?? 0) + message.text.length * 4, 0) > 64 * 1024 * 1024)
+    throw new Error('Для одного архива выберите не больше 64 МБ. Скачайте остальные файлы отдельно.');
+  const text = new TextEncoder().encode(transcript(messages));
+  const files: Record<string, Uint8Array> = { 'messages.txt':text };
+  let index = 0;
+  try {
+    for (const message of messages) if (message.file) {
+      files[archiveFileName(message.file.name, index++)] = await load(message);
+    }
+    const bytes = index ? (await import('fflate')).zipSync(files, { level:0 }) : text.slice();
+    return { bytes, name:`Automesh-messages-${new Date().toISOString().slice(0, 10)}.${index ? 'zip' : 'txt'}` };
+  } finally { for (const bytes of Object.values(files)) bytes.fill(0); }
 }
