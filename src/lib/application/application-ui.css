@@ -89,6 +89,13 @@ img, video { border-radius:6px; }
   .conversation-items.with-new-chat { padding-bottom:66px; scroll-padding-bottom:66px; }
   .native-channel-entry{display:flex;align-items:center;gap:8px;width:100%;margin:4px 0 8px;text-align:left;font-size:13px;min-height:42px}.native-channel-entry span{display:flex;align-items:center;gap:8px;min-width:0}.native-channel-entry.active{border-color:var(--accent-line);background:var(--accent-soft)}
   .conversation-row { width:100%; margin-bottom:2px; text-align:left; padding:8px; border-color:transparent; background:transparent; }
+  .conversation-row[aria-haspopup="dialog"] { -webkit-touch-callout:none; user-select:none; }
+  .chat-list-actions { display:grid; gap:6px; }
+  .chat-list-actions button { min-height:44px; text-align:start; }
+  .chat-list-actions label { display:grid; gap:6px; min-width:0; }
+  .chat-list-actions select { width:100%; min-width:0; min-height:44px; }
+  .chat-list-actions p { margin:0 0 6px; overflow-wrap:anywhere; }
+  .chat-list-actions .danger { color:var(--danger); }
   .conversation-row[aria-current="true"] { border-color:var(--accent-line); background:var(--accent-soft); }
   .local-agent-row { display:flex; align-items:center; gap:9px; min-height:64px; }
   .local-agent-row-text { min-width:0; flex:1; font-size:14px; }

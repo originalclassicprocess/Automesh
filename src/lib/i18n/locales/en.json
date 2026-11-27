@@ -3422,5 +3422,14 @@
   "m_c9a0a23d714e": "Stored until",
   "m_73822b4ddf96": "Profile envelope storage",
   "m_447021d53791": "Space reserved for profile files",
-  "m_2e15feb2fbe5": "Storage used on node"
+  "m_2e15feb2fbe5": "Storage used on node",
+  "m_483ac6eafbb3": "Chat pinned",
+  "m_5308cfff643a": "Transfer group ownership",
+  "m_abac4685c644": "Delete permanently",
+  "m_067a196531d2": "Could not complete the chat action. Try again.",
+  "m_9d9f29532315": "You will leave the group. Its history and files will be removed from this device.",
+  "m_812c219a2cd9": "Chat history will be removed from this device.",
+  "m_80b57b637ed8": "Leave and delete chat",
+  "m_f739a41fd78b": "Pin chat",
+  "m_be66d2cdb846": "Unpin chat"
 }

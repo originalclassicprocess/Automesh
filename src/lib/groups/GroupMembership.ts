@@ -10,7 +10,7 @@ type MembershipPort = {
   contact(peer: string): boolean;
   allowed(peer: string): boolean;
   rooms(): GroupRooms;
-  save(room: GroupRoom): Promise<void>;
+  save(room: GroupRoom, forget?: boolean): Promise<void>;
   deliver(peer: string, frame: MembershipFrame): Promise<void>;
   changed(room: GroupRoom): void;
 };
@@ -44,31 +44,32 @@ export class GroupMembership {
     await this.start(room, target, room.owner);
   }
 
-  async leave(room: GroupRoom, successor?: string) {
+  async leave(room: GroupRoom, successor?: string, forget = false) {
     const { self, identity } = this.port;
     if (room.departed || room.leaving || !room.members.includes(self)) throw new Error('group_change_unavailable');
+    if (forget) room = { ...room, entries:[], actions:undefined };
     if (!room.mls) {
-      if (room.owner === self) throw new Error('group_change_unavailable');
-      await this.port.save({ ...room, departed:self, draft:undefined, plan:undefined });
+      if (room.owner === self && !forget) throw new Error('group_change_unavailable');
+      await this.port.save({ ...room, departed:self, draft:undefined, plan:undefined, keys:{}, offer:undefined }, forget);
       return;
     }
     const leaving = await signMembership({ type:'group-leave', group:room.id, epoch:epochOf(room), by:self }, identity);
     if (room.owner === self) {
       if (room.plan) throw new Error('group_change_unavailable');
       if (room.members.length === 1) {
-        await this.port.save({ ...room, departed:self, mls:undefined, welcome:undefined, welcomeProof:undefined, offer:undefined });
+        await this.port.save({ ...room, departed:self, mls:undefined, welcome:undefined, welcomeProof:undefined, offer:undefined }, forget);
       } else {
         if (!successor || successor === self || !room.members.includes(successor) || !this.port.allowed(successor))
           throw new Error('group_successor_required');
-        await this.start({ ...room, leaving }, self, successor);
+        await this.start({ ...room, leaving }, self, successor, undefined, undefined, forget);
       }
     } else {
-      await this.port.save({ ...room, leaving });
+      await this.port.save({ ...room, leaving }, forget);
       this.relay(room, leaving);
     }
   }
 
-  private async start(room: GroupRoom, target: string, nextOwner: string, key?: string, offer?: GroupOffer) {
+  private async start(room: GroupRoom, target: string, nextOwner: string, key?: string, offer?: GroupOffer, forget = false) {
     const plan = await signMembership({ type:'group-plan', group:room.id, epoch:epochOf(room),
       change:offer?.change ?? crypto.randomUUID(), owner:room.owner, target, nextOwner, key,
       members:offer?.members ?? room.members.filter(peer => peer !== target) }, this.port.identity);
@@ -80,7 +81,7 @@ export class GroupMembership {
     // Persist the authorized operation before trying the Commit. A restart can
     // finish it without depending on any of the recipients' availability.
     const next = { ...room, plan, offer:undefined };
-    await this.port.save(next);
+    await this.port.save(next, forget);
     if (nextOwner === this.port.self) await this.resume(next);
     else void this.port.deliver(nextOwner, plan);
   }

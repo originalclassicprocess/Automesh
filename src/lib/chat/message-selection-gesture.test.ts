@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { selectionGesture } from './message-selection-gesture';
 
 class Card extends EventTarget {
-  control: { matches(selector: string): boolean } | null = null;
+  control: Card | { matches(selector: string): boolean } | null = null;
   closest() { return this.control; }
+  matches() { return false; }
 }
 function pointer(node: Card, type: string, extra: Record<string, unknown> = {}) {
   const event = new Event(type, { cancelable: true, bubbles: true });
@@ -68,4 +69,23 @@ describe('touch message selection boundary', () => {
     const other=new Event('pointerdown');Object.assign(other,{pointerId:2,isPrimary:false});f.win.dispatchEvent(other);
     vi.advanceTimersByTime(600);expect(f.begin).not.toHaveBeenCalled();expect(remove).toHaveBeenCalledWith('scroll',expect.any(Function),true);f.action.destroy();
   });
+});
+
+it('opens a chat row menu on hold, context click and keyboard, without activating the row', () => {
+  const row = new Card();
+  row.control = row;
+  vi.stubGlobal('window',new EventTarget());
+  const menu = vi.fn(), open = vi.fn();
+  const action = selectionGesture(row as unknown as HTMLElement,{conversation:true,canBegin:()=>true,onBegin:menu});
+  row.addEventListener('click',open);
+  pointer(row,'pointerdown',{pointerType:'mouse'});
+  vi.advanceTimersByTime(500);
+  pointer(row,'pointerup');
+  pointer(row,'click',{detail:1});
+  expect(menu).toHaveBeenCalledOnce();
+  expect(open).not.toHaveBeenCalled();
+  pointer(row,'contextmenu',{button:2});
+  pointer(row,'keydown',{key:'F10',shiftKey:true});
+  expect(menu).toHaveBeenCalledTimes(3);
+  action.destroy();
 });

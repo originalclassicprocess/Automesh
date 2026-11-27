@@ -34,7 +34,7 @@ type GroupPort = {
   readsEnabled?(): boolean;
   nodeEnabled?(): boolean;
   rooms(): GroupRooms;
-  save(rooms: GroupRooms, file?: StagedGroupFile): Promise<void>;
+  save(rooms: GroupRooms, file?: StagedGroupFile, forgetGroup?: string): Promise<void>;
   trackTransfer?(group: string, hash: string): () => void;
   files?: GroupFileStore;
   welcomeFailed?(group: string): void;
@@ -65,7 +65,7 @@ export class GroupController {
   constructor(private readonly port: GroupPort) {
     if (port.files) this.attachments = new GroupAttachments({ ...port, room:id => this.room(id), files:port.files });
     this.membership = new GroupMembership({
-      ...port, save:room => this.save(room), deliver:(peer, frame) => this.deliver(peer, frame),
+      ...port, save:(room,forget) => this.save(room,undefined,forget), deliver:(peer, frame) => this.deliver(peer, frame),
       changed:room => {
         for (const peer of groupPeers(room, this.port.self)) void this.hello(room, peer);
       },
@@ -82,12 +82,12 @@ export class GroupController {
   }
 
   private room(id: string) { return this.port.rooms().find(room => room.id === id); }
-  private async save(room: GroupRoom, file?: StagedGroupFile) {
+  private async save(room: GroupRoom, file?: StagedGroupFile, forget = false) {
     if (!this.port.active()) throw new Error('group_inactive');
     const rooms = this.port.rooms();
     const updated = rooms.some(item => item.id === room.id)
       ? rooms.map(item => item.id === room.id ? room : item) : [...rooms, room];
-    await this.port.save([...updated.filter(item => !item.departed), ...updated.filter(item => item.departed).slice(-MAX_GROUPS * 7)], file);
+    await this.port.save([...updated.filter(item => !item.departed), ...updated.filter(item => item.departed).slice(-MAX_GROUPS * 7)], file, forget ? room.id : undefined);
   }
 
   private async deliver(peer: string, value: GroupFrame) {
@@ -143,8 +143,8 @@ export class GroupController {
     return this.changeMembership(id, room => this.membership.exclude(room, peer));
   }
 
-  leave(id: string, successor?: string) {
-    return this.changeMembership(id, room => this.membership.leave(room, successor));
+  leave(id: string, successor?: string, forget = false) {
+    return this.changeMembership(id, room => this.membership.leave(room, successor, forget));
   }
 
   private changeMembership(id: string, action: (room: GroupRoom) => Promise<void>) {
