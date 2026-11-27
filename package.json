@@ -57,7 +57,7 @@
     "ts-mls": "1.6.4",
     "typescript": "^6.0.2",
     "vite": "^8.3.6",
-    "vitest": "^4.1.12",
+    "vitest": "^5.1.1",
     "web-push": "3.6.7"
   },
   "overrides": {
