@@ -9,6 +9,7 @@
   import MessageTools from '$lib/chat/MessageTools.svelte';
   import MessageDelivery from '$lib/chat/MessageDelivery.svelte';
   import MessageSelectionBar from '$lib/chat/MessageSelectionBar.svelte';
+  import ChatSearch from '$lib/chat/ChatSearch.svelte';
   import { selectEveryMessage, selectionSummary, toggleSelection } from '$lib/chat/message-selection';
   import { messageArchive } from '$lib/chat/bulk-actions';
   import HistoryDivider from '$lib/chat/HistoryDivider.svelte';
@@ -24,14 +25,14 @@
   import MediaViewer from '$lib/chat/MediaViewer.svelte';
   import { inlineMediaFor } from '$lib/chat/media-preview';
   import type { PreparedPack } from '$lib/chat/sticker-pack';
-  import { createChatScroll } from '$lib/chat/chat-scroll';
+  import type { createChatScroll } from '$lib/chat/chat-scroll';
   import { submitOnEnter } from '$lib/chat/conversation-list';
   import { GROUP_TEXT_BYTES, MAX_GROUP_MEMBERS } from './protocol';
   import { groupChronology, groupEntryUnread, type GroupEntry, type GroupRoom } from './storage';
   import { groupChatEntry, groupDelivery, groupRecipients, type GroupDeliveryPhase } from './presentation';
   import { editGroupMentions, groupMentionParts, mentionQuery, moveGroupMentions, type GroupMention, type MentionEdit } from './mentions';
 
-  let { room, self, name, photo, connected, searching, deliveryPhase, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, accept, send,
+  let { room, self, name, photo, connected, searching, deliveryPhase, blocked, welcomeFailed, contacts, invite, exclude, leave, trackReads, markRead, scroll, jump, accept, send,
     library, loadSticker, manageStickers, sendSticker, autoplay, loadAttachment, obtainAttachment, saveAttachment, previewPack, openPack, saveMedia,
     canRequestPack, requestPack, canMention, openProfile, forward, forwardDone, hide, sync, direct, back }: {
     room: GroupRoom; self: string; name(peer: string): string; photo(peer: string): string;
@@ -39,6 +40,7 @@
     searching: ReadonlySet<string>; deliveryPhase(hash: string): GroupDeliveryPhase | undefined;
     contacts: string[]; invite(peer: string): Promise<void>; exclude(peer: string): Promise<void>; leave(successor?: string): Promise<void>;
     trackReads: boolean; markRead(hashes: string[]): Promise<void>;
+    scroll: ReturnType<typeof createChatScroll>; jump: boolean;
     accept(): Promise<void>; send(text: string, replyTo?: string, file?: File, mentions?: GroupMention[]): Promise<string>;
     canMention(peer: string): boolean; sync(): void; direct(): void; back(): void;
     library: MediaLibrary; loadSticker(hash: string): Promise<Uint8Array | null>; manageStickers(tab: 'stickers' | 'gifs'): void;
@@ -80,7 +82,9 @@
   let localFiles = $state(new Set<string>());
   let copied = $state(''), highlighted = $state(''), copyFailed = $state(false);
   let copyTimer: ReturnType<typeof setTimeout>, highlightTimer: ReturnType<typeof setTimeout>;
-  let jump = $state(false);
+  let searchOpen = $state(false);
+  let searchButton = $state<HTMLButtonElement>();
+  let restoreFromSearch: (() => void) | undefined;
   const links = $derived(room.members.filter(peer => connected.has(peer)).length);
   let membersOpen = $state(false), confirming = $state<'leave' | 'exclude'>(), target = $state(''), invitee = $state('');
   const owner = $derived(room.owner === self);
@@ -134,6 +138,7 @@
   });
   const activeMention = $derived(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)]);
   const timeline = $derived(groupChronology(room.entries).filter(entry => !entry.hidden));
+  const searchable = $derived(searchOpen ? timeline.map(entry => ({ ...groupChatEntry(entry, self), details:entry.file?.details })) : []);
   const selectedEntries = $derived(timeline.filter(entry => selected.includes(entry.id)));
   const readyFile = (entry: GroupEntry) => !!(entry.fileReady || entry.fileNode || localFiles.has(entry.hash) || entry.from === self);
   const canUseFile = (entry: GroupEntry) => !entry.file || readyFile(entry);
@@ -180,10 +185,6 @@
   const scrollMessages = $derived(timeline.map(entry => ({
     id: entry.id, direction: entry.from === self ? 'outgoing' as const : 'incoming' as const,
   })));
-  const scroll = createChatScroll({
-    activePeer: () => room.id, firstUnread: () => unread[0]?.id,
-    onJump: visible => { jump = visible; },
-  });
   const visible = new Set<string>();
   const deferredReads = new Set<string>();
   let mounted = false, readFrame = 0;
@@ -238,7 +239,30 @@
       const node = transcript.querySelector<HTMLElement>('[data-chat-message-id="' + target.id + '"]');
       if (node) transcript.scrollTop += node.getBoundingClientRect().top - transcript.getBoundingClientRect().top - 8;
       reviewHistory();
-    } else transcript.scrollTop = transcript.scrollHeight;
+    } else jumpToLatest();
+  }
+
+  function jumpToLatest() {
+    if (transcript) transcript.scrollTop = transcript.scrollHeight;
+  }
+
+  function toggleSearch() {
+    if (searchOpen) { closeSearch(); return; }
+    restoreFromSearch = scroll.checkpoint();
+    searchOpen = true;
+  }
+
+  function closeSearch(restore = true) {
+    if (!searchOpen) return;
+    const returnTo = restoreFromSearch;
+    restoreFromSearch = undefined;
+    searchOpen = false;
+    highlighted = '';
+    if (restore) void tick().then(() => {
+      if (searchOpen) return;
+      returnTo?.();
+      searchButton?.focus({ preventScroll:true });
+    });
   }
 
   function startReply(message: GroupEntry) {
@@ -253,8 +277,8 @@
     transcript.scrollTo({ top:transcript.scrollTop + offset - Math.max(0, (transcript.clientHeight - node.offsetHeight) / 2), behavior });
   }
 
-  function showOriginal(id: string) {
-    revealMessage(id, 'smooth');
+  function showOriginal(id: string, behavior: ScrollBehavior = 'smooth') {
+    revealMessage(id, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : behavior);
     reviewHistory();
     highlighted = id;
     clearTimeout(highlightTimer);
@@ -281,6 +305,7 @@
   }
 
   function beginSelection(entry?: GroupEntry) {
+    closeSearch(false);
     selecting = true;
     selected = entry ? [entry.id] : [];
     selectionError = '';
@@ -473,36 +498,46 @@
 <svelte:window onfocus={queueRead} />
 <svelte:document onvisibilitychange={queueRead} />
 
-<div class="chat-heading">
+{#snippet groupHeading()}
+  <span class="local-agent-avatar" aria-hidden="true"><ChatIcon name="group" /></span>
+  <span><strong>{room.title}</strong><small class="peer-status">{$i18n.text('Участники группы')} · {room.members.length}</small>
+    <small class="peer-status">{$i18n.text('Прямые соединения')} · {links}</small></span>
+{/snippet}
+
+<div class="chat-heading group-heading">
   <button type="button" class="chat-back" onclick={back} aria-label={$i18n.text('Все чаты')}>←</button>
-  <div class="peer-heading">
-    <span class="local-agent-avatar" aria-hidden="true"><ChatIcon name="group" /></span>
-    <span><strong>{room.title}</strong><small class="peer-status">{$i18n.text('Участники группы')} · {room.members.length}</small>
-      <small class="peer-status">{$i18n.text('Прямые соединения')} · {links}</small></span>
-  </div>
+  {#if room.mls || !owner}
+    <button type="button" class="peer-heading" onclick={() => { membersOpen = true; failed = false; }} disabled={blocked}
+      title={$i18n.text('Участники группы')} aria-label={$i18n.text('Участники группы')}>{@render groupHeading()}</button>
+  {:else}
+    <div class="peer-heading">{@render groupHeading()}</div>
+  {/if}
   {#if !links}
     <button type="button" class="select-messages-button" onclick={direct} disabled={blocked}
       title={$i18n.text('Прямое подключение')} aria-label={$i18n.text('Прямое подключение')}><ChatIcon name="qr" /></button>
-  {/if}
-  {#if room.mls || !owner}
-    <button type="button" class="select-messages-button" onclick={() => { membersOpen = true; failed = false; }} disabled={blocked}
-      title={$i18n.text('Участники группы')} aria-label={$i18n.text('Участники группы')}><ChatIcon name="group" /></button>
   {/if}
   <button type="button" class="select-messages-button" onclick={sync} disabled={blocked}
     title={$i18n.text(room.mls ? 'Догрузить сообщения' : 'Обновить')}
     aria-label={$i18n.text(room.mls ? 'Догрузить сообщения' : 'Обновить')}><ChatIcon name="repeat" /></button>
   {#if room.mls}
+    <button type="button" class="select-messages-button" bind:this={searchButton} onclick={toggleSearch} aria-expanded={searchOpen} disabled={blocked || selecting}
+      aria-label={$i18n.text('Поиск в чате')} title={$i18n.text('Поиск по тексту или дате')}><ChatIcon name="search" /></button>
     <button type="button" class="select-messages-button" onclick={() => selecting ? exitSelection() : beginSelection()}
       aria-pressed={selecting} disabled={blocked || busy}
       aria-label={$i18n.text(selecting ? 'Отмена выбора' : 'Выбрать сообщения')}><ChatIcon name={selecting ? 'close' : 'select'} /></button>
   {/if}
 </div>
+{#if searchOpen}
+  <ChatSearch messages={searchable} focus onJump={id => showOriginal(id, 'instant')} onClose={() => closeSearch()} />
+{/if}
 {#if selecting}
-  <MessageSelectionBar messages={timeline} {selected} busy={busy || blocked}
-    onToggleAll={() => selected = selectionSummary(timeline, selected).all ? [] : selectEveryMessage(timeline)}
-    onCopy={() => void copySelection()} onForward={() => forwardEntries(selectedEntries)}
-    canForward={selectedEntries.every(canUseFile)} onDownload={downloadSelection}
-    downloadCount={selectedEntries.filter(canUseFile).length} onHide={() => confirmingHide = selectedEntries.map(entry => entry.id)} />
+  <div class="group-selection-row">
+    <MessageSelectionBar messages={timeline} {selected} busy={busy || blocked}
+      onToggleAll={() => selected = selectionSummary(timeline, selected).all ? [] : selectEveryMessage(timeline)}
+      onCopy={() => void copySelection()} onForward={() => forwardEntries(selectedEntries)}
+      canForward={selectedEntries.every(canUseFile)} onDownload={downloadSelection}
+      downloadCount={selectedEntries.filter(canUseFile).length} onHide={() => confirmingHide = selectedEntries.map(entry => entry.id)} />
+  </div>
 {/if}
 {#if selectionError}<small role="alert">{$i18n.system(selectionError)}</small>{/if}
 
@@ -597,13 +632,21 @@
       </div>
     {/if}
   </div>
-  {#if room.mls && (jump || unread.length)}
-    {@const label = unread.length ? $i18n.text('К непрочитанным сообщениям') : $i18n.text('К последним сообщениям')}
-    <button type="button" class="jump-down" onclick={jumpToMessage}
-      aria-label={unread.length ? label + ' · ' + unread.length : label} title={label}>
-      <ChatIcon name={unread.length ? 'chat' : 'order-down'} />
-      {#if unread.length}<span class="jump-count" aria-hidden="true">{unread.length > 99 ? '99+' : unread.length}</span>{/if}
-    </button>
+  {#if room.mls && !searchOpen && (jump || unread.length)}
+    <div class="group-jumps">
+      {#if unread.length}
+        <button type="button" class="jump-down" onclick={jumpToMessage}
+          aria-label={$i18n.text('К непрочитанным сообщениям') + ' · ' + unread.length} title={$i18n.text('К непрочитанным сообщениям')}>
+          <ChatIcon name="chat" /><span class="jump-count" aria-hidden="true">{unread.length > 99 ? '99+' : unread.length}</span>
+        </button>
+      {/if}
+      {#if jump}
+        <button type="button" class="jump-down" onclick={jumpToLatest}
+          aria-label={$i18n.text('К последним сообщениям')} title={$i18n.text('К последним сообщениям')}>
+          <ChatIcon name="order-down" />
+        </button>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -819,6 +862,9 @@
 {/if}
 
 <style>
+  .group-selection-row { display:flex; flex:none; min-width:0; }
+  .group-jumps { position:absolute; inset-inline-end:14px; bottom:12px; display:flex; gap:6px; pointer-events:none; }
+  .group-jumps .jump-down { position:relative; inset:auto; pointer-events:auto; }
   .delivery-details { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 14px; padding-block:8px; border-block:1px solid var(--line); }
   .delivery-details dd { margin:0; font-variant-numeric:tabular-nums; }
   .group-author { display:inline-flex; align-items:center; gap:5px; min-width:0; padding:0; border:0; background:transparent; text-align:start; }
@@ -831,6 +877,12 @@
   .mentioned-self { background:var(--accent-soft); border-radius:4px; }
   .peer-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .peer-heading .local-agent-avatar { display:grid; }
+  .peer-heading .peer-status { overflow:hidden; text-overflow:ellipsis; }
+  @media(max-width:380px) {
+    .group-heading { gap:4px; }
+    .group-heading .local-agent-avatar { display:none; }
+    .group-heading .select-messages-button, .group-heading .chat-back { min-width:36px; }
+  }
   .quick-copy :global(svg) { display:block; width:18px; height:18px; margin:auto; }
   .message-route { display:grid; gap:8px; list-style:none; padding:0; }
   .message-route small { display:block; color:var(--muted); }

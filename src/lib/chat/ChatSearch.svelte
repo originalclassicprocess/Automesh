@@ -2,7 +2,7 @@
   import { tr as i18n } from '$lib/i18n/language';
   import type { ChatEntry } from './session-chats';
   import { searchMessages,type SearchKind } from './chat-search';
-  let { messages, onJump, onClose }: { messages: ChatEntry[]; onJump(id: string): void; onClose(): void } = $props();
+  let { messages, onJump, onClose, focus = false }: { messages: ChatEntry[]; onJump(id: string): void; onClose(): void; focus?: boolean } = $props();
   let query = $state(''), date = $state(''), index = $state(-1),kind=$state<SearchKind>('all');
   const matches = $derived(searchMessages(messages, query, date,kind));
   function move(offset: number) {
@@ -10,8 +10,19 @@
     index = index<0?(offset<0?matches.length-1:0):(Math.min(index,matches.length-1)+offset+matches.length)%matches.length;
     onJump(matches[index].id);
   }
+  function manageKeys(form: HTMLFormElement) {
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    form.addEventListener('keydown', dismiss);
+    if (focus) form.querySelector<HTMLInputElement>('input[type=search]')?.focus({ preventScroll:true });
+    return { destroy() { form.removeEventListener('keydown', dismiss); } };
+  }
 </script>
-<form class="chat-search" aria-label={$i18n.text("Поиск в переписке")} onsubmit={event => { event.preventDefault(); move(0); }}>
+<form class="chat-search" use:manageKeys aria-label={$i18n.text("Поиск в переписке")} onsubmit={event => { event.preventDefault(); move(1); }}>
   <input type="search" aria-label={$i18n.text("Текст сообщения")} placeholder={$i18n.text("Найти в чате…")} bind:value={query} oninput={() => index = -1} />
   <input type="date" aria-label={$i18n.text("Дата сообщения")} bind:value={date} onchange={() => index = -1} />
   <select aria-label={$i18n.text('Тип содержимого')} bind:value={kind} onchange={()=>index=-1}>

@@ -22,6 +22,12 @@ export function createChatScroll(options: {
     const observed = new Set<Element>(), pending = new Set(view?.pending ?? []);
     const valid = () => alive && epoch === generation && owner === instance && options.activePeer() === current.peer;
     const viewportTop = () => node.getBoundingClientRect().top + node.clientTop;
+    const end = () => Math.max(0, node.scrollHeight - node.clientHeight);
+    const atEnd = () => end() - node.scrollTop <= 2;
+    const move = (top: number) => {
+      const clamped = Math.max(0, Math.min(top, end()));
+      if (Math.abs(clamped - node.scrollTop) > .5) node.scrollTop = clamped;
+    };
     // Measure O(log n) wrappers per scroll, not the whole large conversation.
     const firstAfter = (edge: number) => {
       let low = 0, high = nodes.length;
@@ -60,24 +66,29 @@ export function createChatScroll(options: {
       for (let i = start + 1; i < messages.length; i++)
         if (messages[i].direction === 'incoming' && !messages[i].localCall) pending.add(messages[i].id);
     };
-    const restore = (saved: View) => {
+    const restore = (saved: View, keepMovement = false) => {
+      const top = node.scrollTop;
+      // Resize/mutation observers can run before the browser's scroll event.
+      // Apply only the layout shift on top of the user's pending movement.
+      const movement = keepMovement ? top - Math.min(saved.top, end()) : 0;
       const anchor = saved.anchors.find(a => indices.has(a.id));
-      if (anchor) node.scrollTop += nodes[indices.get(anchor.id)!].getBoundingClientRect().top - viewportTop() - anchor.offset;
-      else node.scrollTop = saved.top;
+      const restored = anchor ? top + nodes[indices.get(anchor.id)!].getBoundingClientRect().top - viewportTop() - anchor.offset : saved.top;
+      move(restored + movement);
     };
     const layout = () => {
       if (!valid() || !node.clientHeight) return;
+      if (!opening && (node.scrollTop < 0 || node.scrollTop > end() + 1)) return;
       if (opening) {
         if (view && !view.bottom) restore(view);
         else {
           const unread = options.firstUnread(current.peer), index = unread ? indices.get(unread) : undefined;
-          if (index !== undefined) node.scrollTop += nodes[index].getBoundingClientRect().top - viewportTop() - 10;
-          else node.scrollTop = node.scrollHeight;
+          if (index !== undefined) move(node.scrollTop + nodes[index].getBoundingClientRect().top - viewportTop() - 10);
+          else move(end());
         }
         opening = false;
-      } else if (following) node.scrollTop = node.scrollHeight;
-      else if (view) restore(view);
-      following = node.scrollHeight - node.scrollTop - node.clientHeight <= 24;
+      } else if (following && (!view || node.scrollTop >= Math.min(view.top, end()) - .5)) move(end());
+      else if (view) restore(view, true);
+      following = atEnd();
       remember();
     };
     const schedule = () => {
@@ -86,12 +97,17 @@ export function createChatScroll(options: {
     };
     const onScroll = () => {
       if (!valid() || opening || !node.clientHeight) return;
-      following = node.scrollHeight - node.scrollTop - node.clientHeight <= 24;
+      if (node.scrollTop < 0 || node.scrollTop > end() + 1) return;
+      following = atEnd();
       remember();
     };
     captureCurrent=()=>{
       remember();const saved=view;
-      return()=>{if(saved&&valid()){view=saved;following=saved.bottom;opening=false;layout();}};
+      return()=>{if(saved&&valid()&&node.clientHeight){
+        opening=false;
+        if(saved.bottom)move(end()); else restore(saved);
+        following=atEnd(); remember();
+      }};
     };
     node.addEventListener('scroll', onScroll, { passive: true });
     const resize = new ResizeObserver(layout);
@@ -114,7 +130,7 @@ export function createChatScroll(options: {
           collect(old.messages.at(-1)?.id ?? '', old.messages.length); dirty = true;
         }
         if (next.openToken !== old.openToken) { view = positions.get(next.peer); opening = true; }
-        schedule();
+        if (dirty || opening) schedule();
       },
       destroy() {
         alive = false; resize.disconnect(); mutation.disconnect(); node.removeEventListener('scroll', onScroll);
