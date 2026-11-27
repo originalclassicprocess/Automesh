@@ -6,13 +6,16 @@
   import ChannelSecurity from '$lib/radio/ChannelSecurity.svelte';
   import type {ChannelEncryption} from '$lib/radio/native-channels';
   import { conversationPreview } from './conversation-list';
+  import { selectionGesture } from './message-selection-gesture';
   import type { Conversation } from './session-chats';
-  let { accountId, name, photo = '', conversation, self = false, active = false, onOpen, radio, introduction, muted=false }: {
+  let { accountId, name, photo = '', conversation, self = false, active = false, onOpen, radio, introduction, muted=false, onMenu, pinned=false }: {
     accountId: string; name: string; photo?: string; conversation: Conversation; self?: boolean; active?: boolean; onOpen(): void;introduction?:string;radio?:{encryption?:ChannelEncryption;preview:string;status?:string};muted?:boolean;
+    onMenu?():void; pinned?:boolean;
   } = $props();
   const contactLabel = $derived(conversation.contact === 'pending' ? 'Запрос' : conversation.contact === 'outgoing' ? introduction || (conversation.messages.some(m=>m.direction==='outgoing'&&['delivered','read'].includes(m.delivery??'')) ? 'Ждём принятия' : 'Устанавливаем защищённую связь') : conversation.contact === 'blocked' ? 'Заблокирован' : '');
 </script>
-<button type="button" class="conversation-row" aria-current={active ? 'true' : undefined} title={accountId} onclick={onOpen}>
+<button type="button" class="conversation-row" aria-current={active ? 'true' : undefined} title={accountId} onclick={onOpen}
+  aria-haspopup={onMenu ? 'dialog' : undefined} use:selectionGesture={{conversation:true,canBegin:()=>!!onMenu,onBegin:()=>onMenu?.()}}>
   <span class="row-avatar">{#if radio}<span class="radio-avatar"><ChatIcon name="radio"/></span>{:else}<Avatar {accountId} {photo} size={32} />{/if}
     {#if !self&&!radio}<span class="presence" class:connected={conversation.connection === 'connected'} title={conversation.connection === 'connected' ? $i18n.text("На связи") : conversation.connection === 'connecting' ? $i18n.text("Подключаемся") : $i18n.text("Нет прямой связи")}></span>{/if}
   </span>
@@ -20,6 +23,7 @@
     <span class="row-heading"><span class="row-name">{name}</span>{#if radio}<span class="radio-badge">LoRa</span><ChannelSecurity value={radio.encryption} compact/>{/if}
       {#if muted}<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" role="img" aria-label={$i18n.text('Уведомления чата отключены')}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4M3 3l18 18"/></svg>{/if}
       {#if self}<span class="saved" aria-label={$i18n.text("Сохранённые")}>🔖</span>{/if}
+      {#if pinned}<span aria-label={$i18n.text('Чат закреплён')} role="img">⌖</span>{/if}
       {#if conversation.unread > 0}<span class="row-unread" aria-label={$i18n("m_fe510dbd63e0", {v0: (conversation.unread)})}>{conversation.unread > 99 ? '99+' : conversation.unread}</span>{/if}
     </span>
     <span class="chat-preview">{radio?.preview||conversationPreview(conversation,$i18n.text)}</span>

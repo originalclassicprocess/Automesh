@@ -1,6 +1,6 @@
 export type MessageQuota={profileMessages:number;profileMessageLimit:number;profileMessageBytes:number;profileMessageByteLimit:number;nodeMessages:number;nodeMessageLimit:number;nodeRecords:number;nodeRecordLimit:number};
-export type QueueQuota = { protocol:'automesh-queue-quota-v1';profileFiles:number;profileFileLimit:number;nodeFiles:number;nodeFileLimit:number;reservedBytes:number;maxBytes:number } & Partial<MessageQuota>;
-export type QueueSnapshot = { checkedAt:number;messages:number;quota?:QueueQuota };
+export type QueueQuota = { protocol:'automesh-queue-quota-v1';profileFiles:number;profileFileLimit:number;profileFileBytes?:number;nodeFiles:number;nodeFileLimit:number;reservedBytes:number;maxBytes:number } & Partial<MessageQuota>;
+export type QueueSnapshot = { checkedAt:number;messages:number;storedIds?:string[];quota?:QueueQuota };
 const number=(n:unknown):n is number=>Number.isSafeInteger(n)&&Number(n)>=0;
 export function readQueueSnapshot(raw:unknown,now=Date.now()):QueueSnapshot|undefined {
   if(!raw||typeof raw!=='object')return;
@@ -9,7 +9,12 @@ export function readQueueSnapshot(raw:unknown,now=Date.now()):QueueSnapshot|unde
   const q=value.quota as QueueQuota|undefined;
   const valid=q?.protocol==='automesh-queue-quota-v1'&&[q.profileFiles,q.profileFileLimit,q.nodeFiles,q.nodeFileLimit,q.reservedBytes,q.maxBytes].every(number);
   const capacity=readMessageQuota(q);
-  return {checkedAt:now,messages:value.messages,...valid?{quota:{protocol:q!.protocol,profileFiles:q!.profileFiles,profileFileLimit:q!.profileFileLimit,nodeFiles:q!.nodeFiles,nodeFileLimit:q!.nodeFileLimit,reservedBytes:q!.reservedBytes,maxBytes:q!.maxBytes,...capacity}}:{}};
+  const ids = value.storedIds;
+  const storedIds = Array.isArray(ids) && ids.length <= 100 && ids.length === value.messages &&
+    ids.every(id => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id)) && new Set(ids).size === ids.length ? ids as string[] : undefined;
+  return {checkedAt:now,messages:value.messages,...(storedIds ? { storedIds } : {}),...valid?{quota:{protocol:q!.protocol,profileFiles:q!.profileFiles,profileFileLimit:q!.profileFileLimit,
+    ...(number(q!.profileFileBytes)?{profileFileBytes:q!.profileFileBytes}:{}),nodeFiles:q!.nodeFiles,nodeFileLimit:q!.nodeFileLimit,
+    reservedBytes:q!.reservedBytes,maxBytes:q!.maxBytes,...capacity}}:{}};
 }
 export function readMessageQuota(q:QueueQuota|undefined):MessageQuota|undefined{
   const fields=['profileMessages','profileMessageLimit','profileMessageBytes','profileMessageByteLimit','nodeMessages','nodeMessageLimit','nodeRecords','nodeRecordLimit'] as const;

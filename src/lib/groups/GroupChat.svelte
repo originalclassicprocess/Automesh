@@ -312,7 +312,7 @@
     transcript.scrollTo({ top:transcript.scrollTop + offset - Math.max(0, (transcript.clientHeight - node.offsetHeight) / 2), behavior });
   }
 
-  function showOriginal(id: string, behavior: ScrollBehavior = 'smooth') {
+  export function showOriginal(id: string, behavior: ScrollBehavior = 'smooth') {
     revealMessage(id, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : behavior);
     reviewHistory();
     highlighted = id;

@@ -13,8 +13,9 @@ import { groupEdits, groupPins, groupReactions } from './actions';
 import { groupDelivery } from './presentation';
 import { restoreGroups, type GroupRooms } from './storage';
 
-it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
-'downloads $count verified group attachments from the offline sender’s node (automatic: $automatic)', async ({ count, automatic }) => {
+it.each([{ count:1, automatic:false, ownNodeOffline:false }, { count:4, automatic:true, ownNodeOffline:false },
+  { count:2, automatic:false, ownNodeOffline:true }])(
+'downloads $count verified group attachments from the offline sender’s node (automatic: $automatic, own node offline: $ownNodeOffline)', async ({ count, automatic, ownNodeOffline }) => {
   async function account() {
     const identity = new WebCryptoIdentity();
     await identity.create();
@@ -89,7 +90,8 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
       senderQueue:{ ...server, grant } }, sender.identity);
     const states: CourierState[] = [
       { ...emptyCourierState(), node:server, enabled:true, bundles:{[recipient.address]:receiverBundle} },
-      { ...emptyCourierState(), keys, bundles:{[sender.address]:senderBundle} },
+      { ...emptyCourierState(), keys, bundles:{[sender.address]:senderBundle},
+        ...(ownNodeOffline ? { node:{ url:'https://unavailable.example', nodeId:'b'.repeat(32), address:recipient.address } } : {}) },
     ];
     const deliveries = new Map<string, CourierDelivery>();
     const cipherParts = new Map<string, { index:number; cipher:string }[]>();
@@ -127,7 +129,10 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
           cleanup:async (_peer, id) => { partial.delete(id); },
         },
         request:async (_url, _node, _identity, _address, path, value: any) => {
-          if (path === '/outbox/status') return { address:node.address, fileQueue:{ protocol:ATTACHMENT_PROTOCOL, maxFileBytes:FILE_POLICY_BYTES } };
+          if (path === '/outbox/status') {
+            if (index === 1 && ownNodeOffline) throw new TypeError('Network is unavailable');
+            return { address:node.address, fileQueue:{ protocol:ATTACHMENT_PROTOCOL, maxFileBytes:FILE_POLICY_BYTES } };
+          }
           if (path === '/outbox/receipts') return { receipts:[] };
           if (path === '/outbox/file/start') {
             cipherParts.set(value.job.body.attachment.id, []);
@@ -185,8 +190,12 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
     workers[0].stop();
 
     const firstReceiver = courier(1);
-    await firstReceiver.poll();
-    await firstReceiver.settled();
+    const receive = async (worker: CourierController) => {
+      if (ownNodeOffline) await expect(worker.poll()).rejects.toThrow('Network is unavailable');
+      else await worker.poll();
+      await worker.settled();
+    };
+    await receive(firstReceiver);
     if (additional) {
       now += 5000;
       await firstReceiver.poll();
@@ -201,7 +210,7 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
     expect(queued.group).toMatchObject({ group, hash, file:true });
     expect(groups[1].nodeFileOffer(queued.group!, sender.address, { ...queued.manifest.offer, sha256:'0'.repeat(64) })).toBeUndefined();
     expect(groups[1].nodeFileOffer(queued.group!, node.address, queued.manifest.offer)).toBeUndefined();
-    if (!automatic) await groups[1].requestFile(group, hash);
+    if (!automatic) for (const hash of payloads.keys()) await groups[1].requestFile(group, hash);
     firstReceiver.stop();
     states[1] = restoreCourierState(states[1]);
     rooms[1] = restoreGroups(rooms[1]);
@@ -214,7 +223,7 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
     }
     autoReceive = automatic;
     const receiver = courier(1);
-    for (let poll = 0; poll < Math.ceil(count / 2); poll++) await receiver.poll();
+    for (let poll = 0; poll < Math.ceil(count / 2); poll++) await receive(receiver);
     for (const [hash, bytes] of payloads) {
       expect(await groups[1].readFile(group, hash)).toEqual(bytes);
       expect(rooms[1][0].entries.find(entry => entry.hash === hash)).toMatchObject({ fileNode:node.address, fileReady:true });

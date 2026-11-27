@@ -3,6 +3,7 @@
   import { tr as i18n } from '$lib/i18n/language';
   import {onMount} from 'svelte';
   import {freshQueueSnapshot,readMessageQuota,type QueueSnapshot} from './queue-quota';
+  import { formatBytes } from '$lib/application/storage-summary';
   let {snapshot,connected=true,kind='files'}:{snapshot?:QueueSnapshot;connected?:boolean;kind?:'files'|'messages'}=$props();
   let now=$state(Date.now());
   const fresh=$derived(connected&&freshQueueSnapshot(snapshot,now));
@@ -15,10 +16,13 @@
   {#if kind==='messages'&&messages}
   <dl>
     <div><dt>{$i18n.text("Конверты профиля")}</dt><dd>{messages.profileMessages} / {messages.profileMessageLimit}</dd></div>
+    <div><dt>{$i18n.text("Объём конвертов профиля")}</dt><dd>{$i18n.system(formatBytes(messages.profileMessageBytes))} / {$i18n.system(formatBytes(messages.profileMessageByteLimit))}</dd></div>
   </dl><p class="note">{$i18n.text("Учтены ваши сообщения и описания файлов, ожидающие получения.")}</p>
   {:else if kind==='messages'}<p class="note">{$i18n.text("Нода не сообщила лимит сообщений. Неизвестная квота не считается свободной.")}</p>
   {:else}<dl>
     <div><dt>{$i18n.text("Файлы профиля")}</dt><dd>{quota.profileFiles} / {quota.profileFileLimit}</dd></div>
+    {#if quota.profileFileBytes!==undefined}<div><dt>{$i18n.text("Резерв под файлы профиля")}</dt><dd>{$i18n.system(formatBytes(quota.profileFileBytes))}</dd></div>{/if}
+    <div><dt>{$i18n.text("Занято на ноде")}</dt><dd>{$i18n.system(formatBytes(quota.reservedBytes))} / {$i18n.system(formatBytes(quota.maxBytes))}</dd></div>
   </dl>
   <p class="note">{$i18n.text("Учтены ваши сохранённые файлы и незавершённые загрузки.")}</p>{/if}
 {:else}<p class="note">{$i18n.text("Квота не получена. Проверьте связь с нодой; она должна поддерживать передачу сведений о квотах.")}</p>{/if}

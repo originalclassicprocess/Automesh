@@ -152,9 +152,16 @@ export function prepareChatStorageCleanup(data: LocalChatData, choice: ChatStora
   const matchFile = (key: string) => !isLibraryFileId(key) &&
     (choice.kind === 'all-files' || matched.has(key) || (key.includes(':') &&
       peers.has(key.startsWith('group-file:') ? key.split(':', 2)[1] : key.split(':', 1)[0])));
-  const ids = new Set([...localIds].filter(matchFile));
+  const groupParts = new Set<string>();
+  if (choice.kind === 'chat') for (const incoming of data.courierState?.incomingFiles ?? []) {
+    if (!incoming.group) continue;
+    const {from,id} = incoming.job.body;
+    for (let index = 0; index < incoming.manifest.attachment.chunks; index++) groupParts.add(`${from}:${id}:courier:${index}`);
+  }
+  const ids = new Set([...localIds].filter(id => !groupParts.has(id) && matchFile(id)));
   for (const incoming of data.courierState?.incomingFiles ?? []) {
     const { from, id } = incoming.job.body;
+    if (choice.kind === 'chat' && incoming.group) continue;
     const key = `${from}:${id}`;
     const chunks = Array.from({length: incoming.manifest.attachment.chunks}, (_, index) => `${key}:courier:${index}`);
     if (matchFile(key) || chunks.some(chunk => ids.has(chunk))) {
@@ -190,7 +197,9 @@ export function prepareChatStorageCleanup(data: LocalChatData, choice: ChatStora
       }) },
     } : {}),
     ...(data.offlineState ? { offlineState: { ...data.offlineState, pending: data.offlineState.pending.filter(mail => !drop(mail.peer, mail.messageId)) } } : {}),
-    ...(data.courierState ? { courierState: pruneCourierFiles(data.courierState, drop) } : {}),
+    ...(data.courierState ? { courierState: pruneCourierFiles(data.courierState, (peer,id) =>
+      (choice.kind !== 'chat' || !data.courierState?.groupJobs?.[id] &&
+        !data.courierState?.incomingFiles.some(file => file.group && file.job.body.from === peer && file.job.body.id === id)) && drop(peer,id)) } : {}),
     ...(data.radioState ? { radioState: { ...data.radioState, pending: data.radioState.pending.filter(packet => !drop(packet.peer, packet.id)) } } : {}),
   };
   return { snapshot, ids: [...ids] };

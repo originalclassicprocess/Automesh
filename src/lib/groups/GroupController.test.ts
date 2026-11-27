@@ -303,6 +303,7 @@ describe('experimental closed MLS groups', () => {
     const missedCommit = new Set<string>();
     const missedInitialWelcome = new Set<string>();
     let failCommit = false, commitInterrupted = false;
+    const forgotten = new Map<string, string>();
     const traces: { from:string; to:string; frame:GroupFrame }[] = [];
     const ready = (from: string, to: string) => !offline.has(from) && !offline.has(to);
     const room = (id: string) => saved.get(id)![0];
@@ -312,12 +313,13 @@ describe('experimental closed MLS groups', () => {
         self:id, identity, active:() => !offline.has(id),
         contact:() => true, allowed:() => true, readsEnabled:() => true,
         rooms:() => saved.get(id) ?? [],
-        save:async rooms => {
+        save:async (rooms,_file,forget) => {
           if (id === a && failCommit && epochOf(rooms[0]) === 3) {
             commitInterrupted = true;
             throw new Error('Interrupted before saving the commit');
           }
           saved.set(id, restoreGroups(JSON.parse(JSON.stringify(rooms))));
+          if (forget) forgotten.set(id,forget);
         },
         transport:{ ready:peer => ready(id, peer), send:async (to, frame) => {
           if (!ready(id, to)) throw new Error('unreachable');
@@ -435,9 +437,12 @@ describe('experimental closed MLS groups', () => {
     expect(room(b).entries.some(entry => entry.id === newPost.id)).toBe(false);
 
     offline.add(a);
-    await at(d).leave(group);
+    await at(d).leave(group,undefined,true);
     expect(groupVisible(room(d))).toBe(false);
     expect(room(d).leaving?.by).toBe(d);
+    expect(room(d).entries).toEqual([]);
+    expect(room(d).actions).toBeUndefined();
+    expect(forgotten.get(d)).toBe(group);
     await wait(() => expect(room(c).leaves?.some(leave => leave.by === d)).toBe(true));
     offline.add(c);
     offline.delete(a);
@@ -458,7 +463,11 @@ describe('experimental closed MLS groups', () => {
     await roster([a,c,b], 5);
     expect(room(b).entries.some(entry => entry.text === 'After the removal')).toBe(false);
     offline.add(b);
-    await at(a).leave(group, c);
+    await expect(at(a).leave(group,undefined,true)).rejects.toThrow('group_successor_required');
+    expect(room(a).entries.length).toBeGreaterThan(0);
+    await at(a).leave(group,c,true);
+    expect(room(a).entries).toEqual([]);
+    expect(forgotten.get(a)).toBe(group);
     await wait(() => expect(epochOf(room(c))).toBe(6));
     expect(epochOf(room(b))).toBe(5);
     offline.delete(b);

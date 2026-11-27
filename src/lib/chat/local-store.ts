@@ -22,8 +22,10 @@ import { normalizeRadioState, radioDeliveries, type RadioAccountState } from '$l
 import { normalizeNativeChannels,type NativeChannels } from '$lib/radio/native-channels';
 import { normalizeNotifications, type NotificationState } from '$lib/notifications/state';
 import { restoreGroups, type GroupRooms } from '$lib/groups/storage';
+import { normalizeChatListPreferences, type ChatListPreferences } from './chat-list-preferences';
 
 export type LocalChatData = {
+  chatList?: ChatListPreferences;
   experimentalGroups?: GroupRooms;
   agentSettings?:AgentSettings;
   agentChatLimits?:AgentChatLimits;
@@ -286,6 +288,7 @@ function cleanData(value: unknown): LocalChatData {
   }
   return {
     ...(raw.deviceSettings !== undefined ? { deviceSettings: normalizeDeviceSettings(raw.deviceSettings) } : {}),
+    ...(raw.chatList !== undefined ? { chatList: normalizeChatListPreferences(raw.chatList) } : {}),
     ...(raw.experimentalGroups !== undefined ? { experimentalGroups: restoreGroups(raw.experimentalGroups) } : {}),
     ...(raw.agentSettings !== undefined ? {agentSettings:normalizeAgentSettings(raw.agentSettings)} : {}),
     ...(raw.agentChatLimits !== undefined ? {agentChatLimits:normalizeAgentChatLimits(raw.agentChatLimits)} : {}),

@@ -208,6 +208,8 @@ import { PageNavigation, historyPageState } from '$lib/application/page-navigati
 import { settingsParent, sameSettingsLocation } from '$lib/application/settings-parent';
 import { OnlineIntroduction, type IntroductionStatus } from '$lib/chat/online-introduction';
 import ConversationRow from '$lib/chat/ConversationRow.svelte';
+import { selectionGesture } from '$lib/chat/message-selection-gesture';
+import { chatListKey, hideChat, normalizeChatListPreferences, sortChatList, type ChatListKind } from '$lib/chat/chat-list-preferences';
 import ChatActivity from '$lib/chat/ChatActivity.svelte';
 import QueueIndicator from '$lib/chat/QueueIndicator.svelte';
 import {queueIndicatorStates} from '$lib/chat/queue-indicator';
@@ -215,7 +217,7 @@ import NodeQueueOverview from '$lib/chat/NodeQueueOverview.svelte';
 import {freshQueueSnapshot,queueQuotaFull,queueQuotaLabel,messageQuotaFull} from '$lib/node/queue-quota';
 import {cleanupErrors,cleanupWaiting} from '$lib/node/queue-cleanup';
 import {nodeTransferUpdate,peerDisconnectedMessage,fileEntryUpdate} from '$lib/chat/node-transfer';
-import {nodeInteractionGroups,nodeInteractionCounts} from '$lib/chat/node-queue-overview';
+import {groupQueueChats,nodeInteractionGroups,nodeInteractionCounts} from '$lib/chat/node-queue-overview';
 import {dismissQueueNotices,applyNodeOutcome} from '$lib/chat/node-queue';
 import ThemeSelector from '$lib/application/ThemeSelector.svelte';
 import { isAppEscape } from '$lib/application/back-key';
@@ -505,7 +507,7 @@ let peerQr = $state('');
 let trustedDeviceChoice = $state(true);
 let trustedSession = $state(false);
 const activeGroup = $derived(trustedSession && profileNetwork ? groupRooms.find(room => room.id === selectedGroupId && groupVisible(room)) : undefined);
-let groupChat = $state<{ canStageFiles(): boolean; stageFiles(files: File[]): void }>();
+let groupChat = $state<{ canStageFiles(): boolean; stageFiles(files: File[]): void; showOriginal(id:string,behavior?:ScrollBehavior):void }>();
 let pendingExit = $state<'lock' | 'logout' | null>(null);
 let deleteHistoryChoice = $state(true);
 let endingSession = $state(false);
@@ -1037,6 +1039,7 @@ function openNativeChannels(value?:string){
   localAgentOpen=false; selectedGroupId='';
   clearMediaPreview();selecting=false;messageTools=null;attachmentMenu=false;emojiOpen=false;nativeOpen=true;mobilePane='chat';
   selectNativeChannel(value||nativeLive[0]||(nativeListed[0]?nativeToken(nativeListed[0]):''));
+  if (nativeSelected) restoreToChatList('radio',nativeSelected);
 }
 function selectNativeChannel(value:string){nativeInitialUnread=meshtastic.channels.find(c=>nativeToken(c)===value)?.unread??0;nativeAtBottom=true;nativeSelected=value;}
 async function setNativeEnabled(value:boolean){
@@ -1121,7 +1124,13 @@ const newChatModels = $derived([
 const newChatChannels = $derived(meshtastic.enabled && radioConnection === 'connected'
   ? meshtastic.channels.filter(channel => nativeLive.includes(nativeToken(channel)))
   : []);
-const conversationItems=$derived([
+let chatListPreferences = $state(normalizeChatListPreferences(undefined));
+let chatListMenu = $state<{kind:ChatListKind;id:string;name:string} | null>(null);
+let chatListConfirm = $state(false), chatListBusy = $state(false), chatListError = $state(false), chatSuccessor = $state('');
+const chatListKeyActive = $derived(chatListMenu ? chatListKey(chatListMenu.kind,chatListMenu.id) : '');
+const chatListGroup = $derived(chatListMenu?.kind === 'group' ? groupRooms.find(room => room.id === chatListMenu?.id) : undefined);
+const chatSuccessorRequired = $derived(!!chatListGroup?.mls && chatListGroup.owner === address && chatListGroup.members.length > 1);
+const conversationItems=$derived(sortChatList([
   ...listedPeers.map(peer=>({kind:'chat' as const,id:peer,time:peer===address?Number.MAX_SAFE_INTEGER:sessionChats.byPeer[peer]?.messages.at(-1)?.timestamp??0})),
   ...(profileNetwork && (!chatSearch.trim() || [$i18n.text('ИИ-чат'), 'AI'].some(name => name.toLowerCase().includes(chatSearch.trim().toLowerCase())))
     ? [{ kind: 'agent' as const, id: 'local', time: Number.MAX_SAFE_INTEGER - 1 }] : []),
@@ -1139,7 +1148,64 @@ const conversationItems=$derived([
         mentioned:timeline.some(entry => groupEntryUnread(entry, address) && groupPostMentions(entry, address)),
       };
     }) : [])
-].sort((a,b)=>b.time-a.time));
+].filter(item => !chatListPreferences.hidden.includes(chatListKey(item.kind,item.id)) ||
+  item.kind === 'chat' && !!sessionChats.byPeer[item.id]?.messages.length),chatListPreferences.pinned));
+
+function openChatListMenu(kind: ChatListKind, id: string, name: string) {
+  if (navigationBusy() || chatListMenu) return;
+  chatListConfirm = false; chatListError = false; chatSuccessor = '';
+  chatListMenu = {kind,id,name};
+}
+
+function closeChatListMenu() {
+  if (!chatListBusy) chatListMenu = null;
+}
+
+function restoreToChatList(kind: ChatListKind, id: string) {
+  const key = chatListKey(kind,id);
+  if (!chatListPreferences.hidden.includes(key)) return;
+  chatListPreferences = { ...chatListPreferences, hidden:chatListPreferences.hidden.filter(item => item !== key) };
+  void persistLocalChats();
+}
+
+async function toggleChatListPin() {
+  const key = chatListKeyActive, generation = authGeneration;
+  if (!key || chatListBusy || navigationBusy()) return;
+  const previous = chatListPreferences;
+  const pinned = previous.pinned.includes(key) ? previous.pinned.filter(item => item !== key) : [key,...previous.pinned];
+  chatListBusy = true; chatListError = false;
+  chatListPreferences = normalizeChatListPreferences({ pinned, hidden:previous.hidden.filter(item => item !== key) });
+  try {
+    const saved = await persistLocalChats();
+    if (generation !== authGeneration) return;
+    if (saved) chatListMenu = null;
+    else { chatListPreferences = previous; chatListError = true; }
+  } finally { if (generation === authGeneration) chatListBusy = false; }
+}
+
+async function deleteListedChat() {
+  const target = chatListMenu, generation = authGeneration;
+  if (!target || chatListBusy || navigationBusy() || chatSuccessorRequired && !chatSuccessor) return;
+  chatListBusy = true; chatListError = false;
+  try {
+    if (target.kind === 'group') {
+      const controller = groupController;
+      if (!controller) throw new Error('group_inactive');
+      await controller.leave(target.id,chatSuccessor || undefined,true);
+      wakeGroupConnections();
+      courierDelivery?.wake();
+    } else {
+      const removed = await cleanMemory(target.kind === 'chat' ? {kind:'chat',peer:target.id} :
+        target.kind === 'radio' ? {kind:'radio-chat',token:target.id,name:target.name} : {kind:'ai-chat'}, chatListKey(target.kind,target.id));
+      if (!removed) throw new Error('chat_delete_failed');
+      if (target.kind === 'chat' && sessionChats.activePeer === target.id ||
+          target.kind === 'radio' && nativeOpen && nativeSelected === target.id ||
+          target.kind === 'agent' && localAgentOpen) showChatList();
+    }
+    if (generation === authGeneration) chatListMenu = null;
+  } catch { if (generation === authGeneration) chatListError = true; }
+  finally { if (generation === authGeneration) chatListBusy = false; }
+}
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
   ...sessionChats.order.filter(peer=>(textForward?.group ? ['accepted'] : ['new','accepted']).includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false,accountId:peer,photo:contactPhoto(peer),activity:forwardActivity(sessionChats.byPeer[peer].messages)})),
   ...(textForward?.group ? groupRooms.filter(room => groupVisible(room) && room.mls).map(room => ({
@@ -1695,6 +1761,7 @@ async function applyAppUpdate(): Promise<void> {
 
 function clearSensitiveData() {
   resetAgent();
+  chatListPreferences = normalizeChatListPreferences(undefined); chatListMenu = null; chatListBusy = false;
   groupController = null; groupRooms = []; selectedGroupId = ''; newChatView = ''; groupWelcomeErrors = new Set();
   deliveryRecovery.reset(); receiveRecoveryBusy = false;
   if(nativeSaveTimer)clearTimeout(nativeSaveTimer);nativeSaveTimer=null;meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
@@ -1808,6 +1875,7 @@ async function changeOwnAvatar(file: File | null, crop?: AvatarCrop): Promise<vo
 
 function applyChatData(saved: LocalChatData): void {
   resetAgent();
+  chatListPreferences = normalizeChatListPreferences(saved.chatList);
   groupRooms = (saved.experimentalGroups ?? []).filter(room => room.departed === address || room.members.includes(address));
   agentSettings=normalizeAgentSettings(saved.agentSettings);
   agentLimits=normalizeAgentChatLimits(saved.agentChatLimits);
@@ -1843,6 +1911,7 @@ function applyChatData(saved: LocalChatData): void {
 
 async function restoreLocalChats(seed: Uint8Array, trusted: boolean): Promise<void> {
   resetAgent();
+  chatListPreferences = normalizeChatListPreferences(undefined); chatListMenu = null; chatListBusy = false;
   groupController = null; groupRooms = []; selectedGroupId = ''; newChatView = ''; groupWelcomeErrors = new Set();
   if(nativeSaveTimer){clearTimeout(nativeSaveTimer);nativeSaveTimer=null;}
   meshtastic=emptyNativeChannels();nativeOpen=false;nativeSelected='';nativeSending=false;textForward=null;
@@ -1905,6 +1974,7 @@ function persistLocalChats(): Promise<boolean> {
     if (address === accountId && generation === authGeneration) {
       snapshot.mediaLibrary = normalizeMediaLibrary(mediaLibrary);
       snapshot.experimentalGroups = groupRooms.length ? groupRooms : undefined;
+      snapshot.chatList = normalizeChatListPreferences(chatListPreferences);
       // Cache linking can commit ahead of this previously captured snapshot.
       // Preserve its durable references before old duplicate blobs are removed.
       preserveSnapshotMediaRefs(snapshot.chats, sessionChats);
@@ -3218,6 +3288,7 @@ async function deleteAgentFile(id: string): Promise<boolean> {
 
 function openLocalAgentChat(): void {
   if (navigationBusy() || ephemeralOpening || !profileNetwork) return;
+  restoreToChatList('agent','local');
   nativeOpen = false; localAgentOpen = true; selectedGroupId = '';
   sessionChats = { ...sessionChats, activePeer: '' };
   mobilePane = 'chat';
@@ -4229,12 +4300,13 @@ async function rejectFile(peer: string, id: string): Promise<void> {
 }
 
 let queueOverviewOpen=$state(false);
-const queueChats=$derived(sessionChats.order.filter(peer=>!!sessionChats.byPeer[peer]).map(peer=>({
-  peer,name:contactName(peer),groups:nodeInteractionGroups(sessionChats.byPeer[peer].messages,
-    new Set(courierState.pending.filter(j=>j.body.to===peer).map(j=>j.body.id)))
-})));
-const queueTotals=$derived(nodeInteractionCounts(queueChats));
 const remoteQueue=$derived(courierStatus.connection==='connected'&&freshQueueSnapshot(courierStatus.queue,keyBudgetNow)?courierStatus.queue:undefined);
+const storedQueueIds=$derived(remoteQueue?.storedIds?new Set(remoteQueue.storedIds):undefined);
+const queueChats=$derived([...sessionChats.order.filter(peer=>!!sessionChats.byPeer[peer]).map(peer=>({
+  peer,name:contactName(peer),groups:nodeInteractionGroups(sessionChats.byPeer[peer].messages,
+    new Set(courierState.pending.filter(j=>j.body.to===peer).map(j=>j.body.id)),storedQueueIds)
+})), ...groupQueueChats(groupRooms,courierState,address,(group, hash) => groupDeliveryPhases.get(groupFileStorageId(group,hash)),storedQueueIds)]);
+const queueTotals=$derived(nodeInteractionCounts(queueChats));
 const quotaAlert=$derived(remoteQueue?.quota&&queueQuotaFull(remoteQueue.quota)?{count:messageQuotaFull(remoteQueue.quota)?remoteQueue.quota.profileMessages??0:remoteQueue.quota.profileFiles,label:queueQuotaLabel(remoteQueue.quota)}:undefined);
 const headerQueue=$derived({quota:quotaAlert,unknown:!!courierState.node&&!remoteQueue,stored:remoteQueue?.messages??queueTotals.waiting,transmitting:queueTotals.transmitting,
   retrying:queueTotals.retrying+cleanupWaiting(courierStatus.cleanup),stopped:queueTotals.stopped,expired:queueTotals.expired,
@@ -4330,8 +4402,15 @@ async function confirmBulkAction():Promise<void>{
     }
   }finally{if(generation===authGeneration)actionBusy=false;}
 }
-async function openQueueMessage(peer:string,id:string) {
-  const generation=authGeneration;queueOverviewOpen=false;changeAccountView('chats');void openConversation(peer);await tick();
+async function openQueueMessage(peer:string,id:string,group?:true) {
+  const generation=authGeneration;queueOverviewOpen=false;changeAccountView('chats');
+  if (group) {
+    openGroupChat(peer);
+    await tick();
+    requestAnimationFrame(()=>{if(generation===authGeneration&&activeGroup?.id===peer)groupChat?.showOriginal(id,'instant');});
+    return;
+  }
+  void openConversation(peer);await tick();
   requestAnimationFrame(()=>{if(generation===authGeneration&&sessionChats.activePeer===peer)jumpToMessage(id);});
 }
 async function cancelFile(peer: string, id: string,bulk=false): Promise<boolean> {
@@ -4502,6 +4581,7 @@ async function openConversation(peer: string) {
   if (sessionChats.activePeer !== peer) clearMediaPreview();
   const isNew = !sessionChats.byPeer[peer];
   sessionChats = selectConversation(sessionChats, peer);
+  restoreToChatList('chat',peer);
   chatOpenToken += 1;
   aliasDraft = aliases[peer] ?? '';
   if (isNew) persistLocalChats();
@@ -5363,17 +5443,40 @@ async function initializeChat() {
         });
       },
     },
-    save: async (rooms, file) => {
+    save: async (rooms, file, forgetGroup) => {
       const key = chatStoreKey, epoch = storageEpoch();
       if (!key || !groupActive()) throw new Error('group_inactive');
       await historyWrites.enqueue(async () => {
         requireStorageEpoch(epoch);
         if (!groupActive()) throw new Error('group_inactive');
+        const removedFiles = forgetGroup ? (await inspectChatStorage(groupAccount)).files
+          .map(file => file.id).filter(id => id.startsWith(groupFileStorageId(forgetGroup,''))) : [];
+        if (!groupActive()) throw new Error('group_inactive');
         const snapshot = { ...chatSnapshot(), experimentalGroups:rooms };
+        const nextPreferences = forgetGroup ? {
+          ...chatListPreferences, pinned:chatListPreferences.pinned.filter(key => key !== chatListKey('group',forgetGroup)),
+        } : undefined;
+        if (forgetGroup) {
+          snapshot.chatList = normalizeChatListPreferences(nextPreferences);
+          if (snapshot.courierState) {
+            const dropped = snapshot.courierState.incomingFiles.filter(file => file.group?.group === forgetGroup);
+            for (const incoming of dropped) for (let i = 0; i < incoming.manifest.attachment.chunks; i++) {
+              const {from,id} = incoming.job.body;
+              removedFiles.push(fileTransferKey(from,`${id}:courier:${i}`));
+            }
+            snapshot.courierState.incomingFiles = snapshot.courierState.incomingFiles.filter(file => file.group?.group !== forgetGroup);
+          }
+        }
         if (file) await saveLocalSessionData(key, groupAccount, snapshot, new Map([[groupFileStorageId(file.group, file.hash), file.bytes]]));
+        else if (forgetGroup) await saveChatDataWithFileDeletion(key, groupAccount, snapshot, removedFiles);
         else await saveLocalChatData(key, groupAccount, snapshot);
         if (generation === authGeneration && address === groupAccount) {
           groupRooms = rooms;
+          if (forgetGroup && nextPreferences) {
+            chatListPreferences = nextPreferences;
+            courierState = { ...courierState, incomingFiles:courierState.incomingFiles.filter(file => file.group?.group !== forgetGroup) };
+            for (const id of removedFiles) { sessionFiles.get(id)?.fill(0); sessionFiles.delete(id); }
+          }
           if (rooms.some(room => room.id === selectedGroupId && !groupVisible(room))) showChatList();
         }
       });
@@ -5902,6 +6005,7 @@ async function initializeChat() {
 
 function chatSnapshot(): LocalChatData {
   return snapshotLocalChatData({
+    chatList:chatListPreferences,
     ...(groupRooms.length ? { experimentalGroups:groupRooms } : {}),
     agentSettings:normalizeAgentSettings(agentSettings),
     agentChatLimits:agentLimits,
@@ -6165,8 +6269,7 @@ function pauseFileTransfers(): void {
   }));
 }
 
-async function cleanMemory(): Promise<void> {
-  const choice = memoryConfirmation;
+async function cleanMemory(choice = memoryConfirmation, removeFromList?: string): Promise<boolean | undefined> {
   if (!choice || memoryBusy || endingSession || switchingTrust || authBusy || mediaBusy || screen !== 'account') return;
   if (voiceBusy || attachingFiles) { status = 'Завершите запись или добавление файлов перед очисткой.'; return; }
   if (agentBusy || nativeSending) { storageError = 'Дождитесь завершения текущего действия.'; return; }
@@ -6207,10 +6310,15 @@ async function cleanMemory(): Promise<void> {
     if (generation !== authGeneration) return;
     const plan = prepareChatStorageCleanup(chatSnapshot(), choice, [...disk, ...sessionFiles.keys()]);
     const durable = baseline ? prepareChatStorageCleanup(baseline, choice, disk) : plan;
+    if (removeFromList) {
+      plan.snapshot.chatList = hideChat(chatListPreferences,removeFromList);
+      if (baseline) durable.snapshot.chatList = hideChat(normalizeChatListPreferences(baseline.chatList),removeFromList);
+    }
     if (trustedSession || baseline) await saveChatDataWithFileDeletion(key, account, durable.snapshot, durable.ids);
     else await deleteLocalFiles(account, durable.ids);
     if (generation !== authGeneration) return;
     const saved = plan.snapshot;
+    if (removeFromList && saved.chatList) chatListPreferences = saved.chatList;
     for (const peer of saved.chats.order) sessionChats = updateConversation(sessionChats, peer, conversation => {
       const row = saved.chats.byPeer[peer];
       return { ...conversation, messages: row.messages, deletedIds: row.deletedIds, unread: unreadMessageCount(row.messages),
@@ -6229,6 +6337,7 @@ async function cleanMemory(): Promise<void> {
     }
     for (const id of plan.ids) { sessionFiles.get(id)?.fill(0); sessionFiles.delete(id); }
     if (generation === authGeneration) status = 'Удалено с этого устройства. Копии у собеседников не изменены.';
+    return true;
   } catch {
     if (generation === authGeneration) {
       sessionChats = previous; offlineDeliveryState = previousOffline; pauseFileTransfers();
@@ -6239,9 +6348,11 @@ async function cleanMemory(): Promise<void> {
     memoryBusy = false;
     if (generation === authGeneration) {
       if (screen === 'account' && identity && !chat) await initializeChat();
-      const cleanupError = storageError;
-      await refreshStorage();
-      if (cleanupError && generation === authGeneration) storageError = cleanupError;
+      if (!removeFromList) {
+        const cleanupError = storageError;
+        await refreshStorage();
+        if (cleanupError && generation === authGeneration) storageError = cleanupError;
+      }
     }
   }
 }
@@ -6638,9 +6749,43 @@ async function changePassword(): Promise<void> {
     onRetry={(peer,id)=>void retryRadio(peer,id)} onConnect={reconnectRadioBoard} onSettings={()=>openConnectionSection('radio')}
     onOpen={(peer,id)=>void openContactMessage(peer,id)} onClose={()=>radioOverviewOpen=false}/>{/if}
 
+  {#if chatListMenu}
+    <CompactDialog title={chatListMenu.name} literalTitle onClose={closeChatListMenu}>
+      <div class="chat-list-actions">
+        {#if chatListConfirm}
+          <p>{$i18n.text(chatListMenu.kind === 'group'
+            ? 'Вы выйдете из группы. История и файлы будут удалены с этого устройства.'
+            : 'История чата будет удалена с этого устройства.')}</p>
+          {#if chatSuccessorRequired && chatListGroup}
+            <label>
+              {$i18n.text('Передать группу участнику')}
+              <select bind:value={chatSuccessor} disabled={chatListBusy}>
+                <option value="">{$i18n.text('Выбрать участника')}</option>
+                {#each chatListGroup.members.filter(peer => peer !== address && sessionChats.byPeer[peer]?.contact !== 'blocked') as peer (peer)}
+                  <option value={peer}>{groupContactName(chatListGroup,peer)}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+          <button type="button" onclick={() => { chatListConfirm = false; chatListError = false; }} disabled={chatListBusy}>{$i18n.text('Отмена')}</button>
+          <button type="button" class="danger" onclick={() => void deleteListedChat()} disabled={chatListBusy || chatSuccessorRequired && !chatSuccessor}>
+            {$i18n.text(chatListMenu.kind === 'group' ? 'Выйти и удалить чат' : 'Удалить навсегда')}
+          </button>
+        {:else}
+          <button type="button" disabled={chatListBusy} onclick={() => void toggleChatListPin()}>
+            <span aria-hidden="true">⌖</span> {$i18n.text(chatListPreferences.pinned.includes(chatListKeyActive) ? 'Открепить чат' : 'Закрепить чат')}
+          </button>
+          <button type="button" class="danger" disabled={chatListBusy} onclick={() => { chatListConfirm = true; chatListError = false; }}>
+            <span aria-hidden="true">×</span> {$i18n.text('Удалить навсегда')}
+          </button>
+        {/if}
+        {#if chatListError}<p class="danger" role="alert">{$i18n.text('Действие с чатом не удалось завершить. Попробуйте ещё раз.')}</p>{/if}
+      </div>
+    </CompactDialog>
+  {/if}
   {#if queueOverviewOpen}
     <CompactDialog title={$i18n.text("Очередь ноды")} onClose={()=>queueOverviewOpen=false}>
-      <NodeQueueOverview nodeUrl={courierState.node?.url} chats={queueChats} cleanup={courierStatus.cleanup} snapshot={courierStatus.queue} connected={courierStatus.connection==='connected'} onOpen={(peer,id)=>void openQueueMessage(peer,id)} onClear={peer=>void clearQueueCounters(peer)} />
+      <NodeQueueOverview nodeUrl={courierState.node?.url} chats={queueChats} cleanup={courierStatus.cleanup} snapshot={courierStatus.queue} connected={courierStatus.connection==='connected'} onOpen={(peer,id,group)=>void openQueueMessage(peer,id,group)} onClear={peer=>void clearQueueCounters(peer)} onRefresh={()=>courierDelivery?.wake()} />
     </CompactDialog>
   {/if}
   {#if accountView === 'chats'}<AccountNotices backup={!seedBackupVerified && !seedNoticeDismissed} devices={deviceOffer}
@@ -7277,31 +7422,39 @@ async function changePassword(): Promise<void> {
       <ContactSearch bind:query={chatSearch} ownId={address} knownIds={sessionChats.order} onOpen={(peer, route) => void addConversation(peer, route)} />
       <div class="conversation-items" class:with-new-chat={profileNetwork}>
       {#each conversationItems as item (`${item.kind}:${item.id}`)}
+        {@const pinned = chatListPreferences.pinned.includes(chatListKey(item.kind,item.id))}
         {#if item.kind === 'agent'}
-          <button type="button" class="conversation-row local-agent-row" aria-current={localAgentOpen ? 'true' : undefined} onclick={openLocalAgentChat}>
+          <button type="button" class="conversation-row local-agent-row" aria-current={localAgentOpen ? 'true' : undefined} onclick={openLocalAgentChat}
+            aria-haspopup="dialog" use:selectionGesture={{conversation:true,canBegin:()=>!navigationBusy(),onBegin:()=>openChatListMenu('agent',item.id,$i18n.text('ИИ-чат'))}}>
             <span class="local-agent-avatar" aria-hidden="true">AI</span>
             <span class="local-agent-row-text"><strong>{$i18n.text('ИИ-чат')}</strong>
               <span class="chat-preview">{localAgentHistory.at(-1)?.content || $i18n.text('На этом устройстве')}</span>
             </span>
+            {#if pinned}<span aria-label={$i18n.text('Чат закреплён')} role="img">⌖</span>{/if}
           </button>
         {:else if item.kind==='radio'}{@const c=item.channel}{@const last=c.messages.at(-1)}
           <ConversationRow accountId={item.id} name={c.name||$i18n.text('По умолчанию')} conversation={nativeListConversation(c)} active={nativeOpen&&nativeSelected===item.id} onOpen={()=>openNativeChannels(item.id)}
+            {pinned} onMenu={()=>openChatListMenu('radio',item.id,c.name||$i18n.text('По умолчанию'))}
             radio={{encryption:c.encryption,preview:last?.text||$i18n.text('Пока нет сообщений.'),status:last?.outgoing&&['queued','failed','unknown'].includes(last.status)?nativeMessageStatus(last).label:undefined}}/>
         {:else if item.kind === 'group'}
           {@const room = item.room}
-          <button type="button" class="conversation-row local-agent-row group-chat-row" aria-current={activeGroup?.id === room.id ? 'true' : undefined} onclick={() => openGroupChat(room.id)}>
+          <button type="button" class="conversation-row local-agent-row group-chat-row" aria-current={activeGroup?.id === room.id ? 'true' : undefined} onclick={() => openGroupChat(room.id)}
+            aria-haspopup="dialog" use:selectionGesture={{conversation:true,canBegin:()=>!navigationBusy(),onBegin:()=>openChatListMenu('group',room.id,room.title)}}>
             <span class="local-agent-avatar" aria-hidden="true"><ChatIcon name="group" /></span>
             <span class="local-agent-row-text">
               <strong>{room.title}</strong>
               <span class="chat-preview">{item.last?.file ? '📎 ' + item.last.file.name : item.last?.text ?? $i18n.text(room.mls ? 'Пока нет сообщений.' : room.owner === address || room.draft ? 'Ожидаем подключения к группе' : 'Приглашение в закрытую группу')}</span>
             </span>
+            {#if pinned}<span aria-label={$i18n.text('Чат закреплён')} role="img">⌖</span>{/if}
             {#if item.invitation}<span class="group-invite-badge" aria-hidden="true">!</span>{/if}
             {#if item.mentioned}<span class="unread-badge group-mention-badge" aria-label={$i18n.text('Непрочитанное упоминание')}>@</span>{/if}
             {#if item.unread}<span class="unread-badge" aria-label={$i18n("m_fe510dbd63e0", { v0:item.unread })}>{item.unread > 99 ? '99+' : item.unread}</span>{/if}
           </button>
         {:else}
           <ConversationRow accountId={item.id} name={contactName(item.id)} photo={contactPhoto(item.id)} conversation={sessionChats.byPeer[item.id]} introduction={introductionStates[item.id] ? introductionLabels[introductionStates[item.id]] : undefined}
-            self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)} muted={chatNotificationsMuted(notificationState,item.id,keyBudgetNow)} />
+            self={item.id===address} active={!nativeOpen&&sessionChats.activePeer===item.id} onOpen={()=>openConversation(item.id)}
+            {pinned} onMenu={()=>openChatListMenu('chat',item.id,item.id===address?$i18n.text('Сохранённые'):contactName(item.id))}
+            muted={chatNotificationsMuted(notificationState,item.id,keyBudgetNow)} />
         {/if}
       {/each}
       {#if meshtastic.enabled&&meshtastic.channels.some(c=>!nativeLive.includes(nativeToken(c))&&c.messages.length)}<label class="native-saved-toggle"><input type="checkbox" checked={meshtastic.showAll} onchange={e=>void setNativePreferences({showAll:e.currentTarget.checked}).catch(error=>status=error.message)}/>{$i18n.text('Все сохранённые радиоканалы')}</label>{/if}

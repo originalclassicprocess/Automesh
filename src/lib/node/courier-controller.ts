@@ -443,8 +443,16 @@ export class CourierController {
     this.refreshRemoteInboxes();
     for(const r of this.port.state().incomingFiles)if(r.source&&this.sourceAllowed(r.source))this.fileReplies.set(r.job.body.id,this.httpReply(r.source));
     if (!this.port.state().node) { await this.downloadFiles(); this.report('idle', 'disabled'); return; }
-    const health = await this.request('/outbox/status', {});
-    if (health.address !== this.port.state().node!.address) throw new Error('courier_identity_changed');
+    const health = await this.request('/outbox/status', {}).then(status => {
+      if (status.address !== this.port.state().node?.address) throw new Error('courier_identity_changed');
+      return status;
+    }).catch(async error => {
+      // A file already offered by a different authenticated node can still be
+      // received while this profile's own node is unavailable.
+      this.current();
+      await this.downloadFiles();
+      throw error;
+    });
     this.health.queue=readQueueSnapshot(health);
     this.report('connected',health.routes?.localInternet==='connected'?'connected':health.routes?.internet??health.status??'connecting',health.routes?.lan);
     this.releaseDeliveredCopies(health.inventoryProtocol==='automesh-outbox-inventory-v1');
