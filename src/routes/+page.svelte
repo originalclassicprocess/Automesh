@@ -215,7 +215,7 @@ import NodeQueueOverview from '$lib/chat/NodeQueueOverview.svelte';
 import {freshQueueSnapshot,queueQuotaFull,queueQuotaLabel,messageQuotaFull} from '$lib/node/queue-quota';
 import {cleanupErrors,cleanupWaiting} from '$lib/node/queue-cleanup';
 import {nodeTransferUpdate,peerDisconnectedMessage,fileEntryUpdate} from '$lib/chat/node-transfer';
-import {nodeInteractionGroups,nodeInteractionCounts} from '$lib/chat/node-queue-overview';
+import {groupQueueChats,nodeInteractionGroups,nodeInteractionCounts} from '$lib/chat/node-queue-overview';
 import {dismissQueueNotices,applyNodeOutcome} from '$lib/chat/node-queue';
 import ThemeSelector from '$lib/application/ThemeSelector.svelte';
 import { isAppEscape } from '$lib/application/back-key';
@@ -505,7 +505,7 @@ let peerQr = $state('');
 let trustedDeviceChoice = $state(true);
 let trustedSession = $state(false);
 const activeGroup = $derived(trustedSession && profileNetwork ? groupRooms.find(room => room.id === selectedGroupId && groupVisible(room)) : undefined);
-let groupChat = $state<{ canStageFiles(): boolean; stageFiles(files: File[]): void }>();
+let groupChat = $state<{ canStageFiles(): boolean; stageFiles(files: File[]): void; showOriginal(id:string,behavior?:ScrollBehavior):void }>();
 let pendingExit = $state<'lock' | 'logout' | null>(null);
 let deleteHistoryChoice = $state(true);
 let endingSession = $state(false);
@@ -4229,12 +4229,13 @@ async function rejectFile(peer: string, id: string): Promise<void> {
 }
 
 let queueOverviewOpen=$state(false);
-const queueChats=$derived(sessionChats.order.filter(peer=>!!sessionChats.byPeer[peer]).map(peer=>({
-  peer,name:contactName(peer),groups:nodeInteractionGroups(sessionChats.byPeer[peer].messages,
-    new Set(courierState.pending.filter(j=>j.body.to===peer).map(j=>j.body.id)))
-})));
-const queueTotals=$derived(nodeInteractionCounts(queueChats));
 const remoteQueue=$derived(courierStatus.connection==='connected'&&freshQueueSnapshot(courierStatus.queue,keyBudgetNow)?courierStatus.queue:undefined);
+const storedQueueIds=$derived(remoteQueue?.storedIds?new Set(remoteQueue.storedIds):undefined);
+const queueChats=$derived([...sessionChats.order.filter(peer=>!!sessionChats.byPeer[peer]).map(peer=>({
+  peer,name:contactName(peer),groups:nodeInteractionGroups(sessionChats.byPeer[peer].messages,
+    new Set(courierState.pending.filter(j=>j.body.to===peer).map(j=>j.body.id)),storedQueueIds)
+})), ...groupQueueChats(groupRooms,courierState,address,(group, hash) => groupDeliveryPhases.get(groupFileStorageId(group,hash)),storedQueueIds)]);
+const queueTotals=$derived(nodeInteractionCounts(queueChats));
 const quotaAlert=$derived(remoteQueue?.quota&&queueQuotaFull(remoteQueue.quota)?{count:messageQuotaFull(remoteQueue.quota)?remoteQueue.quota.profileMessages??0:remoteQueue.quota.profileFiles,label:queueQuotaLabel(remoteQueue.quota)}:undefined);
 const headerQueue=$derived({quota:quotaAlert,unknown:!!courierState.node&&!remoteQueue,stored:remoteQueue?.messages??queueTotals.waiting,transmitting:queueTotals.transmitting,
   retrying:queueTotals.retrying+cleanupWaiting(courierStatus.cleanup),stopped:queueTotals.stopped,expired:queueTotals.expired,
@@ -4330,8 +4331,15 @@ async function confirmBulkAction():Promise<void>{
     }
   }finally{if(generation===authGeneration)actionBusy=false;}
 }
-async function openQueueMessage(peer:string,id:string) {
-  const generation=authGeneration;queueOverviewOpen=false;changeAccountView('chats');void openConversation(peer);await tick();
+async function openQueueMessage(peer:string,id:string,group?:true) {
+  const generation=authGeneration;queueOverviewOpen=false;changeAccountView('chats');
+  if (group) {
+    openGroupChat(peer);
+    await tick();
+    requestAnimationFrame(()=>{if(generation===authGeneration&&activeGroup?.id===peer)groupChat?.showOriginal(id,'instant');});
+    return;
+  }
+  void openConversation(peer);await tick();
   requestAnimationFrame(()=>{if(generation===authGeneration&&sessionChats.activePeer===peer)jumpToMessage(id);});
 }
 async function cancelFile(peer: string, id: string,bulk=false): Promise<boolean> {
@@ -6640,7 +6648,7 @@ async function changePassword(): Promise<void> {
 
   {#if queueOverviewOpen}
     <CompactDialog title={$i18n.text("Очередь ноды")} onClose={()=>queueOverviewOpen=false}>
-      <NodeQueueOverview nodeUrl={courierState.node?.url} chats={queueChats} cleanup={courierStatus.cleanup} snapshot={courierStatus.queue} connected={courierStatus.connection==='connected'} onOpen={(peer,id)=>void openQueueMessage(peer,id)} onClear={peer=>void clearQueueCounters(peer)} />
+      <NodeQueueOverview nodeUrl={courierState.node?.url} chats={queueChats} cleanup={courierStatus.cleanup} snapshot={courierStatus.queue} connected={courierStatus.connection==='connected'} onOpen={(peer,id,group)=>void openQueueMessage(peer,id,group)} onClear={peer=>void clearQueueCounters(peer)} onRefresh={()=>courierDelivery?.wake()} />
     </CompactDialog>
   {/if}
   {#if accountView === 'chats'}<AccountNotices backup={!seedBackupVerified && !seedNoticeDismissed} devices={deviceOffer}

@@ -3412,5 +3412,15 @@
   "m_89733104a45c": "Looking for a participant or node that can accept the message. Keep the app open.",
   "m_df11cece47ec": "The message is saved here. No complete copy is available to recipients or on the node yet. Keep the app open for the next attempt.",
   "m_b63e4e16f56b": "Pin in group",
-  "m_8d0cf874dd9f": "No pinned messages."
+  "m_8d0cf874dd9f": "No pinned messages.",
+  "m_95c4ca257dec": "Unlinked to this history",
+  "m_3fec8015f881": "Your group messages",
+  "m_cd54abdacfef": "Relayed for group members",
+  "m_6d21850d00ea": "Message action",
+  "m_baee8f901731": "Relayed for a group member",
+  "m_7a409f996b14": "Envelopes on node",
+  "m_c9a0a23d714e": "Stored until",
+  "m_73822b4ddf96": "Profile envelope storage",
+  "m_447021d53791": "Space reserved for profile files",
+  "m_2e15feb2fbe5": "Storage used on node"
 }
