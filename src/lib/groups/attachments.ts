@@ -37,6 +37,7 @@ export class GroupAttachments {
     allowed(peer: string): boolean;
     transport: GroupTransport;
     files: GroupFileStore;
+    trackTransfer?(group: string, hash: string): () => void;
   }) {}
 
   private entry(group: string, hash: string, peer?: string, epoch?: number): { room: GroupRoom; entry: FileEntry } | undefined {
@@ -141,6 +142,7 @@ export class GroupAttachments {
     }
     this.sharing.add(peer);
     let bytes: Uint8Array | null = null;
+    let stop: (() => void) | undefined;
     try {
       bytes = await this.read(group, hash);
       if (!bytes && this.entry(group, hash, peer, epoch))
@@ -148,11 +150,12 @@ export class GroupAttachments {
       if (!bytes) return;
       for (let offset = 0; offset < bytes.length; offset += FILE_CHUNK_BYTES) {
         if (!this.entry(group, hash, peer, epoch)) break;
+        if (!offset) stop = this.port.trackTransfer?.(group, hash);
         await this.port.transport.send(peer, { group, hash, epoch, request, type:'file-part', index:offset / FILE_CHUNK_BYTES,
           data:bytesToBase64(bytes.subarray(offset, offset + FILE_CHUNK_BYTES)) });
       }
     } catch { /* The recipient can try again after the direct route recovers. */ }
-    finally { bytes?.fill(0); this.sharing.delete(peer); }
+    finally { stop?.(); bytes?.fill(0); this.sharing.delete(peer); }
   }
 
   peerOffline(peer: string): void {

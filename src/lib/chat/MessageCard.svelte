@@ -16,7 +16,8 @@
   {#if onReaction&&!selecting}<button type="button" class="quick-reaction" disabled={busy||reactionBusy} aria-label={$i18n.text('Реакция на сообщение')} title={$i18n.text('Реакция на сообщение')} aria-haspopup="dialog" aria-expanded={reactionOpen} onclick={onReaction}><ChatIcon name="emoji"/></button>{/if}
 </div>
 <style>
-  .chat-message { position:relative; width:fit-content; max-width:85%; min-width:125px; margin:0 0 8px; padding:7px 10px; border:1px solid var(--line); border-radius:12px 12px 12px 3px; background:var(--surface); overflow-wrap:anywhere; }
+  .chat-message { position:relative; box-sizing:border-box; width:fit-content; max-width:85%; min-width:min(125px,85%); margin:0 0 8px; padding:7px 10px; border:1px solid var(--line); border-radius:12px 12px 12px 3px; background:var(--surface); overflow-wrap:anywhere; }
+  .message-content { min-width:0; max-width:100%; }
   .outgoing { margin-left:auto; background:var(--outgoing); border-color:var(--outgoing-line); border-radius:12px 12px 3px 12px; }
   .has-reaction{max-width:min(85%,calc(100% - 42px))}
   .quick-reaction{position:absolute;right:-42px;bottom:0;display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:50%}
