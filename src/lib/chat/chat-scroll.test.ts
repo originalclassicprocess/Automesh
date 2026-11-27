@@ -95,6 +95,25 @@ describe('stable conversation viewport', () => {
     a.root.children.push(a.root.child('new')); a.action.update({ ...a.state, messages: next });
     a.root.userScroll(350); await settle(); expect(a.root.scrollTop).toBe(350); expect(f.jump).toHaveBeenLastCalledWith(true, 1);
   });
+  it('preserves movement before the scroll event while an earlier image grows', async () => {
+    const f = fixture(), a = f.mount(); await settle(); a.root.userScroll(350);
+    a.root.scrollTop = 415;
+    a.root.children[0].height += 100;
+    a.resize.fire();
+    expect(a.root.scrollTop).toBe(515);
+    a.root.scrollTop = 440;
+    a.resize.fire();
+    expect(a.root.scrollTop).toBe(440);
+  });
+  it('stops following as soon as the user scrolls away from the bottom', async () => {
+    const f = fixture(), a = f.mount(); await settle();
+    a.root.scrollTop = 890;
+    a.resize.fire();
+    expect(a.root.scrollTop).toBe(890);
+    a.root.dispatchEvent(new Event('scroll'));
+    await a.update([...a.state.messages, { id:'later', direction:'incoming' }]);
+    expect(a.root.scrollTop).toBe(890);
+  });
   it('waits while hidden and restores when the phone chat pane becomes visible', async () => {
     const f = fixture(), a = f.mount(); a.root.clientHeight = 0; await settle(); expect(a.root.scrollTop).toBe(0);
     a.root.clientHeight = 300; a.resize.fire(); expect(a.root.scrollTop).toBe(900);

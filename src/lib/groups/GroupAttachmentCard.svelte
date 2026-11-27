@@ -23,8 +23,8 @@
   const pack = $derived(isStickerPackFile(file.name));
   let host: HTMLDivElement;
   let ready = $state(false), busy = $state(false), requested = $state(false), imageError = $state(false);
-  let visible = $state(false), mounted = false, reading = false;
-  let url = $state(''), imageHeight = $state(0);
+  let visible = $state(false), mounted = false, reading = false, refresh = false;
+  let url = $state(''), imageRatio = $state<number>();
 
   function show(bytes: Uint8Array | null) {
     if (!bytes) return;
@@ -40,9 +40,20 @@
   }
 
   function read(force = false) {
-    if (reading && !force || ready && (media?.kind !== 'image' || url)) return;
+    if (ready && (media?.kind !== 'image' || url)) return;
+    if (reading) { refresh ||= force; return; }
     reading = true;
-    void load().then(show).catch(() => {}).finally(() => { reading = false; });
+    void load().then(bytes => {
+      if (bytes) show(bytes);
+      else if (fileReady && visible && mounted) imageError = true;
+    }).catch(() => {
+      if (fileReady && visible && mounted) imageError = true;
+    }).finally(() => {
+      reading = false;
+      const retry = refresh;
+      refresh = false;
+      if (retry && mounted && visible) read();
+    });
   }
 
   onMount(() => {
@@ -54,7 +65,7 @@
         if (url) URL.revokeObjectURL(url);
         url = '';
       }
-    });
+    }, { root:host.closest('.message-scroll'), rootMargin:'200px 0px' });
     observer.observe(host);
     return () => { mounted = false; observer.disconnect(); if (url) URL.revokeObjectURL(url); };
   });
@@ -82,15 +93,17 @@
 <div class="attachment" bind:this={host}>
   {#if ready && pack}
     <StickerPackCard name={file.name.replace(/\.automesh-stickers\.zip$/i, '') || $i18n.text('Стикерпак')} load={loadPack} onOpen={openPack} busy={blocked} />
-  {:else if ready && media?.kind === 'image'}
+  {:else if (ready || fileReady) && media?.kind === 'image'}
     <button type="button" class="message-image" class:message-sticker={sticker}
+      style:aspect-ratio={imageRatio ?? (sticker ? 1 : 4/3)}
       onclick={openMedia} aria-label={$i18n('m_931b83c229d4', {v0:file.name})}>
       {#if url && !imageError}
-        <img src={url} alt={file.name} loading="lazy"
-          onload={event => imageHeight = event.currentTarget.getBoundingClientRect().height} onerror={() => imageError = true} />
-      {:else if imageError}{$i18n.text('Не удалось показать миниатюру')}
-      {:else if imageHeight}<div aria-hidden="true" style:height={`${imageHeight}px`}></div>
-      {:else}{$i18n.text('🖼️ Открыть изображение')}{/if}
+        <img src={url} alt={file.name}
+          onload={({ currentTarget }) => {
+            if (currentTarget instanceof HTMLImageElement && currentTarget.naturalWidth && currentTarget.naturalHeight)
+              imageRatio = currentTarget.naturalWidth / currentTarget.naturalHeight;
+          }} onerror={() => imageError = true} />
+      {:else if imageError}<span>{$i18n.text('Не удалось показать миниатюру')}</span>{/if}
     </button>
     {#if !sticker && file.mime === 'image/gif'}<button onclick={saveGif} disabled={blocked}>{$i18n.text('В GIF')}</button>{/if}
   {:else if ready && media?.kind === 'audio'}
@@ -111,6 +124,11 @@
 <style>
   .attachment { min-width:0; max-width:100%; display:grid; grid-template-columns:minmax(0,1fr); justify-items:start; gap:6px; margin:6px 0; }
   .attachment > :global(button), .attachment > :global(video) { box-sizing:border-box; min-width:0; max-width:100%; }
+  .message-image { position:relative; max-height:420px; }
+  .message-image.message-sticker { max-height:180px; }
+  .message-image :is(img, span) { position:absolute; inset:0; width:100%; height:100%; max-height:none; }
+  .message-image span { display:grid; place-items:center; padding:8px; box-sizing:border-box; overflow-wrap:anywhere; }
+  @media (max-width:700px) { .message-image { max-height:min(420px, 55dvh); } .message-image.message-sticker { max-height:min(180px,55dvh); } }
   .file-tile { display:flex; align-items:center; gap:8px; max-width:100%; text-align:start; padding:6px 8px; }
   .file-tile :global(svg) { flex-shrink:0; width:19px; height:19px; }
   .file-tile span { min-width:0; display:grid; gap:2px; }

@@ -2615,6 +2615,7 @@ function adoptProfileContext(context: ProfileChatContext): void {
   resetAgent();
   peerMessageFeatures={};peerReactionFeatures={};reactionTarget=null;editDraft=null;returnFromChatSearch=undefined;
   manageChatScroll.clear();
+  manageGroupScroll.clear();
   audioTrack = null;
   const backupVerified = seedBackupVerified;
   clearMediaPreview(); stopNodeTools(); outbox.reset();
@@ -4898,6 +4899,13 @@ function observeIncoming(node: HTMLElement, initial: { peer: string; messageId: 
 const manageChatScroll = createChatScroll({ activePeer: () => sessionChats.activePeer,
   firstUnread: peer => sessionChats.byPeer[peer]?.unread ? firstUnreadMessageId(sessionChats.byPeer[peer]?.messages ?? []) : undefined,
   onJump: (visible, incoming) => { showJumpDown = visible; jumpNewMessages = incoming; } });
+let groupJump = $state(false);
+const manageGroupScroll = createChatScroll({
+  activePeer: () => activeGroup?.id ?? '',
+  firstUnread: peer => activeGroup?.id === peer
+    ? groupChronology(activeGroup.entries).find(entry => groupEntryUnread(entry, address))?.id : undefined,
+  onJump: visible => { groupJump = visible; },
+});
 
 function jumpToBottom(): void {
   const node = document.querySelector<HTMLElement>('[data-chat-scroll]');
@@ -6339,6 +6347,7 @@ function forgetOpenAccount(mode: 'lock' | 'logout'): void {
   resetAgent();
   peerMessageFeatures={};peerReactionFeatures={};reactionTarget=null;editDraft=null;returnFromChatSearch=undefined;
   manageChatScroll.clear();
+  manageGroupScroll.clear();
   mediaLibrary = emptyMediaLibrary(); mediaOpen = false; receivedPack = null;
   lockedProfileId = mode === 'lock' ? activeProfileId : '';
   offlineDelivery?.stop(); offlineDelivery = null;
@@ -7309,6 +7318,7 @@ async function changePassword(): Promise<void> {
             leave={successor => groupController?.leave(groupId, successor) ?? Promise.reject(new Error('group_inactive'))}
             trackReads={!newChatView}
             markRead={hashes => groupController?.markRead(groupId, hashes) ?? Promise.resolve()}
+            scroll={manageGroupScroll} jump={groupJump}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
             send={(text, replyTo, file, mentions) => sendGroupPost(groupId, text, replyTo, file, undefined, mentions)}
             canMention={peer => sessionChats.byPeer[peer]?.contact !== 'blocked'}
