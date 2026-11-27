@@ -1,7 +1,7 @@
 {
   "repository": "originalclassicprocess/automesh-nodes",
-  "commit": "43ca3bb3e4c78038a56d76cfe49b130e67327f20",
-  "version": "0.4.20",
+  "commit": "5ee5331a0736c51704253b99368450d6bbaab52b",
+  "version": "0.4.21",
   "files": [
     {
       "path": ".github/CODEOWNERS",
@@ -37,7 +37,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "efb9a0ea76839c2ed1a28c6b7654ca335f7d5164c3722f332c57033b5e8f8a0b"
+      "sha256": "dcc35a01a3fea6b5ae71ff372961431bdb1c5e5b070588cda41ccc3752e82504"
     },
     {
       "path": "CONTRIBUTING.md",
@@ -280,6 +280,10 @@
       "sha256": "2ec1bfb279f8c516d2934266c5886551ca290affc1edf18502950868bebdf4bf"
     },
     {
+      "path": "docs/RELEASE_0_4_21.md",
+      "sha256": "3cc14c6f878151a1a6cd02e2782caec8edeeddc504ba61c2fc2850ffaa509b9b"
+    },
+    {
       "path": "docs/SERVER_NODE.md",
       "sha256": "a674fabcb38051e240bd998b39efd65283a3a6fe1d9703fe2a903d67eeaeac85"
     },
@@ -297,11 +301,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "2852c0abc89edb17445caa0492266b4026bd42a15559227a38754f3a15c882b8"
+      "sha256": "457f57d02ec3bc557a4256b580747d2e2a12fa451d5c31c906e641bec540baf1"
     },
     {
       "path": "package.json",
-      "sha256": "fb7429c9360d624c0b23f75d8684d848028c6fc8c9421b0fa8ab686bd3995910"
+      "sha256": "ddd712f008ae98cdfad7a57e8148d134166b98d84899c2d9eb1bc7f19050542e"
     },
     {
       "path": "packages/deployment/src/defaults.js",
@@ -365,7 +369,7 @@
     },
     {
       "path": "packages/runtime/src/application.js",
-      "sha256": "56e5b8d41e6c7a47efafcbfd952e397efacbe704821486c5046528fd904348cb"
+      "sha256": "b61c35f2b980b2c3761fe0963585a1675c356f5fbdea66d4d81e89c2f2c17127"
     },
     {
       "path": "packages/runtime/src/attachments.js",
@@ -377,7 +381,7 @@
     },
     {
       "path": "packages/runtime/src/courier.js",
-      "sha256": "71fd4d4cb1bbb134a516ad07e06c8804716bda319acd0d9ffe1605a03dbaa9bb"
+      "sha256": "d869176711ffb65ee8d5a8ac00f78f75aa6f9a32ff6766035ac47ba652eafdcf"
     },
     {
       "path": "packages/runtime/src/devices.js",
@@ -509,7 +513,7 @@
     },
     {
       "path": "test/courier-route.test.mjs",
-      "sha256": "8fcecb28410a7044e66953df74253bec292b7588636fbeef65fcfd331680d171"
+      "sha256": "7b5927a08eb7c0f2efcca3864f5a9b88d4aa70e470763c765287d57409f3e979"
     },
     {
       "path": "test/deployment.test.mjs",
@@ -561,7 +565,7 @@
     },
     {
       "path": "test/queue-quota.test.mjs",
-      "sha256": "46c82e3bb94f65c6b8a87441dda5e7ce4c91ee74b7399ae78c58d5df765bccd1"
+      "sha256": "6f1af6f3177b2d255e1f00b746b04fa9e86a3f456fd2a439cefc3ceadda2ab0b"
     },
     {
       "path": "test/recipient-inbox.test.mjs",
