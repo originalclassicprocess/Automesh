@@ -8,13 +8,13 @@
   import {LEGACY_REACTIONS as REACTIONS} from './reactions';
   type View = 'menu' | 'status' | 'route' | 'share';
   let { message, status, recipient, courier, shareText, openView, disabled = false, canReply, onOpen, onClose,
-    onReply, onForward, onSelect, onStop, onDownload, onDelete, onHide, onRoute, onStatus, onPin, pinned = false, canPin = true, canForward = true, canSelect = true, loadShareFile, onCancelNode, onRetryNode, onRetryRadio, channelMode=false, onCopy, onRetryChannel,onReact,onEdit }: {
+    onReply, onForward, onSelect, onStop, onDownload, onDelete, onHide, onRoute, onStatus, onPin, pinLabel, pinned = false, canPin = true, canForward = true, canSelect = true, loadShareFile, onCancelNode, onRetryNode, onRetryRadio, channelMode=false, onCopy, onRetryChannel,onReact,onEdit }: {
     message: ChatEntry; status: MessageStatus; recipient: string; courier?: string; shareText: string;
     openView: View | null; disabled?: boolean; canReply: boolean;
     onOpen: (view: View) => void; onClose: () => void; onReply: () => void; onForward: () => void;
     onSelect: () => void; onStop?: () => void; onDownload: () => void; onDelete?: () => void; onHide?: () => void; onRoute?: () => void;
     onStatus?: () => void;
-    onPin?: () => void; pinned?: boolean; canPin?: boolean; canForward?: boolean; canSelect?: boolean;
+    onPin?: () => void; pinLabel?: string; pinned?: boolean; canPin?: boolean; canForward?: boolean; canSelect?: boolean;
     onCancelNode?:()=>void; onRetryNode?:()=>void;
     onRetryRadio?:()=>void; channelMode?:boolean;onCopy?:()=>void;onRetryChannel?:()=>void;
     loadShareFile: () => Promise<File>;
@@ -26,7 +26,7 @@
   function mountDialog(node: HTMLDialogElement) {
     const previous = document.activeElement as HTMLElement | null;
     node.showModal();
-    return { destroy() { request++; error = ''; node.close(); if (previous?.isConnected) previous.focus(); } };
+    return { destroy() { request++; error = ''; node.close(); if (previous?.isConnected) previous.focus({ preventScroll:true }); } };
   }
   function run(action: () => void) { onClose(); action(); }
   function canShareText() { return typeof navigator !== 'undefined' && typeof navigator.share === 'function'; }
@@ -52,7 +52,7 @@
         {#if onCopy}<button disabled={disabled} onclick={()=>run(onCopy!)}><span class="action-icon" aria-hidden="true">⧉</span> {$i18n.text("Скопировать текст")}</button>{/if}
         {#if onRetryChannel}<button disabled={disabled} onclick={()=>run(onRetryChannel!)}><span class="action-icon" aria-hidden="true">↻</span> {$i18n.text("Отправить снова")}</button>{/if}
         <button disabled={!canReply || disabled} onclick={() => run(onReply)}><span class="action-icon" aria-hidden="true">↩</span> {$i18n.text("Ответить")}</button>
-        {#if !channelMode && onPin}<button disabled={!canReply || disabled || !canPin} title={!canPin ? $i18n.text("Нет разрешения на эту функцию") : undefined} onclick={() => run(onPin!)}><span class="action-icon" aria-hidden="true">⌖</span> {pinned ? $i18n.text("Снять мой закреп") : $i18n.text("Закрепить для обоих")}</button>{/if}
+        {#if !channelMode && onPin}<button disabled={!canReply || disabled || !canPin} title={!canPin ? $i18n.text("Нет разрешения на эту функцию") : undefined} onclick={() => run(onPin!)}><span class="action-icon" aria-hidden="true">⌖</span> {pinned ? $i18n.text("Снять мой закреп") : pinLabel ?? $i18n.text("Закрепить для обоих")}</button>{/if}
         <button disabled={disabled || !downloadable || !canForward} title={!canForward ? $i18n.text("Пока недоступно на подключённом устройстве") : undefined} onclick={() => run(onForward)}><span class="action-icon" aria-hidden="true">↪</span> {$i18n.text("Переслать")}</button>
         <button disabled={disabled || !canSelect} title={!canSelect ? $i18n.text("Пока недоступно на подключённом устройстве") : undefined} onclick={() => run(onSelect)}><span class="action-icon" aria-hidden="true">☑</span> {$i18n.text("Выбрать")}</button>
         {#if onCancelNode && !message.nodeQueue && !['delivered','read'].includes(message.delivery??'')}<button disabled={disabled} onclick={()=>run(onCancelNode!)}><span class="action-icon" aria-hidden="true">⊘</span> {$i18n.text("Отменить на ноде")}</button>{/if}

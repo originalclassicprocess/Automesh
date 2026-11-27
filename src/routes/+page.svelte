@@ -16,6 +16,7 @@ import NewChatMenu, { newChatViewFromLayer, type NewChatView } from '$lib/chat/N
 import NewChatPicker from '$lib/chat/NewChatPicker.svelte';
 import { GroupController } from '$lib/groups/GroupController';
 import { groupChronology, groupEntryUnread, groupPeers, groupPostMentions, groupVisible, type GroupEntry, type GroupRooms } from '$lib/groups/storage';
+import { applyGroupEdit, groupEdits, type GroupActionRequest } from '$lib/groups/actions';
 import { base } from '$app/paths';
 import { createBrowserUpdater } from '$lib/application/browser-updates';
 import type { AppUpdateState } from '$lib/application/app-update';
@@ -953,8 +954,9 @@ async function forwardGroupMessage(source: string, id: string, target: string) {
   const controller = groupController, generation = authGeneration;
   const current = () => controller === groupController && generation === authGeneration && activeGroup?.id === source &&
     accountView === 'chats' && !navigationBusy();
-  const room = activeGroup, entry = room?.entries.find(entry => entry.id === id && !entry.hidden);
-  if (!controller || !room || !entry || !current()) throw Error('Исходное сообщение удалено или отсутствует на этом устройстве.');
+  const room = activeGroup, original = room?.entries.find(entry => entry.id === id && !entry.hidden);
+  if (!controller || !room || !original || !current()) throw Error('Исходное сообщение удалено или отсутствует на этом устройстве.');
+  const entry = applyGroupEdit(original, groupEdits(room));
   const bytes = entry.file ? await controller.readFile(source, entry.hash) : null;
   try {
     if (entry.file && !bytes) throw Error('Сначала получите файл целиком.');
@@ -1127,12 +1129,16 @@ const conversationItems=$derived([
   ...(trustedSession && profileNetwork ? groupRooms
     .filter(groupVisible)
     .filter(room => room.title.toLowerCase().includes(chatSearch.trim().toLowerCase()))
-    .map(room => ({
-      kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
-      time:room.activityAt ?? 0, last:groupChronology(room.entries).findLast(entry => !entry.hidden),
-      unread:room.entries.filter(entry => groupEntryUnread(entry, address)).length,
-      mentioned:room.entries.some(entry => groupEntryUnread(entry, address) && groupPostMentions(entry, address)),
-    })) : [])
+    .map(room => {
+      const edits = groupEdits(room);
+      const timeline = groupChronology(room.entries).map(entry => applyGroupEdit(entry, edits));
+      return {
+        kind:'group' as const, id:room.id, room, invitation:room.owner !== address && !room.mls && !room.draft,
+        time:room.activityAt ?? 0, last:timeline.findLast(entry => !entry.hidden),
+        unread:timeline.filter(entry => groupEntryUnread(entry, address)).length,
+        mentioned:timeline.some(entry => groupEntryUnread(entry, address) && groupPostMentions(entry, address)),
+      };
+    }) : [])
 ].sort((a,b)=>b.time-a.time));
 const textForwardTargets=$derived<ForwardTarget[]>(recentForwardTargets([
   ...sessionChats.order.filter(peer=>(textForward?.group ? ['accepted'] : ['new','accepted']).includes(sessionChats.byPeer[peer]?.contact)).map(peer=>({id:'chat:'+peer,name:peer===address?$i18n.text('Сохранённые'):contactName(peer),radio:false,accountId:peer,photo:contactPhoto(peer),activity:forwardActivity(sessionChats.byPeer[peer].messages)})),
@@ -5971,6 +5977,14 @@ function sendGroupPost(group: string, text: string, replyTo?: string, file?: Fil
   })());
 }
 
+async function updateGroupMessage(group: string, request: GroupActionRequest) {
+  const controller = groupController;
+  if (!controller || activeGroup?.id !== group || navigationBusy()) throw new Error('group_inactive');
+  await controller.actOnMessage(group, request);
+  wakeGroupConnections(group);
+  courierDelivery?.wake();
+}
+
 function reserveAutomaticGroupFile(key: string, size: number): boolean {
   if (!autoReceiveFilesEnabled) return false;
   if (automaticFileIds.has(key)) return true;
@@ -7321,6 +7335,7 @@ async function changePassword(): Promise<void> {
             scroll={manageGroupScroll} jump={groupJump}
             accept={() => groupController?.accept(groupId) ?? Promise.reject(new Error('group_inactive'))}
             send={(text, replyTo, file, mentions) => sendGroupPost(groupId, text, replyTo, file, undefined, mentions)}
+            update={request => updateGroupMessage(groupId, request)}
             canMention={peer => sessionChats.byPeer[peer]?.contact !== 'blocked'}
             sendSticker={(asset, pack, replyTo) => sendGroupSticker(groupId, asset, pack, replyTo)}
             library={mediaLibrary} loadSticker={loadLibraryAsset} manageStickers={openMediaLibrary}

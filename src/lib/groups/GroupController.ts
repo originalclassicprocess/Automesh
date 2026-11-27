@@ -6,9 +6,11 @@ import { acceptGroupWelcome, createGroupKey, decryptGroupPost, encryptGroupPost,
   signGroupProfile, signGroupReceipt, signGroupWelcome, validateJoinKey, verifyGroupProfile, verifyGroupReceipt, verifyGroupWelcome } from './mls';
 import { GroupMembership } from './GroupMembership';
 import { GroupAttachments, type GroupFilePayload, type GroupFileStore, type StagedGroupFile } from './attachments';
-import { parseGroupMentions, type GroupMention } from './mentions';
+import { editGroupMentions, parseGroupMentions, type GroupMention } from './mentions';
+import { groupActionToken, groupCanAddress, groupCanEdit, groupRecords, latestGroupAction, parseGroupAction,
+  retainGroupActions, trimGroupHistory, type GroupActionRequest } from './actions';
 import { normalizeFileOffer, safeFileName, sameFileOffer, sha256Hex, MAX_FILE_BYTES, type FileOffer } from '$lib/chat/file-transfer';
-import { GROUP_HISTORY, GROUP_KEY_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
+import { GROUP_KEY_HISTORY, GROUP_RECEIPT_BATCH, MAX_GROUPS, MAX_GROUP_MEMBERS, groupMembers, groupTitle, isMembershipFrame, parseGroupFrame,
   GROUP_PREFIX, isGroupFileFrame, validNickname, type GroupFrame, type GroupProfile, type GroupReceipt, type GroupTransport } from './protocol';
 import { epochOf, groupAudience, groupChronology, groupEntryUnread, groupPeers, validPost, type GroupEntry, type GroupNodeStatus, type GroupRoom, type GroupRooms } from './storage';
 
@@ -17,6 +19,8 @@ export type GroupNodeReference = { group: string; hash: string; file?: true };
 export type GroupNodePost = GroupNodeReference & { id: string; peer: string; content: string; relay: boolean; offer?: FileOffer };
 const encoder = new TextEncoder();
 const availableSince = (entry: GroupEntry) => entry.nodeSince ?? entry.sentAt;
+const replayOrder = (a: GroupEntry, b: GroupEntry) =>
+  (a.epoch ?? 1) - (b.epoch ?? 1) || (a.sentAt ?? 0) - (b.sentAt ?? 0);
 const newerProfile = (profile: GroupProfile, previous?: GroupProfile) => !previous ||
   profile.revision > previous.revision || profile.revision === previous.revision && profile.nickname > previous.nickname;
 
@@ -51,7 +55,8 @@ function withReceipt(entry: GroupEntry, receipt: GroupReceipt): GroupEntry {
 export class GroupController {
   private tail: Promise<unknown> = Promise.resolve();
   private syncing = new Set<string>();
-  private requestedSync = new Map<string, { epoch: number; known: string[]; seen?: number[] }>();
+  private requestedSync = new Map<string, { epoch: number; known: string[]; seen?: number[]; actionKnown?: string }>();
+  private peersWithActions = new Set<string>();
   private hellos = new Set<string>();
   private welcomed = new Set<string>();
   private peerEpochs = new Map<string, number>();
@@ -91,6 +96,9 @@ export class GroupController {
       const room = this.room(value.group);
       if (!room?.mls || room.leaving || (room.plan && !room.plan.key) || !room.members.includes(peer) ||
         this.peerEpochs.get(room.id + ':' + peer) !== epochOf(room)) return;
+      const control = room.actions?.find(item => item.packet === value.packet);
+      if (control && (!room.members.includes(control.from) || !groupAudience(room, control).includes(peer) ||
+          epochOf(room) - (control.epoch ?? 1) >= GROUP_KEY_HISTORY || !this.peersWithActions.has(room.id + ':' + peer))) return;
       entry = room.entries.find(item => item.from === this.port.self && item.packet === value.packet);
     }
     if (!this.port.active() || !this.port.allowed(peer) || !this.port.transport.ready(peer)) return;
@@ -181,14 +189,53 @@ export class GroupController {
       const profile = await this.ownProfile(room);
       const { mls, entry } = await encryptGroupPost(room, post, this.port.identity, profile);
       const saved = { ...entry, nodeSince:post.sentAt, ...(attachment ? { fileReady:true as const } : {}) };
-      const next = { ...room, mls, entries:[...room.entries, saved].slice(-GROUP_HISTORY), activityAt:post.sentAt,
+      const next = { ...room, mls, entries:trimGroupHistory(room, [...room.entries, saved]), activityAt:post.sentAt,
         ...(profile ? { profiles:{ ...room.profiles, [profile.by]:profile } } : {}) };
+      if (room.actions) next.actions = retainGroupActions(next, room.actions);
       await this.save(next, attachment && { group:id, hash:entry.hash, bytes:attachment.bytes });
       this.relay(next, { type:'message', group:id, packet:entry.packet });
       for (const peer of groupPeers(next, this.port.self)) {
         if (this.peerEpochs.get(id + ':' + peer) !== epochOf(next)) void this.hello(next, peer);
       }
       return entry.id;
+    });
+  }
+
+  actOnMessage(group: string, request: GroupActionRequest) {
+    return this.run(async () => {
+      const room = this.room(group), from = this.port.self;
+      if (!room?.mls || room.departed || room.leaving || room.plan && !room.plan.key || !room.members.includes(from))
+        throw new Error('group_message_unavailable');
+      const target = room.entries.find(entry => entry.id === request.targetId && !entry.hidden);
+      if (request.targetId !== null && (!target || !groupCanAddress(room, target))) throw new Error('group_message_unavailable');
+      const previous = latestGroupAction(room, from, request);
+      const revision = (previous?.revision ?? 0) + 1;
+      let value: unknown;
+      if (request.kind === 'edit') {
+        if (!target || target.from !== from || !groupCanEdit(target))
+          throw new Error('group_message_unavailable');
+        if ((previous?.revision ?? 0) !== request.previousRevision) throw new Error('message_edit_changed');
+        const before = previous?.kind === 'edit' ? previous : target;
+        const text = request.text.trim();
+        if (text === before.text) return;
+        value = { ...request, revision, text, mentions:editGroupMentions(before.text, text, before.mentions ?? [])
+          .filter(([, , peer]) => room.members.includes(peer) && this.port.allowed(peer)) };
+      } else if (request.kind === 'reaction') {
+        value = { ...request, revision, emoji:previous?.kind === 'reaction' && previous.emoji === request.emoji ? null : request.emoji };
+      } else {
+        if ((previous?.targetId ?? null) === request.targetId) return;
+        value = { ...request, revision };
+      }
+      const action = parseGroupAction(value);
+      if (!action) throw new Error(request.kind === 'edit' ? 'message_too_large' : 'group_message_unavailable');
+      const now = Date.now();
+      const { mls, entry } = await encryptGroupPost(room, { id:crypto.randomUUID(), from, text:'', sentAt:now, action }, this.port.identity);
+      const next = { ...room, mls, actions:retainGroupActions(room, [...room.actions ?? [], { ...entry, nodeSince:now }]) };
+      await this.save(next);
+      this.relay(next, { type:'message', group, packet:entry.packet });
+      for (const peer of groupPeers(next, from)) {
+        if (!this.peersWithActions.has(group + ':' + peer)) void this.hello(next, peer);
+      }
     });
   }
 
@@ -237,7 +284,7 @@ export class GroupController {
   canStoreOnNode(ref: GroupNodeReference, peer: string) {
     if (!this.port.active() || !this.port.nodeEnabled?.()) return false;
     const room = this.room(ref.group);
-    const entry = room?.entries.find(post => post.hash === ref.hash);
+    const entry = room && groupRecords(room).find(post => post.hash === ref.hash);
     return !!room && !!entry && this.canQueueNodePost(room, entry, peer, Date.now(), ref.file);
   }
 
@@ -261,7 +308,7 @@ export class GroupController {
     const room = this.room(ref.group);
     if (!this.port.active() || !room) return false;
     if (room.departed || room.leaving || !room.members.includes(peer) || !this.port.allowed(peer)) return true;
-    const entry = room.entries.find(post => post.hash === ref.hash);
+    const entry = groupRecords(room).find(post => post.hash === ref.hash);
     if (ref.file) return !!entry && (!room.members.includes(entry.from) ||
       !groupAudience(room, entry).includes(peer) || entry.fileReceivedBy?.includes(peer) || epochOf(room) - (entry.epoch ?? 1) >= GROUP_KEY_HISTORY);
     return entry !== undefined && (!room.members.includes(entry.from) || entry.receivedBy?.includes(peer) === true ||
@@ -271,7 +318,7 @@ export class GroupController {
   *nodePosts(file = false): Iterable<GroupNodePost> {
     if (!this.port.nodeEnabled?.() || !this.port.active()) return;
     const now = Date.now();
-    for (const room of this.port.rooms()) for (const entry of room.entries) {
+    for (const room of this.port.rooms()) for (const entry of file ? room.entries : groupRecords(room).sort(replayOrder)) {
       if (availableSince(entry) === undefined) continue;
       const ref = { group:room.id, hash:entry.hash };
       for (const peer of room.members) {
@@ -293,21 +340,22 @@ export class GroupController {
   recordNodeStatus(ref: GroupNodeReference, peer: string, status: GroupNodeStatus) {
     return this.run(async () => {
       const room = this.room(ref.group);
-      const entry = room?.entries.find(post => post.hash === ref.hash);
+      const entry = room && groupRecords(room).find(post => post.hash === ref.hash);
       const key = ref.file ? 'nodeFileStatus' : 'nodeStatus';
       if (!room || !entry || entry.from === peer || !groupAudience(room, entry).includes(peer) ||
           entry[key]?.[peer] === status || entry[key]?.[peer] === 'delivered') return;
       const updated = { ...entry, nodeSince:availableSince(entry) ?? Date.now(), [key]:{ ...entry[key], [peer]:status } };
-      await this.save({ ...room, entries:room.entries.map(post => post === entry ? updated : post) });
+      const field = entry.action ? 'actions' : 'entries';
+      await this.save({ ...room, [field]:room[field]!.map(post => post === entry ? updated : post) });
     });
   }
 
   async receiveNodePost(peer: string, frame: GroupMessageFrame, node: string) {
     if (!this.port.active() || !this.port.contact(peer) || !this.port.allowed(peer)) return false;
-    await this.receive(peer, frame, node);
+    const acceptedAction = await this.receive(peer, frame, node);
     const room = this.room(frame.group);
-    return !!room?.mls && room.members.includes(peer) && room.entries.some(entry =>
-      entry.packet === frame.packet && groupAudience(room, entry).includes(peer));
+    return !!room?.mls && room.members.includes(peer) && (!!acceptedAction || groupRecords(room).some(entry =>
+      entry.packet === frame.packet && groupAudience(room, entry).includes(peer)));
   }
 
   nodeFileOffer(ref: GroupNodeReference, peer: string, offer: FileOffer): FileOffer | undefined {
@@ -444,6 +492,7 @@ export class GroupController {
       type:'sync', group, known:room.entries.map(entry => entry.hash), hasWelcome:!!room.welcomeProof,
       epoch:epochOf(room), requestEpoch,
       seen:room.entries.map(entry => (entry.receipts ?? []).reduce((mask, receipt) => mask | receiptBits(room, entry, receipt), 0)),
+      actionKnown:(room.actions ?? []).map(entry => groupActionToken(entry.hash)).join(''),
       ...(profiles.length ? { profiles } : {}),
     });
     const hashes = room.entries.filter(entry => entry.from === peer && entry.fileReady && !entry.fileNode).map(entry => entry.hash);
@@ -497,6 +546,7 @@ export class GroupController {
     for (const room of this.port.rooms()) {
       const key = room.id + ':' + peer;
       this.peerEpochs.delete(key);
+      this.peersWithActions.delete(key);
       this.requestedSync.delete(key);
     }
   }
@@ -507,9 +557,9 @@ export class GroupController {
     }
   }
 
-  private async reply(room: GroupRoom, peer: string, known: string[], seen?: number[]) {
+  private async reply(room: GroupRoom, peer: string, known: string[], seen?: number[], actionKnown?: string) {
     const key = room.id + ':' + peer;
-    this.requestedSync.set(key, { epoch:epochOf(room), known, seen });
+    this.requestedSync.set(key, { epoch:epochOf(room), known, seen, actionKnown });
     if (this.syncing.has(key)) return;
     this.syncing.add(key);
     try {
@@ -518,12 +568,12 @@ export class GroupController {
         this.requestedSync.delete(key);
         const current = this.room(room.id);
         if (current && epochOf(current) === request.epoch)
-          await this.sendMissing(current, peer, request.known, request.seen);
+          await this.sendMissing(current, peer, request.known, request.seen, request.actionKnown);
       }
     } finally { this.syncing.delete(key); }
   }
 
-  private async sendMissing(room: GroupRoom, peer: string, known: string[], seen?: number[]) {
+  private async sendMissing(room: GroupRoom, peer: string, known: string[], seen?: number[], actionKnown?: string) {
     const epoch = epochOf(room);
     const ready = () => {
       const current = this.room(room.id);
@@ -534,9 +584,17 @@ export class GroupController {
     if (!ready()) return;
     const shareable = room.entries.filter(entry => groupAudience(room, entry).includes(peer));
     const inventory = new Map(known.map((hash, index) => [hash, seen?.[index] ?? 0]));
-    for (const entry of shareable) {
+    const tokens = new Set(actionKnown?.match(/.{16}/g));
+    const messages = shareable.filter(entry => !inventory.has(entry.hash));
+    if (actionKnown !== undefined) {
+      messages.push(...(room.actions ?? []).filter(entry => !tokens.has(groupActionToken(entry.hash)) &&
+        groupAudience(room, entry).includes(peer)));
+      messages.sort(replayOrder);
+    }
+    for (const entry of messages) {
       if (!ready()) return;
-      if (!inventory.has(entry.hash)) await this.deliver(peer, { type:'message', group:room.id, packet:entry.packet });
+      if (entry.action && !this.room(room.id)?.actions?.some(current => current.hash === entry.hash)) continue;
+      await this.deliver(peer, { type:'message', group:room.id, packet:entry.packet });
     }
     if (!seen) return;
     const missing = shareable.flatMap(entry => (entry.receipts ?? []).filter(receipt => {
@@ -564,25 +622,29 @@ export class GroupController {
     this.relayReceipts(room, accepted, peer);
   }
 
-  private async acknowledge(room: GroupRoom, peer: string, hashes: string[]) {
+  private async acknowledge(room: GroupRoom, peer: string, hashes: string[], actionKnown?: string) {
     const known = new Set(hashes);
+    const tokens = new Set(actionKnown?.match(/.{16}/g));
     let changed = false;
-    const entries = room.entries.map(entry => {
-      if (entry.from !== this.port.self || !known.has(entry.hash) || !groupAudience(room, entry).includes(peer) || entry.receivedBy?.includes(peer)) return entry;
+    const acknowledgeEntry = (entry: GroupEntry) => {
+      if (!known.has(entry.hash) && !(entry.action && tokens.has(groupActionToken(entry.hash))) ||
+          !entry.action && entry.from !== this.port.self || entry.from === peer ||
+          !groupAudience(room, entry).includes(peer) || entry.receivedBy?.includes(peer)) return entry;
       changed = true;
       return { ...entry, receivedBy: [...(entry.receivedBy ?? []), peer] };
-    });
-    if (changed) await this.save({ ...room, entries });
+    };
+    const entries = room.entries.map(acknowledgeEntry), actions = room.actions?.map(acknowledgeEntry);
+    if (changed) await this.save({ ...room, entries, actions });
   }
 
-  receive(peer: string, value: unknown, node?: string): Promise<void> {
+  receive(peer: string, value: unknown, node?: string): Promise<void | true> {
     const frame = parseGroupFrame(value);
     if (!frame || !this.port.allowed(peer) || peer === this.port.self) return Promise.resolve();
     if (isGroupFileFrame(frame)) {
       if (!node) this.attachments?.receive(peer, frame);
       return Promise.resolve();
     }
-    return this.run(async () => {
+    return this.run<void | true>(async () => {
       const room = this.room(frame.group);
       if (isMembershipFrame(frame)) {
         await this.membership.receive(room, peer, frame);
@@ -643,14 +705,17 @@ export class GroupController {
       if (!room.mls || (room.leaving && frame.type !== 'sync')) return;
       if (frame.type === 'sync') {
         const epoch = frame.epoch ?? 1;
-        this.peerEpochs.set(room.id + ':' + peer, epoch);
+        const peerKey = room.id + ':' + peer;
+        this.peerEpochs.set(peerKey, epoch);
+        if (frame.actionKnown === undefined) this.peersWithActions.delete(peerKey);
+        else this.peersWithActions.add(peerKey);
         if (epoch !== epochOf(room)) {
           if (epoch < epochOf(room)) void this.membership.sync(room, peer, epoch);
           else if (frame.requestEpoch) void this.sendSync(room.id, peer);
           return;
         }
         this.welcomed.add(room.id + ':' + peer);
-        await this.acknowledge(room, peer, frame.known);
+        await this.acknowledge(room, peer, frame.known, frame.actionKnown);
         let current = this.room(room.id)!;
         if (epoch > (current.memberEpochs?.[peer] ?? 1)) {
           current = { ...current, memberEpochs:{ ...current.memberEpochs, [peer]:epoch } };
@@ -673,7 +738,7 @@ export class GroupController {
             this.relayReceipts(current, added, peer);
           }
         }
-        void this.reply(current, peer, frame.known, frame.seen);
+        void this.reply(current, peer, frame.known, frame.seen, frame.actionKnown);
         return;
       }
       if (frame.type === 'ack') { await this.acknowledge(room, peer, [frame.hash]); return; }
@@ -688,19 +753,30 @@ export class GroupController {
       if (frame.type === 'receipts') { await this.receiveReceipts(room, peer, frame.receipts); return; }
       if (room.plan && !room.plan.key) return;
       const hash = await groupPacketHash(frame.packet);
-      const known = room.entries.find(entry => entry.hash === hash);
+      const records = groupRecords(room);
+      const known = records.find(entry => entry.hash === hash);
       if (known) {
-        if (known.from !== this.port.self) void this.deliver(known.from, { type:'ack', group:room.id, hash });
+        if (known.action) void this.deliver(peer, { type:'ack', group:room.id, hash });
+        else if (known.from !== this.port.self) void this.deliver(known.from, { type:'ack', group:room.id, hash });
         return;
       }
       const { mls, entry, profile } = await decryptGroupPost(room, frame.packet, hash);
       if (entry.from === this.port.self || (node && !groupAudience(room, entry).includes(peer)) ||
-          room.entries.some(item => item.id === entry.id)) return;
+          records.some(item => item.id === entry.id)) return;
+      if (entry.action) {
+        const accepted = { ...entry, nodeSince:Date.now(), receivedBy:[peer] };
+        const next = { ...room, mls, actions:retainGroupActions(room, [...room.actions ?? [], accepted]) };
+        await this.save(next);
+        void this.deliver(peer, { type:'ack', group:room.id, hash });
+        if (next.actions.includes(accepted)) this.relay(next, { type:'message', group:room.id, packet:entry.packet }, peer);
+        return true;
+      }
       // An accepted carrier already has these ciphertext bytes. Never queue the
       // same packet back to it, or to the original author.
       const received = await this.ownReceived(room, { ...entry, unread:true, route:{ peer, ...(node ? { node } : {}) }, nodeSince:Date.now(), receivedBy:[peer] });
-      const next = { ...room, mls, entries:[...room.entries, received].slice(-GROUP_HISTORY), activityAt:Date.now(),
+      const next = { ...room, mls, entries:trimGroupHistory(room, [...room.entries, received]), activityAt:Date.now(),
         ...(profile && newerProfile(profile, room.profiles?.[profile.by]) ? { profiles:{ ...room.profiles, [profile.by]:profile } } : {}) };
+      if (room.actions) next.actions = retainGroupActions(next, room.actions);
       await this.save(next);
       void this.deliver(entry.from, { type:'ack', group:room.id, hash });
       this.relay(next, { type:'message', group:room.id, packet:entry.packet }, peer);

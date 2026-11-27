@@ -9,6 +9,7 @@ import { COURIER_PROTOCOL } from '$lib/node/courier-protocol.js';
 import { emptyCourierState, restoreCourierState, type CourierState } from '$lib/node/courier-state';
 import { cipherDigest } from '$lib/node/offline-crypto';
 import { GroupController } from './GroupController';
+import { groupEdits, groupPins, groupReactions } from './actions';
 import { groupDelivery } from './presentation';
 import { restoreGroups, type GroupRooms } from './storage';
 
@@ -62,13 +63,20 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
       const { hash } = rooms[0][0].entries.find(entry => entry.id === message)!;
       payloads.set(hash, bytes);
     }
+    const actionOriginal = automatic ? await groups[0].send(group, 'Text before offline edit') : undefined;
+    if (actionOriginal) {
+      await groups[0].actOnMessage(group, { kind:'edit', targetId:actionOriginal, text:'Text after offline edit', previousRevision:0 });
+      await groups[0].actOnMessage(group, { kind:'reaction', targetId:actionOriginal, emoji:'👍' });
+      await groups[0].actOnMessage(group, { kind:'pin', targetId:actionOriginal });
+    }
+    const additional = actionOriginal ? 4 : 0;
     const [hash] = payloads.keys();
     const messages = rooms[0][0].entries.map(entry => entry.id);
     expect(rooms[1][0].entries).toHaveLength(0);
     now += 3000;
 
     const expiresAt = now + 60_000;
-    const keys = await Promise.all(Array.from({ length:count * 2 }, () => generateCourierKey(sender.address, expiresAt)));
+    const keys = await Promise.all(Array.from({ length:count * 2 + additional }, () => generateCourierKey(sender.address, expiresAt)));
     const server = { url:'https://queue.example', nodeId:'a'.repeat(32), address:node.address };
     const receiverBundle = await signCourier('prekeys', { protocol:COURIER_PROTOCOL, from:recipient.address,
       to:sender.address, expiresAt, keys:keys.map(({id, publicKey}) => ({ id, publicKey })),
@@ -137,7 +145,7 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
             return { status:'stored' };
           }
           if (path === '/receive/list') return { protocol:'automesh-inbox-v1', cursor:'',
-            deliveries:[...deliveries.values()].filter(delivery => !acknowledgements.has(delivery.job.body.id)) };
+            deliveries:[...deliveries.values()].reverse().filter(delivery => !acknowledgements.has(delivery.job.body.id)).slice(0, 8) };
           if (path === '/receive/file/parts') {
             expect(authorOnline).toBe(false);
             await verifyCourier(value.request, 'attachment-request', recipient.address);
@@ -166,9 +174,11 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
     const senderWorker = courier(0);
     for (let poll = 0; poll < count; poll++) await senderWorker.poll();
     expect([...deliveries.values()].filter(delivery => delivery.job.body.attachment)).toHaveLength(count);
+    expect(deliveries.size).toBe(count * 2 + additional);
     for (const parts of cipherParts.values()) expect(parts).toHaveLength(2);
-    expect(rooms[0][0].entries.every(entry => entry.nodeFileStatus?.[recipient.address] === 'stored')).toBe(true);
-    for (const entry of rooms[0][0].entries)
+    const fileEntries = rooms[0][0].entries.filter(entry => entry.file);
+    expect(fileEntries.every(entry => entry.nodeFileStatus?.[recipient.address] === 'stored')).toBe(true);
+    for (const entry of fileEntries)
       expect(groupDelivery(rooms[0][0], entry, sender.address).status).toMatchObject({ label:'Сохранено на ноде', tone:'success' });
     expect(restoreCourierState(states[0]).groupJobs).toEqual(states[0].groupJobs);
     authorOnline = false;
@@ -177,9 +187,14 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
     const firstReceiver = courier(1);
     await firstReceiver.poll();
     await firstReceiver.settled();
+    if (additional) {
+      now += 5000;
+      await firstReceiver.poll();
+    }
+    await firstReceiver.settled();
     expect(rooms[1][0].entries.map(entry => entry.id).sort()).toEqual(messages.sort());
     expect(rooms[1][0].profiles?.[sender.address]?.nickname).toBe(senderNickname);
-    expect(acknowledgements.size).toBe(count);
+    expect(acknowledgements.size).toBe(count + additional);
     expect(files[1].size).toBe(0);
     expect(states[1].incomingFiles).toHaveLength(count);
     const queued = states[1].incomingFiles.find(file => file.group?.hash === hash)!;
@@ -190,6 +205,13 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
     firstReceiver.stop();
     states[1] = restoreCourierState(states[1]);
     rooms[1] = restoreGroups(rooms[1]);
+    if (actionOriginal) {
+      const restored = rooms[1][0];
+      expect(groupEdits(restored).get(actionOriginal)?.text).toBe('Text after offline edit');
+      expect(groupReactions(restored).get(actionOriginal)).toEqual([{ emoji:'👍', actors:[sender.address] }]);
+      expect(groupPins(restored)).toMatchObject([{ targetId:actionOriginal, actor:sender.address }]);
+      expect(restored.entries.find(entry => entry.id === actionOriginal)?.text).toBe('Text before offline edit');
+    }
     autoReceive = automatic;
     const receiver = courier(1);
     for (let poll = 0; poll < Math.ceil(count / 2); poll++) await receiver.poll();
@@ -198,7 +220,7 @@ it.each([{ count:1, automatic:false }, { count:4, automatic:true }])(
       expect(rooms[1][0].entries.find(entry => entry.hash === hash)).toMatchObject({ fileNode:node.address, fileReady:true });
       expect(groups[1].fileRequested(group, hash)).toBe(false);
     }
-    expect(acknowledgements.size).toBe(count * 2);
+    expect(acknowledgements.size).toBe(count * 2 + additional);
     expect(states[1].incomingFiles).toHaveLength(0);
     expect(unexpectedPrivateOffer).not.toHaveBeenCalled();
   } finally {

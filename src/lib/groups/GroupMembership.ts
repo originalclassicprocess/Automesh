@@ -128,6 +128,7 @@ export class GroupMembership {
       welcome:removed || !room.welcomeProof ? undefined : room.welcome,
       welcomeProof:removed ? undefined : room.welcomeProof, leaves:undefined,
       entries:room.entries.map(entry => ({ ...entry, audience:groupAudience(room, entry) })),
+      actions:room.actions?.filter(entry => entry.action?.kind !== 'pin' || plan.members.includes(entry.from)),
       changes:[...(room.changes ?? []), { plan, commit, previous }].slice(-GROUP_CHANGE_HISTORY) };
     await this.port.save(next);
     if (removed) return;

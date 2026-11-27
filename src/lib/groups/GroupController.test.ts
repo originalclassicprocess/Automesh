@@ -3,6 +3,7 @@ import { encodeAccountId } from '$lib/addressing/bech32m.js';
 import { accountIdFromPublicKey } from '$lib/addressing/account-id.js';
 import { WebCryptoIdentity } from '$lib/identity/webcrypto';
 import { GroupController } from './GroupController';
+import { groupPins } from './actions';
 import { decryptGroupPost, groupPacketHash } from './mls';
 import { type GroupFrame, groupMembers, parseGroupFrame } from './protocol';
 import { epochOf, groupChronology, groupEntryUnread, groupPostMentions, groupVisible, restoreGroups, type GroupRoom, type GroupRooms } from './storage';
@@ -344,8 +345,12 @@ describe('experimental closed MLS groups', () => {
     await at(c).accept(group);
     await wait(() => { expect(room(a).mls).toBeTruthy(); expect(room(b).mls).toBeTruthy(); });
     expect(room(c).mls).toBeUndefined();
-    await at(b).send(group, 'Before the invitation');
+    const initialMessage = await at(b).send(group, 'Before the invitation');
     await wait(() => expect(room(a).entries).toHaveLength(1));
+    await expect(at(a).actOnMessage(group, { kind:'edit', targetId:initialMessage, text:'By someone else', previousRevision:0 }))
+      .rejects.toThrow('group_message_unavailable');
+    await at(b).actOnMessage(group, { kind:'pin', targetId:initialMessage });
+    await wait(() => expect(groupPins(room(a))).toMatchObject([{ actor:b, targetId:initialMessage }]));
 
     await at(a).invite(group, d);
     await wait(() => expect(room(d).offer?.target).toBe(d));
@@ -372,6 +377,9 @@ describe('experimental closed MLS groups', () => {
     const priorPacket = { type:'message' as const, group, packet:earlier.packet };
     expect(await at(d).receiveNodePost(b, priorPacket, a)).toBe(false);
     expect(room(d).entries).toHaveLength(0);
+    expect(groupPins(room(d))).toHaveLength(0);
+    await expect(at(b).actOnMessage(group, { kind:'edit', targetId:initialMessage, text:'Old group only', previousRevision:0 }))
+      .rejects.toThrow('group_message_unavailable');
     await at(d).send(group, 'Joined while the owner is offline');
     await wait(() => expect(room(c).entries.at(-1)?.from).toBe(d));
 
@@ -395,10 +403,14 @@ describe('experimental closed MLS groups', () => {
     });
     expect(epochOf(room(c))).toBe(2);
     expect(room(a).entries[0].audience).toEqual([a,b,c]);
-    await at(a).send(group, 'After the removal');
+    expect(groupPins(room(a))).toHaveLength(0);
+    const afterRemoval = await at(a).send(group, 'After the removal');
     await wait(() => expect(room(d).entries.some(entry => entry.text === 'After the removal')).toBe(true));
     const newPost = room(a).entries.at(-1)!;
     await expect(decryptGroupPost({ ...revokedState, epoch:3 }, newPost.packet, await groupPacketHash(newPost.packet))).rejects.toThrow();
+    await at(a).actOnMessage(group, { kind:'edit', targetId:afterRemoval, text:'Corrected after removal', previousRevision:0 });
+    const edit = room(a).actions!.find(entry => entry.action?.targetId === afterRemoval)!;
+    await expect(decryptGroupPost({ ...revokedState, epoch:3 }, edit.packet, edit.hash)).rejects.toThrow();
 
     offline.delete(c);
     missedCommit.add(c);

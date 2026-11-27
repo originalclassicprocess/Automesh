@@ -3410,5 +3410,7 @@
   "m_470208474b6c": "Some recipients received the whole message. Keep the app open to reach the others.",
   "m_170cc6fc0a53": "Transfer in progress. Keep the app open until confirmed.",
   "m_89733104a45c": "Looking for a participant or node that can accept the message. Keep the app open.",
-  "m_df11cece47ec": "The message is saved here. No complete copy is available to recipients or on the node yet. Keep the app open for the next attempt."
+  "m_df11cece47ec": "The message is saved here. No complete copy is available to recipients or on the node yet. Keep the app open for the next attempt.",
+  "m_b63e4e16f56b": "Pin in group",
+  "m_8d0cf874dd9f": "No pinned messages."
 }
